@@ -9,8 +9,11 @@ import {
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
 import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
+import { defaultRehypePlugins, defaultRemarkPlugins } from 'streamdown'
+import type { Pluggable } from 'unified'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
+import { FilePathCandidate } from '@/components/chat/file-path-candidate'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { TranscriptVideo } from '@/components/chat/transcript-video'
@@ -36,6 +39,7 @@ import {
 } from '@/lib/media'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
+import { FILE_PATH_ATTR, FILE_PATH_PROPERTY, remarkFilePathCandidates } from '@/lib/remark-file-path-candidates'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { isDirectiveInProgress } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
@@ -45,6 +49,40 @@ import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
+
+// Appended, never replacing: dropping streamdown's own defaults here would
+// silently take GFM (tables, strikethrough) out of every transcript.
+const transcriptRemarkPlugins = [...Object.values(defaultRemarkPlugins), remarkFilePathCandidates]
+
+// The sanitizer strips every attribute it does not know, `data-*` included, so
+// the candidate marker never reaches the DOM unless it is allowed by name. One
+// attribute on one element, added to streamdown's own schema rather than
+// replacing it: the rest of the hardening (protocols, raw HTML, link and image
+// prefixes) stays exactly as shipped.
+const transcriptRehypePlugins: Pluggable[] = Object.values({
+  ...defaultRehypePlugins,
+  sanitize: (() => {
+    const sanitize = defaultRehypePlugins.sanitize
+
+    if (!Array.isArray(sanitize)) {
+      return sanitize
+    }
+
+    const [plugin, schema] = sanitize as [Pluggable, { attributes?: Record<string, unknown> }]
+
+    return [
+      plugin,
+      {
+        ...schema,
+        attributes: {
+          ...schema?.attributes,
+          span: [...((schema?.attributes?.span as string[]) ?? []), FILE_PATH_PROPERTY]
+        }
+      }
+    ] as Pluggable
+  })()
+})
+
 
 const onboardingEnabled = isOnboardingEnabled()
 
@@ -614,6 +652,18 @@ function MarkdownTextSurface({
             <MarkdownParagraph {...props} scratchpad={scratchpad} streaming={isStreaming} />
           ),
         a: previewOnly ? ({ children }: ComponentProps<'a'>) => <span>{children}</span> : MarkdownLink,
+        // The remark pass marks file-path candidates as spans carrying the
+        // path; in the transcript they become hover-resolved references, and
+        // in a preview-only render they stay inert text.
+        span: ({ children, ...props }: ComponentProps<'span'>) => {
+          const path = (props as Record<string, string | undefined>)[FILE_PATH_ATTR]
+
+          return path && !previewOnly ? (
+            <FilePathCandidate path={path}>{children}</FilePathCandidate>
+          ) : (
+            <span {...props}>{children}</span>
+          )
+        },
         // Inline code must not vote when an ancestor resolves `dir="auto"`
         // (HTML's algorithm skips descendants that carry their own dir),
         // mirroring the CSS isolate that already keeps it out of the
@@ -741,6 +791,8 @@ function MarkdownTextSurface({
         parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
         plugins={plugins}
         preprocess={preprocessWithTailRepair}
+        rehypePlugins={transcriptRehypePlugins}
+        remarkPlugins={transcriptRemarkPlugins}
       />
     </ErrorBoundary>
   )

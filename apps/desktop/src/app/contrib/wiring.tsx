@@ -53,6 +53,7 @@ import { requestGatewayForProfile } from '@/store/gateway'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
+import { watchPathModifier } from '@/store/path-modifier'
 import { $poolLimitsSettingsRequest } from '@/store/pool-limits'
 import { $previewTarget } from '@/store/preview'
 import {
@@ -217,6 +218,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const backendRestartRequest = useStore($backendRestartRequest)
   const cronReviewRequest = useStore($cronReviewRequest)
   const currentCwd = useStore($currentCwd)
+
+  // Cmd/Ctrl arms the transcript's file-path references for the whole window,
+  // so the listeners belong to the shell rather than to each token.
+  useEffect(() => watchPathModifier(), [])
 
   // Generic in-app route intents raised by toast recovery buttons (Open Keys,
   // Open Gateways, Maintenance …) fired from stores with no router context.
