@@ -218,6 +218,29 @@ providers:
       openai_native_compaction: true
 ```
 
+**`anthropic_oauth_proxy`** — set this capability to `true` only when an
+`anthropic_messages` endpoint forwards an Anthropic OAuth credential and the
+native Messages payload to Anthropic. Hermes then uses Bearer authentication,
+the Claude Code OAuth headers and system/tool-name transformations, and native
+Anthropic thinking-signature replay for that route:
+
+```yaml
+providers:
+  trusted-anthropic-relay:
+    api: https://claude-relay.internal.example.com
+    transport: anthropic_messages
+    key_env: TRUSTED_ANTHROPIC_RELAY_TOKEN
+    capabilities:
+      anthropic_oauth_proxy: true
+```
+
+The relay credential may be its own opaque API key; the capability describes
+the upstream protocol, not the relay's client credential format. Hermes never
+falls back to its native Anthropic credential for a custom endpoint. Do not
+enable this capability for a provider that merely implements an
+Anthropic-compatible API: those endpoints normally require their own auth and
+reject the Claude Code identity fields.
+
 For a gateway that resolves a bare model alias only after receiving the
 request, opt the alias into prompt-cache markers with the per-model
 `prompt_caching` capability:

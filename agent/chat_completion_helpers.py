@@ -1973,6 +1973,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent._config_context_length = None
             agent.model, agent.provider, agent.requested_provider = fb_model, fb_provider, fb_provider
             agent.base_url, agent.api_mode = fb_base_url, fb_api_mode
+            agent.capabilities = dict(vars(fb_client).get("capabilities") or {})
             # reasoning_content echo opt-in travels with the active provider; restore_primary_runtime reverts it.
             agent._reasoning_echo_flag = bool(fb.get("reasoning_echo", False))
             if hasattr(agent, "_transport_cache"):
