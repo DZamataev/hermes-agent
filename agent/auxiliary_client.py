@@ -3487,8 +3487,10 @@ def _prepare_same_provider_retry(
         # Copilot's ``x-initiator: user``) across the rebuilt-client retry — dropping them here would let a
         # recovery retry silently lose capability gating (#60293).
         # Preserve per-request attribution headers across the rebuilt-client retry — see the sync variant
-        # above (#60293).
-        retry_kwargs["extra_headers"] = dict(extra_headers)
+        # above (#60293). Merged, not assigned: _build_call_kwargs already put the conversation's
+        # affinity headers there, and overwriting would drop them on exactly the calls that pass
+        # attribution headers.
+        retry_kwargs["extra_headers"] = {**(retry_kwargs.get("extra_headers") or {}), **extra_headers}
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
     return retry_client, retry_kwargs
@@ -6255,7 +6257,18 @@ def _build_call_kwargs(
     # OpenCode relay session affinity — same key as the main turn so compression/title/vision
     # calls stay on the conversation's warm backend.
     from agent.opencode_affinity import merge_opencode_session_headers
-    return merge_opencode_session_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
+    merge_opencode_session_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
+    # An OAuth-proxy relay spreads conversations across accounts by
+    # ``x-claude-code-session-id``; aux calls carry the main turn's id so they
+    # are recognised as the same conversation instead of pinning a second
+    # account. Scoped by runtime_oauth_proxy: same endpoint, same provider.
+    from agent.auxiliary_oauth import runtime_oauth_proxy
+    from agent.claude_code_session import merge_claude_code_session_headers
+    if runtime_oauth_proxy(_normalize_main_runtime(None), provider, str(base_url or "")):
+        merge_claude_code_session_headers(
+            kwargs, {"anthropic_oauth_proxy": True}, _runtime_main_value("session_id") or None
+        )
+    return kwargs
 
 
 def _validate_llm_response(
@@ -6897,7 +6910,9 @@ def _prepare_aux_request(
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task)
     if extra_headers:
-        kwargs["extra_headers"] = dict(extra_headers)
+        # Merged, not assigned: _build_call_kwargs already put the conversation's affinity
+        # headers there (OpenCode / OAuth-proxy session id); a caller-supplied header wins.
+        kwargs["extra_headers"] = {**(kwargs.get("extra_headers") or {}), **extra_headers}
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     client_base = str(getattr(client, "base_url", "") or "")
     if _is_anthropic_compat_endpoint(request_provider, client_base):

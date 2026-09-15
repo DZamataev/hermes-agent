@@ -1369,14 +1369,25 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     affinity header rides on every OpenCode request regardless of transport
     (chat_completions / codex_responses / anthropic_messages all route
     OpenCode models). No-op for every other provider.
+
+    A declared ``anthropic_oauth_proxy`` route additionally gets
+    ``x-claude-code-session-id``: such a relay fronts several subscriptions and
+    tells conversations apart by that header alone, so without it every session
+    lands on whichever account the relay is currently using.
     """
+    from agent.claude_code_session import merge_claude_code_session_headers
     from agent.opencode_affinity import merge_opencode_session_headers
 
     kwargs = _build_api_kwargs_for_mode(agent, api_messages, tools_for_api)
-    return merge_opencode_session_headers(
+    merge_opencode_session_headers(
         kwargs,
         getattr(agent, "provider", None),
         getattr(agent, "base_url", None),
+        getattr(agent, "session_id", None),
+    )
+    return merge_claude_code_session_headers(
+        kwargs,
+        getattr(agent, "capabilities", None),
         getattr(agent, "session_id", None),
     )
 
