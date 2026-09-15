@@ -9,6 +9,7 @@ import {
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
 import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
+import { defaultRemarkPlugins } from 'streamdown'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -36,6 +37,7 @@ import {
 } from '@/lib/media'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
+import { FILE_REFERENCE_PREFIX, remarkFileReferences } from '@/lib/remark-file-references'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { isDirectiveInProgress } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
@@ -45,6 +47,8 @@ import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
+
+const fileReferencePlugins = [...Object.values(defaultRemarkPlugins), remarkFileReferences]
 
 const onboardingEnabled = isOnboardingEnabled()
 
@@ -260,6 +264,18 @@ function childrenToText(children: unknown): string {
 }
 
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
+  if (href?.startsWith(FILE_REFERENCE_PREFIX)) {
+    try {
+      return (
+        <PreviewAttachment source="explicit-link" target={decodeURIComponent(href.slice(FILE_REFERENCE_PREFIX.length))}>
+          {children}
+        </PreviewAttachment>
+      )
+    } catch {
+      return <span>{children}</span>
+    }
+  }
+
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
@@ -741,6 +757,7 @@ function MarkdownTextSurface({
         parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
         plugins={plugins}
         preprocess={preprocessWithTailRepair}
+        remarkPlugins={fileReferencePlugins}
       />
     </ErrorBoundary>
   )
