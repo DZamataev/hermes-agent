@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
@@ -10,13 +10,7 @@ import { previewName } from '@/lib/preview-targets'
 import { notifyError } from '@/store/notifications'
 import { $previewTabSources, closePreviewForSource, openPreview, type PreviewRecordSource } from '@/store/preview'
 
-interface PreviewAttachmentProps {
-  children?: ReactNode
-  source?: PreviewRecordSource
-  target: string
-}
-
-export function PreviewAttachment({ children, source = 'manual', target }: PreviewAttachmentProps) {
+export function PreviewAttachment({ source = 'manual', target }: { source?: PreviewRecordSource; target: string }) {
   const { t } = useI18n()
   // This link lives in one session's transcript; resolve it against THAT
   // session's cwd, not the primary chat's.
@@ -56,7 +50,7 @@ export function PreviewAttachment({ children, source = 'manual', target }: Previ
       return
     }
 
-    if (isActive && !children) {
+    if (isActive) {
       closePreviewForSource(target)
 
       return
@@ -129,23 +123,6 @@ export function PreviewAttachment({ children, source = 'manual', target }: Previ
         setDownloading(false)
       }
     }
-  }
-
-  if (children) {
-    return (
-      <a
-        aria-busy={opening || undefined}
-        className="ref wrap-anywhere"
-        href={`#file-ref/${encodeURIComponent(target)}`}
-        onClick={event => {
-          event.preventDefault()
-          void togglePreview()
-        }}
-        title={target}
-      >
-        {children}
-      </a>
-    )
   }
 
   return (

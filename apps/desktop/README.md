@@ -13,7 +13,7 @@
 <tr><td><b>Chat with the full agent</b></td><td>Streaming responses, live tool activity, structured tool summaries, and the same conversation history as every other Hermes surface.</td></tr>
 <tr><td><b>Side-by-side previews</b></td><td>Render web pages, files, and tool outputs in a right-hand pane while you keep chatting.</td></tr>
 <tr><td><b>File browser</b></td><td>Explore and preview the working directory without leaving the app.</td></tr>
-<tr><td><b>File references in chat</b></td><td>Click paths such as <code>docs/plan.md</code> in prose or inline code to open the file preview. Relative paths use that conversation’s working directory. Works in saved and streaming messages; fenced code and existing web links stay unchanged.</td></tr>
+<tr><td><b>File references in chat</b></td><td>Hold <kbd>Cmd</kbd>/<kbd>Ctrl</kbd> and hover a path such as <code>docs/plan.md</code> in prose or inline code: paths that exist underline and open in the file preview. Relative paths resolve against that conversation’s working directory, then its git root; a path that resolves to nothing stays plain text. Fenced code and existing web links are untouched.</td></tr>
 <tr><td><b>Voice</b></td><td>Talk to Hermes and hear it back.</td></tr>
 <tr><td><b>Settings & onboarding</b></td><td>Manage providers, models, tools, and credentials from a real UI. First-run setup gets you to your first message in seconds.</td></tr>
 <tr><td><b>Stays current</b></td><td>Built-in updates pull the latest agent and rebuild the app in place.</td></tr>
