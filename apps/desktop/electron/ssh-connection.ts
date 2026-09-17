@@ -319,13 +319,18 @@ function buildInteractiveSshArgs(conn, remoteCwd, connectTimeoutMs?, remoteComma
   const cwd = String(remoteCwd || '').trim()
 
   if (cwd) {
-    const q = `'${cwd.replace(/'/g, `'\\''`)}'`
-    args.push(`cd ${q} 2>/dev/null; exec "$SHELL" -l`)
+    args.push(`cd ${shellQuote(cwd)} 2>/dev/null; exec "$SHELL" -l`)
   } else {
     args.push('exec "$SHELL" -l')
   }
 
   return args
+}
+
+// Single-quote a string for a POSIX shell: wrap in quotes and escape embedded
+// quotes as '\''.
+function shellQuote(value: string) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
 }
 
 // Wrap a remote probe command in a POSIX watchdog so a hung remote CLI is
@@ -350,15 +355,24 @@ function withRemoteTimeout(remoteCommand, timeoutSecs = REMOTE_PROBE_TIMEOUT_SEC
 
   // Job control (`set -m`) puts the probe in its own process group so the
   // watchdog can also reach a grandchild left behind by a launcher that runs
-  // the CLI without exec. Shells that cannot enable it without a tty fall
-  // back to killing the direct child.
-  return (
+  // the CLI without exec.
+  const payload =
     `set -m 2>/dev/null; (${remoteCommand}) </dev/null & __htp=$!; set +m 2>/dev/null; ` +
     `(sleep ${secs} </dev/null >/dev/null 2>&1; kill -9 -- -$__htp 2>/dev/null; kill -9 $__htp 2>/dev/null) & __htw=$!; ` +
     `wait $__htp; __htrc=$?; ` +
     `kill $__htw 2>/dev/null; wait $__htw 2>/dev/null; ` +
     `exit $__htrc`
-  )
+
+  // Run the payload in a POSIX shell of our choosing instead of the remote
+  // user's login shell. `set -m 2>/dev/null` is only *silently* ignored by
+  // shells that cannot enable job control without a tty in sh/bash; zsh
+  // (the macOS default login shell) treats `set -m` off a tty as a FATAL
+  // "can't change option: -m" and aborts the whole command, so the probe
+  // returned an empty string and every capability check read as "the remote
+  // does not support this flag". Prefer bash — job control off a tty is what
+  // lets the watchdog reach a launcher's grandchild — and fall back to
+  // /bin/sh, which ignores the failure and still kills the direct child.
+  return `__htsh=$(command -v bash 2>/dev/null || echo /bin/sh); "$__htsh" -c ${shellQuote(payload)}`
 }
 
 // Bind the local end to 127.0.0.1 ONLY — never 0.0.0.0 — so the tunnel does not

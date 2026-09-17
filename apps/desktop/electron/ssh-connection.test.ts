@@ -1085,7 +1085,7 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
   assert.ok(wrapped.includes('sleep 15'), 'watchdog duration honored')
   assert.ok(wrapped.includes('kill -9'), 'watchdog kills the hung child remotely')
   assert.ok(!/(^|[ ;(])timeout[ ;]/.test(wrapped), 'no GNU timeout dependency')
-  assert.ok(wrapped.endsWith('exit $__htrc'), 'inner exit code propagated')
+  assert.ok(wrapped.includes('exit $__htrc'), 'inner exit code propagated')
   assert.ok(
     withRemoteTimeout('true').includes(`sleep ${REMOTE_PROBE_TIMEOUT_SECS}`),
     'defaults to REMOTE_PROBE_TIMEOUT_SECS'
@@ -1143,4 +1143,36 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
 
     assert.equal(grandStrays.trim(), '', 'watchdog killed the launcher’s grandchild too')
   }
+})
+
+test('withRemoteTimeout survives a login shell that treats `set -m` as fatal', async () => {
+  if (process.platform === 'win32') {
+    return
+  }
+
+  // zsh — the default macOS login shell, and what `ssh host cmd` runs — cannot
+  // enable job control without a tty and aborts the WHOLE command with
+  // "can't change option: -m" rather than honoring the `2>/dev/null`. A probe
+  // wrapped for that shell produced an empty string, so every capability check
+  // read as "the remote does not support this flag" on a fully up-to-date
+  // remote. The wrapper must therefore run its payload in a shell it chooses.
+  const zsh = await execFileAsync('sh', ['-c', 'command -v zsh || true']).then(r => r.stdout.trim())
+
+  if (!zsh) {
+    return
+  }
+
+  // Proof the hostile precondition is real on this host: bare `set -m` off a
+  // tty kills the rest of the zsh command line.
+  const { stdout: bare } = await execFileAsync(zsh, ['-c', 'set -m 2>/dev/null; echo REACHED']).then(
+    r => r,
+    e => ({ stdout: String(e?.stdout ?? '') })
+  )
+
+  assert.equal(bare.trim(), '', 'precondition: zsh aborts the command line on a failed `set -m`')
+
+  // The wrapper must still deliver the probe's stdout through that same shell.
+  const { stdout } = await execFileAsync(zsh, ['-c', withRemoteTimeout('echo hello', 5)])
+
+  assert.equal(stdout.trim(), 'hello', 'probe output survives a `set -m`-hostile login shell')
 })
