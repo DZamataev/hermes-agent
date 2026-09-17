@@ -1,11 +1,12 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type MouseEvent as ReactMouseEvent, type ReactNode, useEffect, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
 import { desktopGitRoot, readDesktopDir } from '@/lib/desktop-fs'
 import { resolveFilePath } from '@/lib/file-path-resolve'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { openPathInEditor, wantsExternalEditor } from '@/lib/open-in-editor'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { $pathModifierHeld } from '@/store/path-modifier'
@@ -15,6 +16,13 @@ interface FilePathCandidateProps {
   children: ReactNode
   path: string
 }
+
+/** Carries the PROVEN absolute path to the context menu (see `target.ts`). */
+export const RESOLVED_PATH_ATTR = 'data-file-resolved'
+
+/** Hover long enough to mean it. Sweeping the pointer across a paragraph
+ *  crosses many tokens; only a rest probes the filesystem. */
+const HOVER_INTENT_MS = 200
 
 const io = {
   gitRoot: (path: string) => desktopGitRoot(path),
@@ -42,11 +50,17 @@ function probeKey(cwd: string, path: string) {
 /**
  * A file path named in prose, openable once it is known to exist.
  *
- * Renders as ordinary text until the user holds the platform modifier AND the
- * path resolves against this session's cwd — the underline is a statement
- * that a file was found, not a guess from the token's shape. Resolution
- * therefore happens on hover rather than on click: an affordance that opens an
- * error dialog is worse than no affordance.
+ * Renders as ordinary text until the path resolves against this session's cwd
+ * AND the user holds the platform modifier — the underline is a statement that
+ * a file was found, not a guess from the token's shape. Resolution therefore
+ * happens on hover rather than on click: an affordance that opens an error
+ * dialog is worse than no affordance.
+ *
+ * Resting on a token resolves it whether or not the modifier is down, because
+ * the context menu has to know what it is offering BEFORE it paints, and a
+ * right-click is not preceded by a modifier. The probe is debounced and
+ * cached, so reading a paragraph costs nothing and the modifier path finds its
+ * answer already waiting.
  */
 export function FilePathCandidate({ children, path }: FilePathCandidateProps) {
   const { t } = useI18n()
@@ -68,31 +82,34 @@ export function FilePathCandidate({ children, path }: FilePathCandidateProps) {
     }
 
     // Nothing is known about this (cwd, path) yet, so the token must not claim
-    // anything either until a hover with the modifier pays for the answer.
+    // anything either until a hover pays for the answer.
     setTarget(null)
 
-    if (!armed || !hovered) {
+    if (!hovered) {
       return
     }
 
     let cancelled = false
 
-    void resolveFilePath(path, cwd, io).then(match => {
-      probed.set(key, match?.path ?? null)
+    const timer = setTimeout(() => {
+      void resolveFilePath(path, cwd, io).then(match => {
+        probed.set(key, match?.path ?? null)
 
-      if (!cancelled) {
-        setTarget(match?.path ?? null)
-      }
-    })
+        if (!cancelled) {
+          setTarget(match?.path ?? null)
+        }
+      })
+    }, HOVER_INTENT_MS)
 
     return () => {
       cancelled = true
+      clearTimeout(timer)
     }
-  }, [armed, hovered, cwd, path])
+  }, [hovered, cwd, path])
 
   const openable = armed && target !== null
 
-  async function open() {
+  async function openPreviewTab() {
     if (!target) {
       return
     }
@@ -110,11 +127,30 @@ export function FilePathCandidate({ children, path }: FilePathCandidateProps) {
     }
   }
 
+  function activate(event: ReactMouseEvent) {
+    if (!target) {
+      return
+    }
+
+    // Alt sends the path out of the app entirely; without it the rail keeps
+    // the file in view beside the conversation.
+    if (wantsExternalEditor(event.nativeEvent)) {
+      openPathInEditor(target)
+
+      return
+    }
+
+    void openPreviewTab()
+  }
+
   return (
     <span
       className={cn(openable && 'cursor-pointer underline decoration-dotted underline-offset-2')}
       data-file-path={path}
-      onClick={openable ? () => void open() : undefined}
+      // Present only once the file is proven to exist: the context menu builds
+      // its entries from this, so an unresolved token offers nothing.
+      {...(target ? { [RESOLVED_PATH_ATTR]: target } : {})}
+      onClick={openable ? activate : undefined}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       title={openable ? target || undefined : undefined}

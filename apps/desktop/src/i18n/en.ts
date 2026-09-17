@@ -4279,6 +4279,11 @@ export const en: Translations = {
   },
 
   contextMenu: {
+    file: {
+      openInHermes: 'Open in Hermes preview',
+      openInEditor: 'Open in editor',
+      copyPath: 'Copy file path'
+    },
     link: {
       openInApp: 'Open in in-app browser',
       openExternal: 'Open in external browser',
