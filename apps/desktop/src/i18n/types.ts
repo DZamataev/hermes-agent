@@ -4210,6 +4210,11 @@ export interface Translations {
   }
 
   contextMenu: {
+    file: {
+      openInHermes: string
+      openInEditor: string
+      copyPath: string
+    }
     link: {
       openInApp: string
       openExternal: string
