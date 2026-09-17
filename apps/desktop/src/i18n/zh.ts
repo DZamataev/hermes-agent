@@ -3973,6 +3973,11 @@ export const zh = defineLocale({
   },
 
   contextMenu: {
+    file: {
+      openInHermes: '在 Hermes 预览中打开',
+      openInEditor: '在编辑器中打开',
+      copyPath: '复制文件路径'
+    },
     link: {
       openInApp: '在应用内浏览器中打开',
       openExternal: '在外部浏览器中打开',

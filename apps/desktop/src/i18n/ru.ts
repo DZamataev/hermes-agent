@@ -3540,6 +3540,11 @@ export const ru = defineLocale({
     tabCount: count => `${count} ${RU_NOUN(count, 'вкладка', 'вкладки', 'вкладок')}`
   },
   contextMenu: {
+    file: {
+      openInHermes: 'Открыть в превью Hermes',
+      openInEditor: 'Открыть в редакторе',
+      copyPath: 'Копировать путь к файлу'
+    },
     link: {
       openInApp: 'Открыть во встроенном браузере',
       openExternal: 'Открыть во внешнем браузере',

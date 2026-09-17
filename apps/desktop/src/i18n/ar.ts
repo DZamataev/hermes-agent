@@ -2780,6 +2780,11 @@ export const ar = defineLocale({
     tabCount: count => `${count} تبويبات`
   },
   contextMenu: {
+    file: {
+      openInHermes: 'فتح في معاينة Hermes',
+      openInEditor: 'فتح في المحرر',
+      copyPath: 'نسخ مسار الملف'
+    },
     link: {
       openInApp: 'فتح في متصفح التطبيق',
       openExternal: 'فتح في المتصفح الخارجي',

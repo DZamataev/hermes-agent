@@ -19,7 +19,9 @@ import {
 import { type Translations, useI18n } from '@/i18n'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
 import { formatCombo } from '@/lib/keybinds/combo'
+import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
+import { openPathInEditor } from '@/lib/open-in-editor'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { openCommandPalette } from '@/store/command-palette'
 import { openPreview } from '@/store/preview'
@@ -191,6 +193,38 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
 
   const spellcheckAction = (action: { kind: 'add' | 'replace'; word: string }) => {
     withEditableFocus(() => void window.hermesDesktop?.contextMenuSpellcheck?.(action))
+  }
+
+  // A resolved file reference outranks the link section below it: the token is
+  // not an anchor, so the two never both appear, and this is the only menu
+  // entry that can act on a path the transcript merely mentioned.
+  if (target.filePath) {
+    sections.push([
+      <Item
+        icon="preview"
+        key="file-open-preview"
+        label={copy.file.openInHermes}
+        onSelect={() =>
+          void normalizeOrLocalPreviewTarget(target.filePath).then(preview => {
+            if (preview) {
+              openPreview(preview, 'explicit-link')
+            }
+          })
+        }
+      />,
+      <Item
+        icon="edit"
+        key="file-open-editor"
+        label={copy.file.openInEditor}
+        onSelect={() => openPathInEditor(target.filePath)}
+      />,
+      <Item
+        icon="copy"
+        key="file-copy-path"
+        label={copy.file.copyPath}
+        onSelect={() => void writeClipboardText(target.filePath)}
+      />
+    ])
   }
 
   if (linkUrl) {
