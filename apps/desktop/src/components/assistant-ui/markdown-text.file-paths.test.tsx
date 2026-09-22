@@ -97,6 +97,24 @@ it('never offers a path that does not exist, however plausible it looks', async 
   expect($previewTabs.get()).toHaveLength(0)
 })
 
+it('resolves a path cited with the line it was read at', async () => {
+  // The agent writes `…/plan.md:141`. The suffix belongs to the citation, not
+  // to the filename, so it must not be part of what is looked up on disk —
+  // and it must stay visible in the prose the reader clicks.
+  const { container } = render(<MarkdownTextContent isRunning={false} text="Смотри docs/plan.md:141 — там." />)
+  const token = container.querySelector('[data-file-path="docs/plan.md"]') as Element
+
+  expect(token.textContent).toBe('docs/plan.md:141')
+
+  hold()
+  fireEvent.mouseEnter(token)
+  await waitFor(() => expect(token.className).toContain('underline'))
+  fireEvent.click(token)
+  await waitFor(() =>
+    expect($previewTabs.get().some(tab => tab.target.url === 'file:///work/looky/docs/plan.md')).toBe(true)
+  )
+})
+
 it('keeps GFM tables rendering after the plugin list is extended', async () => {
   // The candidate plugin is appended to streamdown's defaults; replacing them
   // would silently drop table support from every transcript.
