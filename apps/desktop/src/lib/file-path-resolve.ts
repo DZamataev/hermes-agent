@@ -12,9 +12,16 @@
  * remote mode, and one listing answers for every candidate in that directory.
  */
 
+export interface FilePathDirEntry {
+  /** Basename, as it appears in the directory. */
+  name: string
+  /** The entry's own absolute path, as the filesystem reports it. */
+  path: string
+}
+
 export interface FilePathResolverIo {
-  /** Names of the entries in *dir*, or null when the directory cannot be read. */
-  listDir: (dir: string) => Promise<string[] | null>
+  /** Entries of *dir*, or null when the directory cannot be read. */
+  listDir: (dir: string) => Promise<FilePathDirEntry[] | null>
   /** Enclosing git repository root of *path*, or null when there is none. */
   gitRoot: (path: string) => Promise<string | null>
 }
@@ -32,6 +39,18 @@ function trimTrailingSlashes(value: string) {
 
 function isAbsolute(path: string) {
   return path.startsWith('/') || /^[a-z]:[\\/]/i.test(path) || path.startsWith('\\\\')
+}
+
+/**
+ * True for `~/…`, which is absolute to the USER but not to the filesystem.
+ *
+ * Joining it to the session cwd produces `<cwd>/~/…`, a path that cannot
+ * exist, so such a reference used to resolve never. It is passed through
+ * untouched instead: the desktop bridge expands the tilde on the way to the
+ * real filesystem, and the listing reports the entry's true absolute path.
+ */
+function isHomeRelative(path: string) {
+  return path === '~' || path.startsWith('~/') || path.startsWith('~\\')
 }
 
 function joinPath(base: string, relative: string) {
@@ -69,7 +88,7 @@ export async function filePathCandidates(
     return []
   }
 
-  if (isAbsolute(path)) {
+  if (isAbsolute(path) || isHomeRelative(path)) {
     return [{ base: 'cwd', path }]
   }
 
@@ -105,7 +124,7 @@ export async function resolveFilePath(
   io: FilePathResolverIo
 ): Promise<ResolvedFilePath | null> {
   const candidates = await filePathCandidates(rawPath, cwd, io)
-  const listings = new Map<string, Promise<string[] | null>>()
+  const listings = new Map<string, Promise<FilePathDirEntry[] | null>>()
 
   for (const candidate of candidates) {
     const { dir, name } = splitParent(candidate.path)
@@ -121,8 +140,14 @@ export async function resolveFilePath(
       listings.set(dir, listing)
     }
 
-    if ((await listing)?.includes(name)) {
-      return { base: candidate.base, path: candidate.path }
+    // Report the entry's OWN path rather than the candidate we asked about:
+    // that is what turns a `~/…` candidate into the absolute path every
+    // consumer needs — the menu, the `file://` opener and the preview rail
+    // all act on it, and none of them can expand a tilde themselves.
+    const entry = (await listing)?.find(row => row.name === name)
+
+    if (entry) {
+      return { base: candidate.base, path: entry.path || candidate.path }
     }
   }
 

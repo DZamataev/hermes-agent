@@ -17,11 +17,30 @@ function io(tree: Record<string, string[]> = TREE, gitRootOf: string | null = '/
     listDir: (dir: string) => {
       listed.push(dir)
 
-      return Promise.resolve(tree[dir] ?? null)
+      // The bridge reports each entry's own absolute path; for an ordinary
+      // directory that is just the listed dir plus the name.
+      return Promise.resolve(tree[dir]?.map(name => ({ name, path: `${dir}/${name}` })) ?? null)
     },
     listed
   }
 }
+
+it('resolves a home-relative path against the real home directory', async () => {
+  // `~/…` is not relative to the session: joining it to the cwd yields
+  // `/work/looky/~/…`, which cannot exist, so the reference silently never
+  // resolved. The bridge reports each entry's own absolute path, so the
+  // listing is what expands the tilde — the renderer never guesses a home.
+  const fs = {
+    gitRoot: () => Promise.resolve('/work/looky'),
+    listDir: (dir: string) =>
+      Promise.resolve(dir === '~/dev' ? [{ name: 'notes.md', path: '/Users/me/dev/notes.md' }] : null)
+  }
+
+  expect(await resolveFilePath('~/dev/notes.md', '/work/looky', fs)).toEqual({
+    base: 'cwd',
+    path: '/Users/me/dev/notes.md'
+  })
+})
 
 it('resolves a path that exists under the session cwd', async () => {
   expect(await resolveFilePath('docs/plan.md', '/work/looky', io())).toEqual({
