@@ -1,9 +1,11 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { RESOLVED_PATH_ATTR } from '@/components/chat/file-path-candidate'
+import { en } from '@/i18n/en'
 import type * as ExternalLink from '@/lib/external-link'
+import { pickRevealLabel } from '@/lib/file-manager'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 
 import { AppContextMenu } from './app-context-menu'
@@ -11,6 +13,7 @@ import { $contextMenu } from './store'
 import { resolveDomTarget } from './target'
 
 const opened: string[] = []
+const { revealed, state } = vi.hoisted(() => ({ revealed: [] as string[], state: { remote: false } }))
 
 vi.mock('@/lib/external-link', async importOriginal => ({
   ...(await importOriginal<typeof ExternalLink>()),
@@ -18,8 +21,16 @@ vi.mock('@/lib/external-link', async importOriginal => ({
 }))
 
 vi.mock('@/lib/desktop-fs', () => ({
-  isDesktopFsRemoteMode: () => false,
-  readDesktopFileText: () => Promise.resolve({ binary: false, language: 'markdown', text: '# plan' })
+  copyTextToClipboard: () => Promise.resolve(),
+  isDesktopFsRemoteMode: () => state.remote,
+  readDesktopFileText: () => Promise.resolve({ binary: false, language: 'markdown', text: '# plan' }),
+  renameDesktopPath: () => Promise.resolve(''),
+  revealDesktopPath: (path: string) => {
+    revealed.push(path)
+
+    return Promise.resolve()
+  },
+  trashDesktopPath: () => Promise.resolve()
 }))
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
@@ -35,6 +46,8 @@ function attach(html: string): HTMLElement {
 
 afterEach(() => {
   opened.length = 0
+  revealed.length = 0
+  state.remote = false
   $contextMenu.set(null)
   closeRightRail()
   cleanup()
@@ -78,6 +91,61 @@ it('offers both destinations for a resolved file, and the editor one opens the O
 
   expect(opened).toEqual(['file:///work/looky/docs/plan.md'])
   expect($previewTabs.get()).toHaveLength(0)
+})
+
+it('reveals a resolved file in the OS file manager', async () => {
+  desktopWindow.hermesDesktop = {
+    openExternal: vi.fn().mockResolvedValue(undefined),
+    writeClipboard: vi.fn().mockResolvedValue(undefined)
+  } as unknown as Window['hermesDesktop']
+
+  render(
+    <MemoryRouter>
+      <AppContextMenu />
+    </MemoryRouter>
+  )
+
+  const host = attach(`<span ${RESOLVED_PATH_ATTR}="/work/looky/docs/plan.md">docs/plan.md</span>`)
+
+  fireEvent.contextMenu(host.querySelector('span')!)
+
+  // The label names the host's own file manager, so assert through the same
+  // resolver the menu uses rather than freezing one platform's wording.
+  const label = pickRevealLabel(en.fileMenu.revealFinder, en.fileMenu.revealExplorer, en.fileMenu.revealFileManager)
+
+  fireEvent.click(await screen.findByText(label))
+
+  await waitFor(() => expect(revealed).toEqual(['/work/looky/docs/plan.md']))
+  expect(opened).toEqual([])
+})
+
+it('does not offer to reveal a path that lives on a remote gateway', async () => {
+  // `showItemInFolder` acts on THIS machine; a remote path would select
+  // nothing at all, so the entry must be absent rather than a silent no-op.
+  state.remote = true
+  desktopWindow.hermesDesktop = {
+    openExternal: vi.fn().mockResolvedValue(undefined),
+    writeClipboard: vi.fn().mockResolvedValue(undefined)
+  } as unknown as Window['hermesDesktop']
+
+  render(
+    <MemoryRouter>
+      <AppContextMenu />
+    </MemoryRouter>
+  )
+
+  const host = attach(`<span ${RESOLVED_PATH_ATTR}="/work/looky/docs/plan.md">docs/plan.md</span>`)
+
+  fireEvent.contextMenu(host.querySelector('span')!)
+
+  // The rest of the file section still paints — this is a narrowing, not a
+  // removal of the whole section.
+  expect(await screen.findByText('Copy file path')).toBeTruthy()
+  expect(
+    screen.queryByText(
+      pickRevealLabel(en.fileMenu.revealFinder, en.fileMenu.revealExplorer, en.fileMenu.revealFileManager)
+    )
+  ).toBeNull()
 })
 
 it('shows no file section when the click did not land on a resolved path', async () => {
