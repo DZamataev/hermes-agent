@@ -179,19 +179,50 @@ def _get_inherit_mcp_toolsets() -> bool:
 def _normalized_runtime_url(value: Any) -> str:
     return str(value or "").strip().rstrip("/")
 
-def _inherit_parent_capabilities(parent_agent, override_provider, override_base_url) -> Optional[dict]:
-    """Parent's endpoint-trust capability map for a child, or None. ``agent.capabilities`` is a trust decision scoped
-    to one provider+endpoint: inherited ONLY when the child runs the parent's exact route; any provider or base_url
-    override stays DEFAULT-DENY (matches the /model switch posture).
+def _child_route_capabilities(
+    parent_agent, override_provider, override_base_url, declared,
+    *, effective_provider=None, effective_model=None,
+) -> Dict[str, bool]:
+    """Endpoint-trust capability map for the route the child actually calls.
 
-    See #94036, #97292.
+    ``agent.capabilities`` is a trust decision scoped to one provider+endpoint AND one model
+    (``providers.<name>.models.<model>.capabilities`` overrides the provider-level map). An
+    unpinned child runs the parent's exact route and inherits its map; a pinned one runs its OWN
+    route and carries the map that route declares (never the parent's — that stays DEFAULT-DENY,
+    matching the /model switch posture). A route declaring nothing gets nothing, so the pin cannot
+    borrow trust.
+
+    ``delegation.model`` is a routing pin in its own right (#105347 keys pinning on
+    ``override_provider or override_base_url or model``, as the sibling fallback-chain decision in
+    this same kwargs dict already does), so a child pinned only to model B must not inherit model
+    A's map: on one endpoint declaring provider-level ``true`` and model-B ``false``, inheriting
+    would hand B wire authority its own route denies. A model-only pin therefore consumes the
+    declared map of its own model-qualified route.
+
+    See #94036, #97292, #105347.
     """
     if override_provider or override_base_url:
-        return None
-    parent_caps = getattr(parent_agent, "capabilities", None)
-    if not isinstance(parent_caps, dict):
-        return None
-    return {key: value for key, value in parent_caps.items() if isinstance(key, str) and isinstance(value, bool)}
+        return _filter_runtime_capabilities(declared)
+    parent_capabilities = getattr(parent_agent, "capabilities", None)
+    if not _model_pins_route(parent_agent, effective_model):
+        return _filter_runtime_capabilities(parent_capabilities)
+    # Model-only pin: same endpoint, different model — that model's own declaration owns the
+    # decision. An explicitly declared override still wins; otherwise resolve the route's config.
+    if isinstance(declared, dict) and declared:
+        return _filter_runtime_capabilities(declared)
+    from agent.auxiliary_oauth import declared_route_capabilities
+    route_provider = effective_provider or getattr(parent_agent, "requested_provider", None) \
+        or getattr(parent_agent, "provider", None)
+    return _filter_runtime_capabilities(declared_route_capabilities(route_provider, effective_model))
+
+
+def _model_pins_route(parent_agent, effective_model) -> bool:
+    """True when the child runs a different model than its parent (a routing pin, #105347)."""
+    child = str(effective_model or "").strip().lower()
+    if not child:
+        return False
+    return child != str(getattr(parent_agent, "model", "") or "").strip().lower()
+
 
 def _inherit_parent_endpoint(parent_agent, surface_base_url: Optional[str], surface_api_key: Any) -> tuple:
     """``(base_url, api_key)`` the parent is actually calling, taken from ONE source. ``parent_agent.base_url`` /
@@ -325,6 +356,11 @@ def _credential_bundle(model, provider, base_url, api_key, api_mode, request_ove
         "request_overrides": request_overrides, **extra,
     }
 
+def _filter_runtime_capabilities(value: Any) -> Dict[str, bool]:
+    """A runtime route's declared capability map, sanitized by its canonical owner."""
+    from hermes_cli.runtime_provider_custom import _filter_capabilities
+    return _filter_capabilities(value)
+
 def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
     """``delegation.base_url`` branch: provider/api_mode from URL heuristics."""
     # Shared URL-based api_mode detector so Anthropic-compatible direct endpoints (/anthropic suffix: Azure AI
@@ -350,11 +386,15 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
 
     # Preserve the configured provider's request personality on an explicit endpoint.
     request_overrides = None
+    capabilities: Dict[str, bool] = {}
     if v["provider"]:
         try:
             from hermes_cli.runtime_provider import resolve_runtime_provider
             runtime = resolve_runtime_provider(requested=v["provider"], target_model=v["model"])
             request_overrides = dict(runtime.get("request_overrides") or {}) or None
+            # Same class as the request personality: the endpoint the operator pinned declares its
+            # own wire semantics, and the child is the one calling it.
+            capabilities = _filter_runtime_capabilities(runtime.get("capabilities"))
 
         except Exception as exc:
             logger.debug(
@@ -365,6 +405,7 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
     return _credential_bundle(
         v["model"], provider, v["base_url"], v["api_key"], api_mode,
         _merge_request_overrides(request_overrides, explicit_request_overrides),
+        capabilities=capabilities,
     )
 
 def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
@@ -411,6 +452,11 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
         runtime.get("base_url"), api_key, runtime.get("api_mode"),
         _merge_request_overrides(runtime.get("request_overrides"), explicit_request_overrides) or {},
         command=pinned_command, args=list(runtime.get("args") or []),
+        # The pinned route's OWN endpoint trust. Endpoint-scoped capabilities are denied from the
+        # PARENT across an override, but this map belongs to the child's route: dropping it puts the
+        # child on a different wire than its own provider declares (an anthropic_oauth_proxy child
+        # loses the OAuth identity transform and upstream answers 429).
+        capabilities=_filter_runtime_capabilities(runtime.get("capabilities")),
     )
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
@@ -489,6 +535,7 @@ def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
     override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
+    override_capabilities: Optional[Dict[str, bool]] = None,
     routing_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
@@ -583,7 +630,9 @@ def _resolve_child_runtime(
     kwargs: Dict[str, Any] = {
         "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
         "provider": effective_provider, "requested_provider": effective_requested_provider,
-        "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
+        "capabilities": _child_route_capabilities(
+            parent_agent, override_provider, override_base_url, override_capabilities,
+            effective_provider=effective_provider, effective_model=effective_model),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,
         "reasoning_config": child_reasoning,
         # Resolve routing and recovery policy from the same configuration owner. A pinned provider, endpoint, or
