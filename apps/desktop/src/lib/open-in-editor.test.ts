@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest'
 
-import { fileUrlForPath, openPathInEditor, wantsExternalEditor } from './open-in-editor'
+import { canOpenPathInEditor, fileUrlForPath, openPathInEditor, wantsExternalEditor } from './open-in-editor'
 
 const opened: string[] = []
 
@@ -41,4 +41,28 @@ it('refuses a relative path rather than resolving it against the wrong directory
   openPathInEditor('docs/plan.md')
   openPathInEditor('   ')
   expect(opened).toEqual([])
+})
+
+it.each([
+  '/work/looky/setup.command',
+  '/work/looky/deploy.sh',
+  '/work/looky/Tool.app',
+  '/work/looky/run.bat',
+  '/work/looky/go.lnk',
+  '/work/looky/thing.desktop',
+  '/work/looky/LOUD.SH'
+])('never hands %s to the OS, which would run it', path => {
+  // The transcript's paths are written by the agent, and `shell.openPath`
+  // launches by file association — for these extensions that is execution,
+  // not opening. The reference stays previewable; only this exit is closed.
+  opened.length = 0
+  expect(canOpenPathInEditor(path)).toBe(false)
+  openPathInEditor(path)
+  expect(opened).toEqual([])
+})
+
+it('still opens the documents and sources a transcript is actually about', () => {
+  for (const path of ['/w/plan.md', '/w/App.tsx', '/w/data.json', '/w/shot.png', '/w/Makefile']) {
+    expect(canOpenPathInEditor(path)).toBe(true)
+  }
 })

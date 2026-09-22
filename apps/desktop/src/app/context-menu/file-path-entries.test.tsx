@@ -148,6 +148,30 @@ it('does not offer to reveal a path that lives on a remote gateway', async () =>
   ).toBeNull()
 })
 
+it('withholds the editor entry for a file the OS would execute', async () => {
+  // `shell.openPath` launches by association, so "open" on an agent-written
+  // `.command` means run it. The rest of the section stays: the file is still
+  // previewable and still revealable.
+  desktopWindow.hermesDesktop = {
+    openExternal: vi.fn().mockResolvedValue(undefined),
+    writeClipboard: vi.fn().mockResolvedValue(undefined)
+  } as unknown as Window['hermesDesktop']
+
+  render(
+    <MemoryRouter>
+      <AppContextMenu />
+    </MemoryRouter>
+  )
+
+  const host = attach(`<span ${RESOLVED_PATH_ATTR}="/work/looky/setup.command">setup.command</span>`)
+
+  fireEvent.contextMenu(host.querySelector('span')!)
+
+  expect(await screen.findByText('Open in Hermes preview')).toBeTruthy()
+  expect(screen.getByText('Copy file path')).toBeTruthy()
+  expect(screen.queryByText('Open in editor')).toBeNull()
+})
+
 it('shows no file section when the click did not land on a resolved path', async () => {
   desktopWindow.hermesDesktop = {
     openExternal: vi.fn().mockResolvedValue(undefined),

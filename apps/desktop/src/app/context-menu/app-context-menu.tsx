@@ -23,7 +23,7 @@ import { pickRevealLabel } from '@/lib/file-manager'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
-import { openPathInEditor } from '@/lib/open-in-editor'
+import { canOpenPathInEditor, openPathInEditor } from '@/lib/open-in-editor'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { openCommandPalette } from '@/store/command-palette'
 import { revealFile } from '@/store/file-actions'
@@ -216,12 +216,17 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
             })
           }
         />,
-        <Item
-          icon="edit"
-          key="file-open-editor"
-          label={copy.file.openInEditor}
-          onSelect={() => openPathInEditor(target.filePath)}
-        />,
+        // Executables are deliberately absent: `shell.openPath` would RUN an
+        // agent-written `.command`/`.sh`. The file stays previewable and
+        // revealable — only the exit that executes is withheld.
+        canOpenPathInEditor(target.filePath) ? (
+          <Item
+            icon="edit"
+            key="file-open-editor"
+            label={copy.file.openInEditor}
+            onSelect={() => openPathInEditor(target.filePath)}
+          />
+        ) : null,
         // Revealing goes through Electron's `shell.showItemInFolder`, which
         // acts on THIS machine's filesystem — a path that lives on a remote
         // gateway would silently select nothing, so the entry is local-only
