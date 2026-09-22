@@ -261,6 +261,28 @@ its turns (auxiliary calls — compression, titles, vision — send the main tur
 value so they are not mistaken for a separate conversation). Routes that did
 not declare the capability send no such header.
 
+Like every capability, this one is resolved per provider **and per model**, so a
+relay that forwards only part of its catalogue to Anthropic can say so:
+
+```yaml
+providers:
+  mixed-relay:
+    api: https://relay.internal.example.com
+    transport: anthropic_messages
+    key_env: MIXED_RELAY_TOKEN
+    capabilities:
+      anthropic_oauth_proxy: true
+    models:
+      qwen3-coder:
+        anthropic_oauth_proxy: false   # served from the relay's own pool, not Anthropic
+```
+
+The per-model value wins over the provider-level one in both directions. It
+follows the model everywhere the decision is made — the main turn, auxiliary
+calls (compression, titles, vision), a `/model` switch, fallback and resume, and
+a subagent pinned with `delegation.model` — so a model never borrows another
+model's wire policy on a shared endpoint.
+
 For a gateway that resolves a bare model alias only after receiving the
 request, opt the alias into prompt-cache markers with the per-model
 `prompt_caching` capability:

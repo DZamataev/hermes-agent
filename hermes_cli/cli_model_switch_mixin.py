@@ -446,22 +446,25 @@ class CLIModelSwitchMixin:
             if stored_api_mode:
                 self.api_mode = stored_api_mode
         # Capabilities are model-specific even when the provider stays the same, so the resumed route
-        # is always re-resolved. A managed (llama.cpp) resume must not pin the resolution to the
-        # stored loopback URL: the supervisor owns the live port, and last boot's URL (an ephemeral
-        # fallback when 18434 was busy) may be dead. A launch-time --base-url for this same provider
-        # is user intent and keeps winning.
-        managed_repin = managed and not (getattr(self, "_explicit_base_url", None) and not provider_changed)
+        # is re-resolved. A managed (llama.cpp) resume must not pin the resolution to the stored
+        # loopback URL: the supervisor owns the live port, and last boot's URL (an ephemeral fallback
+        # when 18434 was busy) may be dead. A launch-time --base-url for this same provider is user
+        # intent: it keeps winning, and re-resolution is skipped entirely so nothing can re-point the
+        # session at the local supervisor — that route stays exactly as the user launched it.
+        managed_pinned_by_user = managed and bool(getattr(self, "_explicit_base_url", None)) and not provider_changed
+        managed_repin = managed and not managed_pinned_by_user
         resolved = {}
-        try:
-            from hermes_cli.runtime_provider import resolve_runtime_provider
-            resolved = resolve_runtime_provider(
-                requested=self.provider, target_model=stored_model,
-                explicit_base_url=None if managed_repin else (stored_base_url or None),
-            )
-        except Exception:
-            if managed_repin and stored_base_url:
-                self.base_url = stored_base_url
-            logger.debug("Runtime re-resolution for resumed session failed", exc_info=True)
+        if not managed_pinned_by_user:
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                resolved = resolve_runtime_provider(
+                    requested=self.provider, target_model=stored_model,
+                    explicit_base_url=None if managed_repin else (stored_base_url or None),
+                )
+            except Exception:
+                if managed_repin and stored_base_url:
+                    self.base_url = stored_base_url
+                logger.debug("Runtime re-resolution for resumed session failed", exc_info=True)
         restored_capabilities = dict(resolved.get("capabilities") or {})
         self._provider_capabilities = restored_capabilities
         if managed_repin:

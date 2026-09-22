@@ -112,6 +112,13 @@ def _lift_common_custom_fields(entry: Dict[str, Any], result: Dict[str, Any], *,
     _lift_extra_headers(entry, result)
     if api_mode:
         result["api_mode"] = api_mode
+    # The per-model block travels with the normalized entry: capabilities are resolved per provider
+    # AND per model (_lift_model_capabilities), and the model is known only later — at runtime
+    # resolution (_apply_custom_provider_extras) or at an auxiliary/child route. Dropping it here
+    # silently reduced every per-model override to the provider-level value.
+    models = entry.get("models")
+    if isinstance(models, dict):
+        result["models"] = dict(models)
 
     _lift_model_capabilities(entry, None, result)
 

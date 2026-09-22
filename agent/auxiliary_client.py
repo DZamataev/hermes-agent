@@ -4901,7 +4901,7 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
     # looks like; the same declaration gates ``_reasoning_config`` in _build_call_kwargs.
     api_mode = req.api_mode or _profile_declared_messages_wire(req.provider)
     from agent.auxiliary_oauth import runtime_oauth_proxy
-    force_oauth = bool(runtime_oauth_proxy(req.main_runtime, req.provider, base_url_str))
+    force_oauth = bool(runtime_oauth_proxy(req.main_runtime, req.provider, base_url_str, final_model_str))
     return _maybe_wrap_anthropic(
         client_obj, final_model_str, api_key_str, base_url_str, api_mode,
         force_oauth=force_oauth,
@@ -5155,13 +5155,10 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # the Anthropic SDK sees the original (un-rewritten) URL.
     # Mirrors the anonymous-custom branch in _try_custom_endpoint(). See #15033.
     if entry_api_mode == "anthropic_messages":
-        entry_capabilities = custom_entry.get("capabilities")
+        # Model-qualified: two models on this one relay may declare different values, and this
+        # decides Bearer vs x-api-key plus the Claude Code transforms on the actual request.
         from agent.auxiliary_oauth import runtime_oauth_proxy
-        runtime_oauth = runtime_oauth_proxy(req.main_runtime, req.provider, custom_base)
-        force_oauth = runtime_oauth if runtime_oauth is not None else bool(
-            isinstance(entry_capabilities, dict)
-            and entry_capabilities.get("anthropic_oauth_proxy") is True
-        )
+        force_oauth = bool(runtime_oauth_proxy(req.main_runtime, req.provider, custom_base, final_model))
         try:
             from agent.anthropic_adapter import build_anthropic_client
             from agent.anthropic_credentials import anthropic_route_is_oauth
@@ -6681,12 +6678,13 @@ def _build_call_kwargs(
     # Conversation affinity (OpenCode relay, opt-in custom-provider header, OAuth-proxy relay) —
     # same key as the main turn so compression/title/vision calls stay on the conversation's warm
     # backend, and so an OAuth relay recognises them as that conversation instead of pinning a
-    # second account. The proxy header is scoped by runtime_oauth_proxy: same endpoint, same provider.
+    # second account. The proxy header is scoped by runtime_oauth_proxy: same provider, endpoint
+    # and model, so a model declaring itself off this relay's OAuth policy sends no such header.
     from agent.auxiliary_oauth import runtime_oauth_proxy
     from agent.opencode_affinity import merge_session_affinity_headers
     aux_capabilities = (
         {"anthropic_oauth_proxy": True}
-        if runtime_oauth_proxy(_normalize_main_runtime(None), provider, str(base_url or ""))
+        if runtime_oauth_proxy(_normalize_main_runtime(None), provider, str(base_url or ""), model)
         else None
     )
     return merge_session_affinity_headers(
