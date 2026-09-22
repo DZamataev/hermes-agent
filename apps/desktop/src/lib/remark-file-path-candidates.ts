@@ -13,15 +13,28 @@ import type { PhrasingContent, Root, RootContent } from 'mdast'
 
 // Deliberately conservative: a slash-qualified file, or a familiar standalone
 // document name. Domains, commands, and incomplete streaming paths stay prose.
-const FILE_PATH =
-  /^(?:[\p{L}\p{N}_~./-]+\/)[\p{L}\p{N}_.-]+\.[a-z\d]{1,12}$|^[\p{L}\p{N}_-]+\.(?:md|markdown|mdown|txt|json|yaml|yml|toml|csv|pdf)$/iu
+// The extension ceiling is 16 because real project files reach it —
+// `.xcworkspacedata` is 15, `.entitlements` 12.
+const POSIX_PATH = String.raw`(?:[\p{L}\p{N}_~./-]+\/)[\p{L}\p{N}_.-]+\.[a-z\d]{1,16}`
+// A drive path (`C:\dir\file.ts`, `C:/dir/file.ts`) or a UNC share
+// (`\\server\share\file.txt`). Both are absolute to the resolver and are
+// normalized by the `file://` encoder, so only the marker was keeping Windows
+// paths from ever becoming candidates.
+const WINDOWS_PATH = String.raw`(?:[a-z]:[\\/]|\\\\[\p{L}\p{N}_.-]+\\)[\p{L}\p{N}_.\\/-]*[\p{L}\p{N}_.-]+\.[a-z\d]{1,16}`
+const DOCUMENT_NAME = String.raw`[\p{L}\p{N}_-]+\.(?:md|markdown|mdown|txt|json|yaml|yml|toml|csv|pdf)`
+
+const FILE_PATH = new RegExp(`^(?:${WINDOWS_PATH}|${POSIX_PATH}|${DOCUMENT_NAME})$`, 'iu')
 
 // A path is routinely cited with the line (and column) it was read at —
 // `…/VideoMessageBubble.tsx:141`. That suffix belongs to the reference, not to
 // the filename, so the token carries it and the candidate does not.
 const LINE_SUFFIX = /:\d+(?::\d+)?$/
 
-const FILE_TOKEN = /(^|[\s([“«])([\p{L}\p{N}_~./-]+(?::\d+(?::\d+)?)?\.*)(?=$|[\s)\],;:!?»”])/gu
+// Backslashes and the drive colon join the token body for Windows' sake. The
+// FILE_PATH test above is what still rejects a `host:port` or a clock time —
+// this only decides where a token starts and ends.
+const FILE_TOKEN =
+  /(^|[\s([“«])([\p{L}\p{N}_~./\\-]+(?::[\\/][\p{L}\p{N}_.\\/-]+)?(?::\d+(?::\d+)?)?\.*)(?=$|[\s)\],;:!?»”])/gu
 
 /** The filename inside a `path:line[:col]` reference. */
 function withoutLineSuffix(token: string) {

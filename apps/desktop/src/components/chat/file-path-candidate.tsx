@@ -6,7 +6,7 @@ import { useI18n } from '@/i18n'
 import { desktopGitRoot, readDesktopDir } from '@/lib/desktop-fs'
 import { resolveFilePath } from '@/lib/file-path-resolve'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
-import { openPathInEditor, wantsExternalEditor } from '@/lib/open-in-editor'
+import { canOpenPathInEditor, openPathInEditor, wantsExternalEditor } from '@/lib/open-in-editor'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { $pathModifierHeld } from '@/store/path-modifier'
@@ -29,7 +29,7 @@ const io = {
   listDir: async (dir: string) => {
     const result = await readDesktopDir(dir)
 
-    return result.error ? null : result.entries.map(entry => entry.name)
+    return result.error ? null : result.entries.map(entry => ({ name: entry.name, path: entry.path }))
   }
 }
 
@@ -133,8 +133,10 @@ export function FilePathCandidate({ children, path }: FilePathCandidateProps) {
     }
 
     // Alt sends the path out of the app entirely; without it the rail keeps
-    // the file in view beside the conversation.
-    if (wantsExternalEditor(event.nativeEvent)) {
+    // the file in view beside the conversation. An executable has no way out
+    // — `shell.openPath` would run it — so the gesture falls back to the
+    // preview rather than doing nothing at all.
+    if (wantsExternalEditor(event.nativeEvent) && canOpenPathInEditor(target)) {
       openPathInEditor(target)
 
       return
