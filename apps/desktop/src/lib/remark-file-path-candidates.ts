@@ -16,7 +16,17 @@ import type { PhrasingContent, Root, RootContent } from 'mdast'
 const FILE_PATH =
   /^(?:[\p{L}\p{N}_~./-]+\/)[\p{L}\p{N}_.-]+\.[a-z\d]{1,12}$|^[\p{L}\p{N}_-]+\.(?:md|markdown|mdown|txt|json|yaml|yml|toml|csv|pdf)$/iu
 
-const FILE_TOKEN = /(^|[\s([“«])([\p{L}\p{N}_~./-]+)(?=$|[\s)\],;:!?»”])/gu
+// A path is routinely cited with the line (and column) it was read at —
+// `…/VideoMessageBubble.tsx:141`. That suffix belongs to the reference, not to
+// the filename, so the token carries it and the candidate does not.
+const LINE_SUFFIX = /:\d+(?::\d+)?$/
+
+const FILE_TOKEN = /(^|[\s([“«])([\p{L}\p{N}_~./-]+(?::\d+(?::\d+)?)?\.*)(?=$|[\s)\],;:!?»”])/gu
+
+/** The filename inside a `path:line[:col]` reference. */
+function withoutLineSuffix(token: string) {
+  return token.replace(LINE_SUFFIX, '')
+}
 
 /** Marks the mdast node carrying a candidate path; read by the renderer. */
 export const FILE_PATH_NODE_DATA = 'hermesFilePath'
@@ -58,13 +68,16 @@ export function remarkFilePathCandidates() {
       const children: RootContent[] = []
 
       for (const child of node.children) {
-        if (child.type === 'inlineCode' && FILE_PATH.test(child.value)) {
-          children.push(candidate(child.value, [child]))
+        if (child.type === 'inlineCode' && FILE_PATH.test(withoutLineSuffix(child.value))) {
+          children.push(candidate(withoutLineSuffix(child.value), [child]))
         } else if (child.type === 'text') {
           let cursor = 0
 
           for (const match of child.value.matchAll(FILE_TOKEN)) {
-            const path = match[2].replace(/\.+$/, '')
+            // The token is what the reader sees and clicks — line suffix
+            // included; the candidate is the filename inside it.
+            const token = match[2].replace(/\.+$/, '')
+            const path = withoutLineSuffix(token)
 
             if (!FILE_PATH.test(path)) {
               continue
@@ -72,8 +85,8 @@ export function remarkFilePathCandidates() {
 
             const start = match.index + match[1].length
             children.push({ type: 'text', value: child.value.slice(cursor, start) })
-            children.push(candidate(path, [{ type: 'text', value: path }]))
-            cursor = start + path.length
+            children.push(candidate(path, [{ type: 'text', value: token }]))
+            cursor = start + token.length
           }
 
           children.push({ ...child, value: child.value.slice(cursor) })
