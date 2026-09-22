@@ -17,13 +17,16 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { type Translations, useI18n } from '@/i18n'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
+import { pickRevealLabel } from '@/lib/file-manager'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
 import { openPathInEditor } from '@/lib/open-in-editor'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { openCommandPalette } from '@/store/command-palette'
+import { revealFile } from '@/store/file-actions'
 import { openPreview } from '@/store/preview'
 import { toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
@@ -199,32 +202,46 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
   // not an anchor, so the two never both appear, and this is the only menu
   // entry that can act on a path the transcript merely mentioned.
   if (target.filePath) {
-    sections.push([
-      <Item
-        icon="preview"
-        key="file-open-preview"
-        label={copy.file.openInHermes}
-        onSelect={() =>
-          void normalizeOrLocalPreviewTarget(target.filePath).then(preview => {
-            if (preview) {
-              openPreview(preview, 'explicit-link')
-            }
-          })
-        }
-      />,
-      <Item
-        icon="edit"
-        key="file-open-editor"
-        label={copy.file.openInEditor}
-        onSelect={() => openPathInEditor(target.filePath)}
-      />,
-      <Item
-        icon="copy"
-        key="file-copy-path"
-        label={copy.file.copyPath}
-        onSelect={() => void writeClipboardText(target.filePath)}
-      />
-    ])
+    sections.push(
+      [
+        <Item
+          icon="preview"
+          key="file-open-preview"
+          label={copy.file.openInHermes}
+          onSelect={() =>
+            void normalizeOrLocalPreviewTarget(target.filePath).then(preview => {
+              if (preview) {
+                openPreview(preview, 'explicit-link')
+              }
+            })
+          }
+        />,
+        <Item
+          icon="edit"
+          key="file-open-editor"
+          label={copy.file.openInEditor}
+          onSelect={() => openPathInEditor(target.filePath)}
+        />,
+        // Revealing goes through Electron's `shell.showItemInFolder`, which
+        // acts on THIS machine's filesystem — a path that lives on a remote
+        // gateway would silently select nothing, so the entry is local-only
+        // (the same rule the file trees apply).
+        isDesktopFsRemoteMode() ? null : (
+          <Item
+            icon="folder-opened"
+            key="file-reveal"
+            label={pickRevealLabel(t.fileMenu.revealFinder, t.fileMenu.revealExplorer, t.fileMenu.revealFileManager)}
+            onSelect={() => void revealFile(target.filePath)}
+          />
+        ),
+        <Item
+          icon="copy"
+          key="file-copy-path"
+          label={copy.file.copyPath}
+          onSelect={() => void writeClipboardText(target.filePath)}
+        />
+      ].filter(Boolean)
+    )
   }
 
   if (linkUrl) {
