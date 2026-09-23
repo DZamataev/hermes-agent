@@ -231,6 +231,49 @@ def test_session_affinity_header_follows_the_model_not_the_endpoint(relay):
     assert header_for(TRUSTLESS_MODEL) is None
 
 
+# ── a slot that arrives with its own resolved endpoint (MoA) ─────────────────
+
+@pytest.mark.parametrize(
+    "provider,model,expected",
+    [
+        ("relay", TRUSTED_MODEL, True),
+        ("relay", TRUSTLESS_MODEL, False),
+        ("custom:relay", TRUSTED_MODEL, True),
+        ("inverse", TRUSTED_MODEL, True),
+        ("inverse", TRUSTLESS_MODEL, False),
+    ],
+)
+def test_moa_slot_with_resolved_endpoint_keeps_its_named_providers_policy(relay, provider, model, expected):
+    """A MoA slot is sent with the base_url/api_key/api_mode its provider resolved to.
+
+    The explicit endpoint must not flatten the named provider into anonymous ``custom``: the
+    policy is looked up by provider name, so the flattened call went out without the OAuth wire
+    and a relay answered 429 on every reference and aggregator call while the main session on
+    the same relay and model kept working.
+    """
+    from agent.auxiliary_client import call_llm
+    from agent.moa_loop import _slot_runtime
+
+    runtime = _slot_runtime({"provider": provider, "model": model})
+    assert runtime.get("base_url") == URL
+    call_llm(
+        task="moa_aggregator", messages=[{"role": "user", "content": "hello"}], max_tokens=32,
+        main_runtime={"provider": "moa", "base_url": "moa://local", "model": "simple"}, **runtime,
+    )
+    assert_oauth_wire(relay[-1], expected)
+
+
+def test_an_unrelated_explicit_endpoint_still_routes_as_custom(relay):
+    """Only the provider's OWN endpoint keeps its name; another URL is a different route."""
+    from agent.auxiliary_client import _resolve_task_provider_model
+
+    assert _resolve_task_provider_model(None, "relay", TRUSTED_MODEL, URL, KEY)[0] == "relay"
+    assert _resolve_task_provider_model(None, "relay", TRUSTED_MODEL, f"{URL}/", KEY)[0] == "relay"
+    assert _resolve_task_provider_model(
+        None, "relay", TRUSTED_MODEL, "https://elsewhere.example.com", KEY,
+    )[0] == "custom"
+
+
 def test_an_unknown_model_keeps_the_provider_level_policy(relay):
     """A caller that resolves no per-model entry still gets the provider's declared map."""
     from agent.auxiliary_oauth import declared_oauth_proxy

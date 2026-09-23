@@ -6049,6 +6049,23 @@ def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
         }
 
 
+def _is_named_provider_endpoint(prov: Optional[str], base_url: Optional[str]) -> bool:
+    """True when *base_url* is the named custom provider's own endpoint (MoA slots, pinned routes).
+
+    Such a call is that provider, not an anonymous ``custom`` endpoint: its per-provider and
+    per-model declarations (``capabilities.anthropic_oauth_proxy``) are looked up by name, so
+    flattening it strips the wire policy. Another URL under the same name stays ``custom``.
+    """
+    name = str(prov or "").strip().lower()
+    if not name or name in {"auto", "custom"} or not base_url:
+        return False
+    from hermes_cli.route_identity import normalize_route_base_url
+    from hermes_cli.runtime_provider import _get_named_custom_provider
+    entry = _get_named_custom_provider(name)
+    own_base = str((entry or {}).get("base_url") or "")
+    return bool(own_base) and normalize_route_base_url(own_base) == normalize_route_base_url(base_url)
+
+
 def _resolve_task_provider_model(
     task: str = None, provider: str = None, model: str = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -6110,7 +6127,11 @@ def _resolve_task_provider_model(
         if not api_key:
             api_key = cfg_api_key
     if base_url:
-        kept = provider if _preserve_provider_with_base_url(provider) else "custom"
+        kept = (
+            provider
+            if _preserve_provider_with_base_url(provider) or _is_named_provider_endpoint(provider, base_url)
+            else "custom"
+        )
         return kept, resolved_model, base_url, api_key, resolved_api_mode
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode
