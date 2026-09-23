@@ -3702,6 +3702,7 @@ export interface Translations {
     file: {
       openInHermes: string
       openInEditor: string
+      openWith: string
       copyPath: string
     }
     link: {

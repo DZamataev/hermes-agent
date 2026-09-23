@@ -3303,6 +3303,7 @@ export const zhHant = defineLocale({
     file: {
       openInHermes: '在 Hermes 預覽中開啟',
       openInEditor: '在編輯器中開啟',
+      openWith: '開啟方式…',
       copyPath: '複製檔案路徑'
     },
     link: {

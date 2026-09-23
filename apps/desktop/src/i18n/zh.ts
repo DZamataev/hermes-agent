@@ -4088,6 +4088,7 @@ export const zh = defineLocale({
     file: {
       openInHermes: '在 Hermes 预览中打开',
       openInEditor: '在编辑器中打开',
+      openWith: '打开方式…',
       copyPath: '复制文件路径'
     },
     link: {

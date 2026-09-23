@@ -2886,6 +2886,7 @@ export const ar = defineLocale({
     file: {
       openInHermes: 'فتح في معاينة Hermes',
       openInEditor: 'فتح في المحرر',
+      openWith: 'فتح باستخدام…',
       copyPath: 'نسخ مسار الملف'
     },
     link: {

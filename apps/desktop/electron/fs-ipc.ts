@@ -2,6 +2,7 @@
 // surfaces use: directory reads, reveal/open in the OS file manager, plugin
 // roots + git installs, rename/write/trash. Extracted from main.ts; path
 // hardening, HERMES_HOME resolution, and the git binary stay injected.
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -64,6 +65,44 @@ export function registerFsIpc({
       return true
     } catch {
       return false
+    }
+  })
+
+  // Open the OS "open with" application picker for a file.
+  //
+  // Windows only, on purpose. `rundll32 shell32.dll,OpenAs_RunDLL` is a REAL
+  // picker: the user chooses the application, so nothing is launched by file
+  // association. macOS and Linux have no equivalent single command — the
+  // tempting fallback is `shell.openPath`, but that IS launch-by-association
+  // and would smuggle back the execution path the editor entry deliberately
+  // withholds. An absent menu entry beats one that silently does something
+  // else than its label says, so the renderer hides it off Windows.
+  ipcMain.handle('hermes:fs:openWith', async (_event, targetPath) => {
+    const target = String(targetPath || '').trim()
+
+    if (!target || process.platform !== 'win32') {
+      return { ok: false, error: 'unsupported' }
+    }
+
+    try {
+      const local = resolveRequestedPathForIpc(expandUserPath(target), { purpose: 'Open with' })
+
+      if (!fs.existsSync(local)) {
+        return { ok: false, error: 'ENOENT' }
+      }
+
+      // OpenAs_RunDLL parses its argument as a native Windows path.
+      const child = spawn('rundll32.exe', ['shell32.dll,OpenAs_RunDLL', local.replace(/\//g, '\\')], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: false
+      })
+
+      child.unref()
+
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
   })
 

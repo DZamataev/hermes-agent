@@ -3636,6 +3636,7 @@ export const ru = defineLocale({
     file: {
       openInHermes: 'Открыть в превью Hermes',
       openInEditor: 'Открыть в редакторе',
+      openWith: 'Открыть с помощью…',
       copyPath: 'Копировать путь к файлу'
     },
     link: {
