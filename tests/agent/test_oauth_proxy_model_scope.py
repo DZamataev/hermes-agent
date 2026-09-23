@@ -263,15 +263,162 @@ def test_moa_slot_with_resolved_endpoint_keeps_its_named_providers_policy(relay,
     assert_oauth_wire(relay[-1], expected)
 
 
-def test_an_unrelated_explicit_endpoint_still_routes_as_custom(relay):
-    """Only the provider's OWN endpoint keeps its name; another URL is a different route."""
+def _rewrite_config(**sections):
+    """Merge *sections* into the fixture's config.yaml (the relay fixture owns HERMES_HOME)."""
+    import os
+    from pathlib import Path
+
+    path = Path(os.environ["HERMES_HOME"]) / "config.yaml"
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    for key, value in sections.items():
+        if isinstance(value, dict) and isinstance(config.get(key), dict):
+            config[key].update(value)
+        else:
+            config[key] = value
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+
+def assert_no_oauth_identity(request) -> None:
+    """A request that carries none of the relay's declared OAuth identity."""
+    assert not str(request.headers.get("authorization", "")).startswith("Bearer ")
+    assert "oauth-2025-04-20" not in request.headers.get("anthropic-beta", "")
+    assert "claude-code" not in request.headers.get("anthropic-beta", "")
+
+
+@pytest.mark.parametrize(
+    "explicit_base,kept",
+    [
+        (URL, "relay"),
+        (f"{URL}/", "relay"),
+        # A resolver may hand the endpoint back with /v1 added (OpenCode-family routing): same origin.
+        (f"{URL}/v1", "relay"),
+        ("https://relay.example.com:443", "relay"),
+        # Same host, another origin: a different trust boundary, a different route.
+        ("https://relay.example.com:8443", "custom"),
+        ("http://relay.example.com", "custom"),
+        ("https://elsewhere.example.com", "custom"),
+    ],
+)
+def test_explicit_endpoint_keeps_the_name_only_at_the_providers_own_origin(relay, explicit_base, kept):
     from agent.auxiliary_client import _resolve_task_provider_model
 
+    assert _resolve_task_provider_model(None, "relay", TRUSTED_MODEL, explicit_base, KEY)[0] == kept
+
+
+def test_kept_identity_is_the_canonical_name(relay):
+    """One provider, one identity: spelling must not split the client cache or the logs."""
+    from agent.auxiliary_client import _resolve_task_provider_model
+
+    for spelling in ("ReLaY", " relay ", "custom:relay"):
+        assert _resolve_task_provider_model(None, spelling, TRUSTED_MODEL, URL, KEY)[0] in {
+            "relay", "custom:relay",
+        }
+    assert _resolve_task_provider_model(None, "ReLaY", TRUSTED_MODEL, URL, KEY)[0] == "relay"
+
+
+def test_ownership_check_reads_no_credential(relay, monkeypatch):
+    """Route ownership runs on every aux call; it must not resolve the provider's secret."""
+    from hermes_cli import runtime_provider_custom
+    from hermes_cli.route_identity import named_provider_owns_endpoint
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("ownership check read a credential")
+
+    monkeypatch.setattr(runtime_provider_custom, "get_secret_str", refuse)
+    assert named_provider_owns_endpoint("relay", URL) is True
+    assert named_provider_owns_endpoint("relay", "https://elsewhere.example.com") is False
+
+
+def test_a_builtin_name_in_providers_does_not_take_over_the_builtin(relay):
+    """``providers.anthropic`` pointing at the relay must not make the built-in ``anthropic`` a
+    named provider: the canonical name keeps its catalog branch, the entry stays unreachable by it."""
+    from hermes_cli.route_identity import named_provider_owns_endpoint
+    from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+
+    _rewrite_config(providers={"anthropic": {"api": URL, "transport": "anthropic_messages"}})
+    assert _get_named_custom_provider("anthropic") is None
+    assert named_provider_owns_endpoint("anthropic", URL) is False
+    # An entry merely matching an alias (``kimi`` → ``kimi-coding``) is still the user's target.
+    _rewrite_config(providers={"kimi": {"api": URL, "transport": "anthropic_messages"}})
+    assert named_provider_owns_endpoint("kimi", URL) is True
+
+
+def test_a_malformed_entry_is_not_an_owner_and_does_not_raise(relay):
+    """A broken sibling entry must not turn every aux call with a base_url into an exception."""
+    from agent.auxiliary_client import _resolve_task_provider_model
+
+    _rewrite_config(providers={"broken": {"api": 12345, "transport": "anthropic_messages"}})
+    assert _resolve_task_provider_model(None, "broken", TRUSTED_MODEL, URL, KEY)[0] == "custom"
     assert _resolve_task_provider_model(None, "relay", TRUSTED_MODEL, URL, KEY)[0] == "relay"
-    assert _resolve_task_provider_model(None, "relay", TRUSTED_MODEL, f"{URL}/", KEY)[0] == "relay"
-    assert _resolve_task_provider_model(
-        None, "relay", TRUSTED_MODEL, "https://elsewhere.example.com", KEY,
-    )[0] == "custom"
+
+
+@pytest.mark.parametrize("with_key", [True, False])
+def test_auxiliary_task_block_on_the_providers_own_endpoint_keeps_its_policy(relay, with_key):
+    """``auxiliary.<task>: {provider, base_url[, api_key]}`` on the relay's own URL is the relay.
+
+    With a key in the block the resolver used to flatten the name to ``custom`` (only local-server
+    aliases survived), so the task went out without the OAuth wire the relay declares.
+    """
+    from agent.auxiliary_client import _resolve_task_provider_model, call_llm
+
+    block = {"provider": "relay", "model": TRUSTED_MODEL, "base_url": URL}
+    if with_key:
+        block["api_key"] = KEY
+    _rewrite_config(auxiliary={"title_generation": block})
+    assert _resolve_task_provider_model("title_generation")[0] == "relay"
+    call_llm(
+        task="title_generation", messages=[{"role": "user", "content": "hello"}], max_tokens=32,
+        main_runtime={"provider": "moa", "base_url": "moa://local", "model": "simple"},
+    )
+    assert_oauth_wire(relay[-1], True)
+
+
+# ── the relay's declaration never travels to another origin ──────────────────
+
+FOREIGN = "https://elsewhere.example.com"
+
+
+def test_explicit_foreign_endpoint_under_the_relays_name_gets_no_oauth_identity(relay):
+    from agent.auxiliary_client import _client_cache, resolve_provider_client
+
+    for name in ("relay", "custom:relay"):
+        _client_cache.clear()
+        client, model = resolve_provider_client(name, TRUSTED_MODEL, explicit_base_url=FOREIGN)
+        client.chat.completions.create(
+            model=model, messages=[{"role": "user", "content": "hello"}], max_tokens=32,
+        )
+        assert relay[-1].url.host == "elsewhere.example.com"
+        assert_no_oauth_identity(relay[-1])
+
+
+def test_fallback_chain_entry_at_a_foreign_endpoint_gets_no_oauth_identity(relay):
+    """``fallback_chain`` bypasses the task resolver and goes straight to the client builder."""
+    from agent.auxiliary_client import _resolve_fallback_entry
+
+    client, model = _resolve_fallback_entry(
+        {"provider": "relay", "model": TRUSTED_MODEL, "base_url": FOREIGN},
+    )
+    client.chat.completions.create(
+        model=model, messages=[{"role": "user", "content": "hello"}], max_tokens=32,
+    )
+    assert relay[-1].url.host == "elsewhere.example.com"
+    assert_no_oauth_identity(relay[-1])
+
+
+def test_auxiliary_task_block_at_a_foreign_endpoint_gets_no_oauth_identity(relay):
+    """The keyless block keeps the provider name (it resolves its key from the entry), so the
+    decision must be made where the wire policy is chosen, not only in the task resolver."""
+    from agent.auxiliary_client import call_llm
+
+    _rewrite_config(auxiliary={"title_generation": {
+        "provider": "relay", "model": TRUSTED_MODEL, "base_url": FOREIGN,
+    }})
+    call_llm(
+        task="title_generation", messages=[{"role": "user", "content": "hello"}], max_tokens=32,
+        main_runtime={"provider": "moa", "base_url": "moa://local", "model": "simple"},
+    )
+    assert relay[-1].url.host == "elsewhere.example.com"
+    assert_no_oauth_identity(relay[-1])
 
 
 def test_an_unknown_model_keeps_the_provider_level_policy(relay):

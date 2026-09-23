@@ -6049,21 +6049,20 @@ def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
         }
 
 
-def _is_named_provider_endpoint(prov: Optional[str], base_url: Optional[str]) -> bool:
-    """True when *base_url* is the named custom provider's own endpoint (MoA slots, pinned routes).
+def _named_route_identity(prov: Optional[str], base_url: Optional[str]) -> Optional[str]:
+    """The named provider *prov* (normalized) when *base_url* is its own endpoint, else None.
 
-    Such a call is that provider, not an anonymous ``custom`` endpoint: its per-provider and
-    per-model declarations (``capabilities.anthropic_oauth_proxy``) are looked up by name, so
-    flattening it strips the wire policy. Another URL under the same name stays ``custom``.
+    MoA slots, pinned routes and ``auxiliary.<task>`` blocks arrive with the endpoint their
+    provider resolved to. That call IS the provider, not an anonymous ``custom`` endpoint: its
+    per-provider and per-model declarations (``capabilities.anthropic_oauth_proxy``) are looked up
+    by name, so flattening it strips the wire policy. Another origin under the same name is a
+    different route and stays ``custom``.
     """
     name = str(prov or "").strip().lower()
     if not name or name in {"auto", "custom"} or not base_url:
-        return False
-    from hermes_cli.route_identity import normalize_route_base_url
-    from hermes_cli.runtime_provider import _get_named_custom_provider
-    entry = _get_named_custom_provider(name)
-    own_base = str((entry or {}).get("base_url") or "")
-    return bool(own_base) and normalize_route_base_url(own_base) == normalize_route_base_url(base_url)
+        return None
+    from hermes_cli.route_identity import named_provider_owns_endpoint
+    return name if named_provider_owns_endpoint(name, base_url) else None
 
 
 def _resolve_task_provider_model(
@@ -6127,16 +6126,19 @@ def _resolve_task_provider_model(
         if not api_key:
             api_key = cfg_api_key
     if base_url:
-        kept = (
-            provider
-            if _preserve_provider_with_base_url(provider) or _is_named_provider_endpoint(provider, base_url)
-            else "custom"
-        )
+        if _preserve_provider_with_base_url(provider):
+            kept = provider
+        else:
+            kept = _named_route_identity(provider, base_url) or "custom"
         return kept, resolved_model, base_url, api_key, resolved_api_mode
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode
     if cfg_base_url and cfg_api_key:
-        kept = cfg_provider if str(cfg_provider or "").strip().lower() in _LOCAL_SERVER_ALIASES else "custom"
+        # A credential in the task block does not make a named provider's own endpoint anonymous.
+        if str(cfg_provider or "").strip().lower() in _LOCAL_SERVER_ALIASES:
+            kept = cfg_provider
+        else:
+            kept = _named_route_identity(cfg_provider, cfg_base_url) or "custom"
         return kept, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
     if cfg_base_url and cfg_provider and cfg_provider != "auto":
         # base_url without api_key: keep the provider so it can resolve credentials from env

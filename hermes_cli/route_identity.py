@@ -44,6 +44,27 @@ def normalize_route_base_url(base_url: Any) -> str:
     return normalized
 
 
+def named_provider_owns_endpoint(provider: Any, base_url: Any) -> bool:
+    """Whether *base_url* is served by the origin of *provider*'s own ``providers:`` entry.
+
+    Origin, not the literal URL: a resolver may hand back the entry's endpoint with ``/v1`` added
+    or stripped (OpenCode-family routing), and that is still the provider. Origin, not the host:
+    another port or an HTTPS→HTTP downgrade is another trust boundary (``base_url_origin``).
+    Fail-closed: no entry, an unparseable URL, or a malformed entry is "not its endpoint".
+    """
+    from utils import base_url_origin
+
+    target = base_url_origin(str(base_url or ""))
+    if not target[1]:
+        return False
+    try:
+        from hermes_cli.runtime_provider_custom import named_custom_provider_endpoint
+        own = named_custom_provider_endpoint(str(provider or ""))
+    except Exception:  # noqa: BLE001 — a malformed entry must not break client construction
+        return False
+    return bool(own) and base_url_origin(own) == target
+
+
 def provider_owns_route(provider: Any, base_url: Any, config: Any = None) -> Optional[bool]:
     """Whether ``model.base_url`` is *provider*'s own endpoint.
 
