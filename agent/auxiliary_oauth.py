@@ -106,8 +106,17 @@ def runtime_oauth_proxy(
     Inherits the main session's live value only for its own provider + endpoint + model; any other
     route — including a different model on the same relay — answers from its own model-qualified
     declaration, so a pin can neither borrow nor lose wire authority across models.
+
+    A declaration belongs to the provider's OWN endpoint. The same name pointed at another origin
+    (``auxiliary.<task>.base_url``, a ``fallback_chain`` entry) is a different server: it gets the
+    entry's key if the user composed it so, but never the Claude Code identity and Bearer-as-OAuth
+    policy the relay declared for itself. An empty *base_url* means the entry's own endpoint.
     """
     inherited = _inherited_oauth_proxy(main_runtime, provider, base_url, model)
     if inherited is not None:
         return inherited
+    if base_url:
+        from hermes_cli.route_identity import named_provider_owns_endpoint
+        if not named_provider_owns_endpoint(provider, base_url):
+            return None
     return declared_oauth_proxy(provider, model)

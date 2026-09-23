@@ -135,12 +135,7 @@ def _shadowed_by_builtin(requested_norm: str) -> bool:
     is the user's target."""
     if requested_norm == "custom" or requested_norm.startswith("custom:"):
         return False
-    rp = _rp()
-    try:
-        canonical = rp.auth_mod.resolve_provider(requested_norm)
-    except rp.AuthError:
-        return False
-    return (canonical or "").strip().lower() == requested_norm
+    return (_rp().auth_mod.known_provider_id(requested_norm) or "") == requested_norm
 
 
 def _match_new_style_provider(requested_norm: str, providers: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -212,6 +207,36 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         return None
     custom_providers = rp.get_compatible_custom_providers(config)
     return _match_legacy_custom_provider(requested_norm, custom_providers) if custom_providers else None
+
+
+def named_custom_provider_endpoint(requested_provider: str) -> str:
+    """Endpoint of the ``providers:`` / ``custom_providers:`` entry *requested_provider* names, or "".
+
+    Same identity rules as :func:`_get_named_custom_provider` (built-in shadowing, ``enabled:
+    false``, aliases, ``custom:<name>``), but it only answers "whose URL is this": no credential is
+    read and the config is not deep-copied, because route-ownership checks run on every auxiliary
+    call. Raises on a malformed entry exactly like the full lookup; callers decide what that means.
+    """
+    requested_norm = _normalize_custom_provider_name(requested_provider or "")
+    if not requested_norm or requested_norm == "auto" or _shadowed_by_builtin(requested_norm):
+        return ""
+    from hermes_cli.config import is_provider_enabled, load_config_readonly
+    config = load_config_readonly()
+    providers = config.get("providers")
+    if isinstance(providers, dict):
+        for ep_name, entry in providers.items():
+            if not isinstance(entry, dict) or not is_provider_enabled(entry):
+                continue
+            if requested_norm not in custom_provider_aliases(str(entry.get("name", "") or ep_name), str(ep_name)):
+                continue
+            base_url = _entry_url(entry)
+            if base_url:
+                return base_url.strip()
+    if isinstance(config.get("custom_providers"), dict):
+        return ""
+    custom_providers = _rp().get_compatible_custom_providers(config)
+    entry = _match_legacy_custom_provider(requested_norm, custom_providers) if custom_providers else None
+    return str((entry or {}).get("base_url") or "")
 
 
 def has_named_custom_provider(requested_provider: str) -> bool:
