@@ -3679,6 +3679,7 @@ export const ja = defineLocale({
     file: {
       openInHermes: 'Hermes のプレビューで開く',
       openInEditor: 'エディターで開く',
+      openWith: 'このアプリで開く…',
       copyPath: 'ファイルパスをコピー'
     },
     link: {

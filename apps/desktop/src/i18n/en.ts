@@ -4970,6 +4970,7 @@ export const en: Translations = {
     file: {
       openInHermes: 'Open in Hermes preview',
       openInEditor: 'Open in editor',
+      openWith: 'Open with…',
       copyPath: 'Copy file path'
     },
     link: {
