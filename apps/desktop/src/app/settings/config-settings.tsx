@@ -35,6 +35,7 @@ import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
 import { configSubpageForField } from './config-subpages'
+import { FileOpenAppSetting } from './file-open-app-setting'
 import {
   clearsEnabledToolsets,
   diffConfig,
@@ -300,6 +301,10 @@ function ConfigSettingsInner({
 
   const showDesktopSettings = activeSectionId === 'advanced' && (subpage === undefined || subpage === 'desktop')
   const showAttachments = activeSectionId === 'chat' && (subpage === undefined || subpage === 'attachments')
+  // Where a file opens is a files concern, and it is device-local (an app
+  // installed HERE), so it sits with the Workspace → Files fields rather than
+  // among the schema-backed config keys.
+  const showFileOpenApp = activeSectionId === 'workspace' && (subpage === undefined || subpage === 'files')
 
   // Deep-link target from the command palette (?field=<key>): scroll the row
   // into view and flash it, then drop the param so it doesn't re-fire.
@@ -472,6 +477,7 @@ function ConfigSettingsInner({
       {activeSectionId === 'voice' ? (
         <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
       ) : null}
+      {showFileOpenApp ? <FileOpenAppSetting /> : null}
       {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : visibleFields.length === 0 ? null : (

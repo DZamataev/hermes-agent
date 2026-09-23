@@ -1412,6 +1412,11 @@ export const en: Translations = {
       voiceShortcutHintTitle: 'Voice recording shortcut',
       voiceShortcutHintDesc:
         'Set the voice recording shortcut in Settings → Keyboard Shortcuts ("Start / stop voice conversation"). The voice.record_key config value only applies to the CLI and TUI.',
+      fileOpenAppTitle: "Default file open destination",
+      fileOpenAppDesc: "Where files open when you send them out of Hermes. The system default follows your OS file association, which some installers and toolchain updates quietly rewrite — pick an app here to pin it. Only apps found on this computer are listed.",
+      fileOpenAppSystem: "System default",
+      fileOpenAppLabel: "Default app for opening files",
+      fileOpenAppEmpty: "No supported editors found on this computer.",
       showOptions: 'Show options'
     },
     hudModifier: {
