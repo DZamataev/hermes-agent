@@ -496,10 +496,10 @@ def _tenant_config():
         ("https://h", "", False),
         ("", "https://h", False),
         ("https://h", "https://h:notaport", False),
-        # The query is part of the endpoint: a gateway may pick the tenant by it.
+        # The query is not part of the identity: OpenAI-wire clients move it into default_query,
+        # so the URL a consumer compares never carries it while the entry's URL does.
+        ("https://h/t?team=a", "https://h/t", True),
         ("https://h/t?team=a", "https://h/t?team=a", True),
-        ("https://h/t?team=a", "https://h/t?team=b", False),
-        ("https://h/t?team=a", "https://h/t", False),
     ],
 )
 def test_same_provider_endpoint_is_origin_plus_path_modulo_v1(own, target, same):
@@ -608,6 +608,54 @@ def test_model_only_child_pin_takes_its_models_declaration_at_the_parents_endpoi
         override_api_key=None, override_api_mode=None, override_acp_command=None, override_acp_args=None,
     )
     assert (kwargs["capabilities"] or {}) == expected
+
+
+def _child_capabilities(parent_url, live_url, child_model, requested="relay"):
+    """Capabilities of a model-only child, through the real ``_resolve_child_runtime``."""
+    from types import SimpleNamespace
+
+    from tools.delegate_tool_config import _resolve_child_runtime
+
+    parent = SimpleNamespace(
+        model="claude-opus-5", base_url=parent_url, api_key="k", provider="custom",
+        requested_provider=requested, capabilities={"anthropic_oauth_proxy": True},
+        api_mode="chat_completions", _client_kwargs={"base_url": live_url, "api_key": "k"}, client=None,
+        acp_command=None, acp_args=[], reasoning_config=None, _fallback_chain=None,
+    )
+    kwargs = _resolve_child_runtime(
+        parent, {}, "k", model=child_model, override_provider=None, override_base_url=None,
+        override_api_key=None, override_api_mode=None, override_acp_command=None, override_acp_args=None,
+    )
+    return kwargs["capabilities"] or {}
+
+
+def test_child_pin_on_a_query_bearing_entry_keeps_its_declaration(relay):
+    """Finding 1 (review 4): the OpenAI-wire client moves ``?team=a`` into ``default_query``, so the
+    live URL the child calls has no query while the entry's URL does. Same server."""
+    _rewrite_config(providers={"relay": {
+        "api": f"{URL}/t?team=a", "key_env": "TEST_RELAY_KEY", "transport": "chat_completions",
+        "capabilities": {"anthropic_oauth_proxy": True},
+    }})
+    assert _child_capabilities(f"{URL}/t", f"{URL}/t", TRUSTLESS_MODEL) == {"anthropic_oauth_proxy": True}
+
+
+def test_child_pin_takes_the_live_endpoint_not_the_lagging_surface(relay):
+    """Finding 2 (review 4): the child calls the parent's LIVE endpoint (#90009). A surface
+    ``base_url`` still on the relay must not lend its declaration to where the child really goes."""
+    assert _child_capabilities(URL, URL, TRUSTED_MODEL) == {"anthropic_oauth_proxy": True}
+    assert _child_capabilities(URL, FOREIGN, TRUSTED_MODEL) == {}
+
+
+def test_child_pin_on_an_entry_literally_named_custom(relay):
+    """Finding 3 (review 4): ``_shadowed_by_builtin`` lets a user name an entry ``custom``."""
+    # Without such an entry, ``custom`` (the runtime provider) and an unknown requested name name
+    # nothing: default-deny, not a lookup under some other provider.
+    assert _child_capabilities(URL, URL, TRUSTED_MODEL, requested="nonexistent") == {}
+    _rewrite_config(providers={"custom": {
+        "api": URL, "key_env": "TEST_RELAY_KEY", "transport": "anthropic_messages",
+        "capabilities": {"anthropic_oauth_proxy": True},
+    }})
+    assert _child_capabilities(URL, URL, TRUSTED_MODEL, requested="custom") == {"anthropic_oauth_proxy": True}
 
 
 def test_pooled_runtime_drops_the_declaration_at_another_endpoint(relay, monkeypatch):
