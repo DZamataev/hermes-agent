@@ -209,19 +209,22 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     return _match_legacy_custom_provider(requested_norm, custom_providers) if custom_providers else None
 
 
-def named_custom_provider_endpoint(requested_provider: str) -> str:
-    """Endpoint of the ``providers:`` / ``custom_providers:`` entry *requested_provider* names, or "".
+def named_custom_provider_entry(requested_provider: str) -> Optional[Tuple[Dict[str, Any], str]]:
+    """``(raw entry, endpoint)`` of the entry *requested_provider* names, or None. READ-ONLY.
 
     Same identity rules as :func:`_get_named_custom_provider` (built-in shadowing, ``enabled:
-    false``, aliases, ``custom:<name>``), but it only answers "whose URL is this": no credential is
-    read and the config is not deep-copied, because route-ownership checks run on every auxiliary
-    call. Raises on a malformed entry exactly like the full lookup; callers decide what that means.
+    false``, aliases, ``custom:<name>``, ``providers:`` before legacy ``custom_providers:``), but
+    it only answers "which entry, at which URL": no credential is read and the config is not
+    deep-copied, because route-ownership and capability checks run on every auxiliary call. The
+    returned entry is the live cached config — callers must not mutate it. Raises on a malformed
+    entry exactly like the full lookup; callers decide what that means.
     """
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm or requested_norm == "auto" or _shadowed_by_builtin(requested_norm):
-        return ""
-    from hermes_cli.config import is_provider_enabled, load_config_readonly
-    config = load_config_readonly()
+        return None
+    from hermes_cli.config import is_provider_enabled
+    rp = _rp()
+    config = rp.load_config_readonly()
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
@@ -231,12 +234,22 @@ def named_custom_provider_endpoint(requested_provider: str) -> str:
                 continue
             base_url = _entry_url(entry)
             if base_url:
-                return base_url.strip()
+                return entry, base_url.strip()
     if isinstance(config.get("custom_providers"), dict):
-        return ""
-    custom_providers = _rp().get_compatible_custom_providers(config)
-    entry = _match_legacy_custom_provider(requested_norm, custom_providers) if custom_providers else None
-    return str((entry or {}).get("base_url") or "")
+        return None
+    for entry in rp.get_compatible_custom_providers(config) or ():
+        name, base_url = (entry.get("name"), entry.get("base_url")) if isinstance(entry, dict) else (None, None)
+        if not isinstance(name, str) or not isinstance(base_url, str):
+            continue
+        if requested_norm in custom_provider_aliases(name, _clean(entry.get("provider_key", ""))):
+            return entry, base_url.strip()
+    return None
+
+
+def named_custom_provider_endpoint(requested_provider: str) -> str:
+    """Endpoint of the entry *requested_provider* names, or "" (see :func:`named_custom_provider_entry`)."""
+    found = named_custom_provider_entry(requested_provider)
+    return found[1] if found else ""
 
 
 def has_named_custom_provider(requested_provider: str) -> bool:
@@ -551,6 +564,20 @@ def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optio
     return None
 
 
+def _scope_capabilities_to_own_endpoint(custom_provider: Dict[str, Any], result: Dict[str, Any]) -> None:
+    """Drop the entry's capabilities when *result* calls another endpoint than the entry's own.
+
+    Capabilities are endpoint trust (``anthropic_oauth_proxy`` sends the Claude Code identity and
+    Bearer-as-OAuth): an ``explicit_base_url`` (``--base-url``, a stored ``/model`` URL, a
+    fallback entry, ``delegation.base_url``) under the entry's name is a different server. The key
+    and the rest of the request personality stay as the caller composed them — that is pre-existing
+    behaviour; only the declaration is scoped.
+    """
+    from hermes_cli.route_identity import same_provider_endpoint
+    if "capabilities" in result and not same_provider_endpoint(custom_provider.get("base_url"), result.get("base_url")):
+        result.pop("capabilities", None)
+
+
 def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: Optional[str] = None,
                                   explicit_base_url: Optional[str] = None,
                                   target_model: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -587,6 +614,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     if pool_result:
         # The pool doesn't know the custom_providers fields — propagate them here too.
         _apply_custom_provider_extras(custom_provider, target_model, pool_result)
+        _scope_capabilities_to_own_endpoint(custom_provider, pool_result)
         return pool_result
     explicit_key = (explicit_api_key or "").strip()
     candidates = [
@@ -619,4 +647,5 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
         if effective_model:
             result["api_mode"] = opencode_model_api_mode(family, effective_model)
         result["base_url"] = normalize_opencode_base_url(family, result["api_mode"], result["base_url"])
+    _scope_capabilities_to_own_endpoint(custom_provider, result)
     return result

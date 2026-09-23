@@ -44,25 +44,48 @@ def normalize_route_base_url(base_url: Any) -> str:
     return normalized
 
 
-def named_provider_owns_endpoint(provider: Any, base_url: Any) -> bool:
-    """Whether *base_url* is served by the origin of *provider*'s own ``providers:`` entry.
+def _route_path(base_url: str) -> str:
+    """The path of *base_url* with the trailing ``/`` and one ``/v1`` API-version suffix removed."""
+    path = (urlsplit(base_url).path or "").rstrip("/")
+    return path[: -len("/v1")] if path.endswith("/v1") else path
 
-    Origin, not the literal URL: a resolver may hand back the entry's endpoint with ``/v1`` added
-    or stripped (OpenCode-family routing), and that is still the provider. Origin, not the host:
-    another port or an HTTPS→HTTP downgrade is another trust boundary (``base_url_origin``).
-    Fail-closed: no entry, an unparseable URL, or a malformed entry is "not its endpoint".
+
+def same_provider_endpoint(own: Any, target: Any) -> bool:
+    """Whether *target* is the endpoint *own* declares: same origin AND same path modulo ``/v1``.
+
+    Origin alone is not the trust boundary: one host commonly fronts several tenants or relays by
+    path (Cloudflare AI Gateway ``/v1/<account>/<gateway>``, LiteLLM per-team prefixes, a reverse
+    proxy), and an entry's key, ``extra_headers`` and OAuth identity must not reach a sibling path.
+    The ``/v1`` allowance is the one rewrite resolvers really apply (OpenCode-family routing adds
+    or strips it). Scheme and port are part of the origin: an HTTPS→HTTP downgrade or another port
+    is another server (``base_url_origin``). Fail-closed on anything unparseable.
     """
     from utils import base_url_origin
 
-    target = base_url_origin(str(base_url or ""))
-    if not target[1]:
+    own_url, target_url = str(own or "").strip(), str(target or "").strip()
+    if not own_url or not target_url:
         return False
+    try:
+        own_origin, target_origin = base_url_origin(own_url), base_url_origin(target_url)
+        if not target_origin[1] or own_origin != target_origin:
+            return False
+        return _route_path(own_url) == _route_path(target_url)
+    except ValueError:
+        return False
+
+
+def named_provider_owns_endpoint(provider: Any, base_url: Any) -> bool:
+    """Whether *base_url* is *provider*'s own ``providers:`` / ``custom_providers:`` endpoint.
+
+    See :func:`same_provider_endpoint` for what "own" means. Fail-closed: no entry, an unparseable
+    URL, or a malformed entry is "not its endpoint".
+    """
     try:
         from hermes_cli.runtime_provider_custom import named_custom_provider_endpoint
         own = named_custom_provider_endpoint(str(provider or ""))
     except Exception:  # noqa: BLE001 — a malformed entry must not break client construction
         return False
-    return bool(own) and base_url_origin(own) == target
+    return same_provider_endpoint(own, base_url)
 
 
 def provider_owns_route(provider: Any, base_url: Any, config: Any = None) -> Optional[bool]:

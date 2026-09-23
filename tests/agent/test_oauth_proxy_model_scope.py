@@ -60,6 +60,13 @@ def relay(tmp_path, monkeypatch):
 
     def send(client, request, **kwargs):
         requests.append(request)
+        if request.url.path.endswith("/chat/completions"):
+            return httpx.Response(200, request=request, json={
+                "id": "cc_test", "object": "chat.completion", "created": 0, "model": TRUSTED_MODEL,
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            })
         message = {
             "id": "msg_test",
             "type": "message",
@@ -263,15 +270,15 @@ def test_moa_slot_with_resolved_endpoint_keeps_its_named_providers_policy(relay,
     assert_oauth_wire(relay[-1], expected)
 
 
-def _rewrite_config(**sections):
-    """Merge *sections* into the fixture's config.yaml (the relay fixture owns HERMES_HOME)."""
+def _rewrite_config(_replace=False, **sections):
+    """Merge (or with ``_replace`` overwrite) *sections* in the fixture's config.yaml."""
     import os
     from pathlib import Path
 
     path = Path(os.environ["HERMES_HOME"]) / "config.yaml"
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     for key, value in sections.items():
-        if isinstance(value, dict) and isinstance(config.get(key), dict):
+        if not _replace and isinstance(value, dict) and isinstance(config.get(key), dict):
             config[key].update(value)
         else:
             config[key] = value
@@ -279,10 +286,12 @@ def _rewrite_config(**sections):
 
 
 def assert_no_oauth_identity(request) -> None:
-    """A request that carries none of the relay's declared OAuth identity."""
-    assert not str(request.headers.get("authorization", "")).startswith("Bearer ")
+    """A request that carries none of the relay's declared OAuth identity: not its key as a
+    Bearer, no OAuth / Claude Code betas, no conversation header."""
+    assert request.headers.get("authorization") != f"Bearer {KEY}"
     assert "oauth-2025-04-20" not in request.headers.get("anthropic-beta", "")
     assert "claude-code" not in request.headers.get("anthropic-beta", "")
+    assert "x-claude-code-session-id" not in request.headers
 
 
 @pytest.mark.parametrize(
@@ -309,11 +318,15 @@ def test_kept_identity_is_the_canonical_name(relay):
     """One provider, one identity: spelling must not split the client cache or the logs."""
     from agent.auxiliary_client import _resolve_task_provider_model
 
-    for spelling in ("ReLaY", " relay ", "custom:relay"):
-        assert _resolve_task_provider_model(None, spelling, TRUSTED_MODEL, URL, KEY)[0] in {
-            "relay", "custom:relay",
-        }
-    assert _resolve_task_provider_model(None, "ReLaY", TRUSTED_MODEL, URL, KEY)[0] == "relay"
+    for spelling in ("ReLaY", " relay "):
+        assert _resolve_task_provider_model(None, spelling, TRUSTED_MODEL, URL, KEY)[0] == "relay"
+    # ``custom:`` is the explicit escape from a built-in of the same name (``custom:anthropic``):
+    # it is kept verbatim, never stripped back into the built-in's namespace.
+    assert _resolve_task_provider_model(None, "custom:relay", TRUSTED_MODEL, URL, KEY)[0] == "custom:relay"
+    # A display name with a space reaches the same entry the lookup normalizes it to.
+    _rewrite_config(providers={"my-relay": {"name": "My Relay", "api": URL, "transport": "anthropic_messages"}})
+    for spelling in ("My Relay", "my-relay"):
+        assert _resolve_task_provider_model(None, spelling, TRUSTED_MODEL, URL, KEY)[0] == "my-relay"
 
 
 def test_ownership_check_reads_no_credential(relay, monkeypatch):
@@ -363,14 +376,17 @@ def test_auxiliary_task_block_on_the_providers_own_endpoint_keeps_its_policy(rel
 
     block = {"provider": "relay", "model": TRUSTED_MODEL, "base_url": URL}
     if with_key:
-        block["api_key"] = KEY
+        # A key distinct from the entry's: the block's own key must be the one that goes out.
+        block["api_key"] = "block-own-key"
     _rewrite_config(auxiliary={"title_generation": block})
     assert _resolve_task_provider_model("title_generation")[0] == "relay"
     call_llm(
         task="title_generation", messages=[{"role": "user", "content": "hello"}], max_tokens=32,
         main_runtime={"provider": "moa", "base_url": "moa://local", "model": "simple"},
     )
-    assert_oauth_wire(relay[-1], True)
+    request = relay[-1]
+    assert request.headers.get("authorization") == f"Bearer {'block-own-key' if with_key else KEY}"
+    assert "oauth-2025-04-20" in request.headers.get("anthropic-beta", "")
 
 
 # ── the relay's declaration never travels to another origin ──────────────────
@@ -443,3 +459,181 @@ def test_vendor_prefixed_model_ids_compare_by_bare_name(relay):
     }
     assert runtime_oauth_proxy(main, "custom:relay", URL, f"anthropic/{TRUSTLESS_MODEL}") is False
     assert runtime_oauth_proxy(main, "custom:relay", URL, f"anthropic/{TRUSTED_MODEL}") is True
+
+
+# ── one host, many tenants: the path is part of the endpoint ─────────────────
+
+GATEWAY = "https://gw.example.com"
+
+
+def _tenant_config():
+    _rewrite_config(providers={"tenant": {
+        "api": f"{GATEWAY}/tenant-a", "key_env": "TEST_RELAY_KEY", "transport": "anthropic_messages",
+        "extra_headers": {"X-Tenant-Token": "tenant-a-secret"},
+        "capabilities": {"anthropic_oauth_proxy": True},
+    }})
+
+
+@pytest.mark.parametrize(
+    "own,target,same",
+    [
+        ("https://h/a", "https://h/a", True),
+        ("https://h/a", "https://h/a/", True),
+        ("https://h/a", "https://h/a/v1", True),
+        ("https://h/a/v1", "https://h/a", True),
+        ("https://h", "https://h/v1", True),
+        ("https://h", "https://h:443", True),
+        ("https://H", "https://h", True),
+        ("https://h/a", "https://h/b", False),
+        ("https://h/a", "https://h/a/b", False),
+        ("https://h/a", "https://h", False),
+        ("https://h", "https://h/a", False),
+        ("https://h/a", "https://h/A", False),
+        ("https://h", "http://h", False),
+        ("https://h", "https://h:8443", False),
+        ("https://h", "", False),
+        ("", "https://h", False),
+        ("https://h", "https://h:notaport", False),
+    ],
+)
+def test_same_provider_endpoint_is_origin_plus_path_modulo_v1(own, target, same):
+    from hermes_cli.route_identity import same_provider_endpoint
+
+    assert same_provider_endpoint(own, target) is same
+
+
+def test_a_sibling_tenant_path_is_not_the_relay(relay):
+    """Finding 1 (review 2): same origin, another path — another tenant behind one gateway."""
+    from agent.auxiliary_client import _resolve_task_provider_model, call_llm
+
+    _tenant_config()
+    assert _resolve_task_provider_model(None, "tenant", TRUSTED_MODEL, f"{GATEWAY}/tenant-a", KEY)[0] == "tenant"
+    assert _resolve_task_provider_model(None, "tenant", TRUSTED_MODEL, f"{GATEWAY}/tenant-a/v1", KEY)[0] == "tenant"
+    assert _resolve_task_provider_model(None, "tenant", TRUSTED_MODEL, f"{GATEWAY}/tenant-b", KEY)[0] == "custom"
+    # The MoA-slot / explicit-caller shape the review reproduced: name + another tenant's URL.
+    call_llm(
+        provider="tenant", model=TRUSTED_MODEL, base_url=f"{GATEWAY}/tenant-b",
+        messages=[{"role": "user", "content": "hello"}], max_tokens=32,
+        main_runtime={"provider": "moa", "base_url": "moa://local", "model": "simple"},
+    )
+    request = relay[-1]
+    assert request.url.path.startswith("/tenant-b")
+    assert request.headers.get("x-tenant-token") is None
+    assert request.headers.get("authorization") != f"Bearer {KEY}"
+    assert "x-claude-code-session-id" not in request.headers
+    assert_no_oauth_identity(request)
+
+
+# ── the main runtime and delegation carry the declaration only to its own endpoint ──
+
+def test_runtime_resolution_drops_the_declaration_at_another_endpoint(relay):
+    """Finding 2 (review 2): ``--base-url``, a stored ``/model`` URL and CLI fallback all resolve
+    through ``resolve_runtime_provider(explicit_base_url=…)``; the main agent and delegation read
+    ``capabilities`` off that runtime without any further gate."""
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    _tenant_config()
+    own = resolve_runtime_provider(requested="tenant", target_model=TRUSTED_MODEL)
+    assert own["capabilities"] == {"anthropic_oauth_proxy": True}
+    same = resolve_runtime_provider(requested="tenant", target_model=TRUSTED_MODEL,
+                                    explicit_base_url=f"{GATEWAY}/tenant-a/v1")
+    assert same["capabilities"] == {"anthropic_oauth_proxy": True}
+    for foreign in (f"{GATEWAY}/tenant-b", "https://elsewhere.example.com"):
+        runtime = resolve_runtime_provider(requested="tenant", target_model=TRUSTED_MODEL, explicit_base_url=foreign)
+        assert runtime["base_url"] == foreign
+        assert not runtime.get("capabilities")
+
+
+def test_inherited_branch_cannot_carry_the_declaration_to_another_endpoint(relay):
+    """Finding 2 (review 2): ``_inherited_oauth_proxy`` runs before the declaration lookup, so a
+    main runtime pointed elsewhere must not already hold the relay's capability."""
+    from agent.auxiliary_oauth import runtime_oauth_proxy
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    main = resolve_runtime_provider(requested="relay", target_model=TRUSTED_MODEL, explicit_base_url=FOREIGN)
+    for provider in ("custom", "auto", "main", "relay"):
+        assert runtime_oauth_proxy(main, provider, FOREIGN, TRUSTED_MODEL) is None
+
+
+def test_delegation_base_url_under_the_relays_name_gets_no_declaration(relay):
+    """Finding 2 (review 2): ``delegation: {provider: relay, base_url: <elsewhere>}``."""
+    from tools.delegate_tool_config import _resolve_delegation_credentials
+
+    own = _resolve_delegation_credentials({"provider": "relay", "base_url": URL, "model": TRUSTED_MODEL}, None)
+    assert own["capabilities"] == {"anthropic_oauth_proxy": True}
+    foreign = _resolve_delegation_credentials({"provider": "relay", "base_url": FOREIGN, "model": TRUSTED_MODEL}, None)
+    assert not foreign["capabilities"]
+
+
+def test_model_only_pin_on_a_foreign_parent_endpoint_gets_no_declaration(relay):
+    """A parent already on another endpoint under the relay's name: a model-only child pin must
+    not look the relay's declaration up by name alone."""
+    from types import SimpleNamespace
+
+    from tools.delegate_tool_config import _child_route_capabilities
+
+    def parent(base_url):
+        return SimpleNamespace(model=TRUSTLESS_MODEL, base_url=base_url, capabilities=None,
+                               requested_provider="relay", provider="custom")
+
+    assert _child_route_capabilities(parent(URL), None, None, None, effective_model=TRUSTED_MODEL) == {
+        "anthropic_oauth_proxy": True}
+    assert not _child_route_capabilities(parent(FOREIGN), None, None, None, effective_model=TRUSTED_MODEL)
+
+
+# ── the cheap lookup picks exactly the entry the full lookup picks ────────────
+
+@pytest.mark.parametrize(
+    "config,name,expected",
+    [
+        # enabled: false is invisible, the next match wins
+        ({"providers": {"a": {"name": "dup", "api": "https://off.example.com", "enabled": False},
+                        "b": {"name": "dup", "api": "https://on.example.com"}}}, "dup", "https://on.example.com"),
+        # name: differs from the key — both spellings reach it
+        ({"providers": {"key-name": {"name": "Display Name", "api": "https://d.example.com"}}},
+         "display-name", "https://d.example.com"),
+        ({"providers": {"key-name": {"name": "Display Name", "api": "https://d.example.com"}}},
+         "key-name", "https://d.example.com"),
+        # legacy list only
+        ({"custom_providers": [{"name": "legacy", "base_url": "https://l.example.com"}]},
+         "legacy", "https://l.example.com"),
+        # both lists: providers: wins
+        ({"providers": {"both": {"api": "https://new.example.com"}},
+          "custom_providers": [{"name": "both", "base_url": "https://old.example.com"}]},
+         "both", "https://new.example.com"),
+        # a dict-shaped custom_providers is malformed: nothing
+        ({"custom_providers": {"x": {"base_url": "https://x.example.com"}}}, "x", ""),
+    ],
+)
+def test_endpoint_lookup_matches_the_full_lookup(relay, config, name, expected):
+    """Finding 3b (review 2): the read-only matcher duplicates ``_get_named_custom_provider``."""
+    from hermes_cli.runtime_provider_custom import _get_named_custom_provider, named_custom_provider_endpoint
+
+    _rewrite_config(_replace=True, **{"providers": {}, "custom_providers": [], **config})
+    assert named_custom_provider_endpoint(name) == expected
+    assert ((_get_named_custom_provider(name) or {}).get("base_url") or "") == expected
+
+
+def test_ownership_check_follows_a_patched_runtime_config(relay, monkeypatch):
+    """Finding 6 (review 2): tests patch ``runtime_provider.load_config``; the ownership check must
+    answer from that same config, not from the file underneath it."""
+    from hermes_cli import runtime_provider
+    from hermes_cli.route_identity import named_provider_owns_endpoint
+
+    patched = {"providers": {"patched": {"api": "https://patched.example.com"}}}
+    monkeypatch.setattr(runtime_provider, "load_config", lambda: patched)
+    assert named_provider_owns_endpoint("patched", "https://patched.example.com") is True
+    assert named_provider_owns_endpoint("relay", URL) is False
+
+
+def test_wire_policy_path_reads_no_credential(relay, monkeypatch):
+    """Finding 4 (review 2): the chokepoint itself — not just the gate — must not resolve a secret."""
+    from agent.auxiliary_oauth import runtime_oauth_proxy
+    from hermes_cli import runtime_provider_custom
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("wire-policy lookup read a credential")
+
+    monkeypatch.setattr(runtime_provider_custom, "get_secret_str", refuse)
+    assert runtime_oauth_proxy(None, "relay", URL, TRUSTED_MODEL) is True
+    assert runtime_oauth_proxy(None, "relay", "", TRUSTLESS_MODEL) is False
