@@ -98,6 +98,66 @@ it('marks a path written in inline code, line suffix included', () => {
   expect(candidatesOf(inlineCode('docs/plan.md:7'))).toEqual([{ path: 'docs/plan.md', token: 'docs/plan.md:7' }])
 })
 
+it('marks an absolute path with no extension and no trailing slash', () => {
+  // A leading `/` or `~/` is a claim ordinary prose never makes, so an
+  // absolute path is unambiguous on its own: it needs neither an extension
+  // nor the trailing slash a RELATIVE directory must carry. Requiring one
+  // hid every named directory and extensionless binary the agent cites.
+  expect(candidates('лежит в ~/dev/teamclaude вот')).toEqual([
+    { path: '~/dev/teamclaude', token: '~/dev/teamclaude' }
+  ])
+  expect(candidates('смотри /Users/frenzy/dev/hermes/apps/desktop тут')).toEqual([
+    { path: '/Users/frenzy/dev/hermes/apps/desktop', token: '/Users/frenzy/dev/hermes/apps/desktop' }
+  ])
+  expect(candidates('запусти /usr/bin/env сейчас')).toEqual([{ path: '/usr/bin/env', token: '/usr/bin/env' }])
+})
+
+it('marks an absolute directory written with its trailing slash', () => {
+  // The slash is redundant here rather than required, and it still must not
+  // leak into the path: the resolver looks an entry up BY NAME.
+  expect(candidates('в /Users/frenzy/dev/hermes/apps/desktop/ лежит')).toEqual([
+    { path: '/Users/frenzy/dev/hermes/apps/desktop', token: '/Users/frenzy/dev/hermes/apps/desktop/' }
+  ])
+})
+
+it('still refuses a RELATIVE directory with no trailing slash', () => {
+  // The absolute rung must not relax the relative rule: `and/or` and
+  // `src/app` are the same shape, and only the slash separates intent.
+  expect(candidates('смотри в src/app/features тут')).toEqual([])
+  expect(candidates('и/или, and/or, w/o, n/a')).toEqual([])
+})
+
+it('marks a path containing spaces when inline code delimits it', () => {
+  // In bare prose a space ends the token and must: a path pattern allowed to
+  // swallow spaces swallows the rest of the sentence with them. Backticks are
+  // the author supplying the boundary the text cannot, so `Application
+  // Support` resolves there and only there.
+  expect(candidatesOf(inlineCode('/Users/frenzy/Library/Application Support/Hermes'))).toEqual([
+    {
+      path: '/Users/frenzy/Library/Application Support/Hermes',
+      token: '/Users/frenzy/Library/Application Support/Hermes'
+    }
+  ])
+  // The same path bare: the token ends at the space, so what reaches the
+  // resolver is the truncated `…/Library/Application`. Nothing filters it
+  // here — the marker cannot know the name is incomplete — and nothing needs
+  // to: that path does not exist, so it never resolves and never lights up.
+  expect(candidates('в /Users/frenzy/Library/Application Support/ лежит')).toEqual([
+    { path: '/Users/frenzy/Library/Application', token: '/Users/frenzy/Library/Application' }
+  ])
+})
+
+it('never lets a path in prose cross a space', () => {
+  // The guard for the rule above. A path pattern allowed to cross a space in
+  // bare text does not stop at the end of the path — it runs to the end of the
+  // sentence, turning "/usr/bin и ещё слова" into one clickable token. The
+  // marker must end the token at the space no matter what follows it.
+  expect(candidates('лежит в /usr/bin и ещё слова')).toEqual([{ path: '/usr/bin', token: '/usr/bin' }])
+  expect(candidates('смотри ~/dev/teamclaude в общем норм')).toEqual([
+    { path: '~/dev/teamclaude', token: '~/dev/teamclaude' }
+  ])
+})
+
 it('marks a directory only when the trailing slash says it is one', () => {
   // A directory has no extension, so nothing about its SHAPE separates it from
   // ordinary prose — `and/or` and `w/o` are the same shape. The trailing slash
