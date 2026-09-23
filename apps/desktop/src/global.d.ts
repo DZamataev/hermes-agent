@@ -431,6 +431,14 @@ declare global {
       gitRoot?: (path: string) => Promise<string | null>
       // Reveal a path in the OS file manager (Finder / Explorer).
       revealPath?: (path: string) => Promise<boolean>
+      // Open the OS "open with" application picker. Windows only: no other
+      // platform has a picker command, and falling back to `shell.openPath`
+      // there would launch by association instead of asking (see fs-ipc.ts).
+      openWithPath?: (path: string) => Promise<{ ok: boolean; error?: string }>
+      // Catalog editors detected on THIS machine, for the settings picker.
+      editorApps?: () => Promise<{ id: string; label: string; target: string }[]>
+      // Open a file in a PICKED editor, named by catalog id — never a command.
+      openInEditorApp?: (appId: string, path: string) => Promise<{ ok: boolean; error?: string }>
       // Open a DIRECTORY (created if missing) in the OS file manager.
       openDir?: (path: string) => Promise<{ ok: boolean; error?: string }>
       // Local Desktop runtime-plugin root (<HERMES_HOME>/desktop-plugins),

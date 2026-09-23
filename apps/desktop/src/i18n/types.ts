@@ -1065,7 +1065,12 @@ export interface Translations {
       attachmentSizeDesc: string
       attachmentSizeUnit: string
       attachmentSizeLabel: string
-      showOptions: string
+      fileOpenAppTitle: string
+    fileOpenAppDesc: string
+    fileOpenAppSystem: string
+    fileOpenAppLabel: string
+    fileOpenAppEmpty: string
+    showOptions: string
     }
     hudModifier: {
       title: string
@@ -3702,6 +3707,7 @@ export interface Translations {
     file: {
       openInHermes: string
       openInEditor: string
+      openWith: string
       copyPath: string
     }
     link: {

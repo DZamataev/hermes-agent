@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { RESOLVED_DIR_ATTR, RESOLVED_PATH_ATTR } from '@/components/chat/file-path-candidate'
 import { en } from '@/i18n/en'
 import type * as ExternalLink from '@/lib/external-link'
+import type * as FileManager from '@/lib/file-manager'
 import { pickRevealLabel } from '@/lib/file-manager'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 
@@ -13,7 +14,16 @@ import { $contextMenu } from './store'
 import { resolveDomTarget } from './target'
 
 const opened: string[] = []
-const { revealed, state } = vi.hoisted(() => ({ revealed: [] as string[], state: { remote: false } }))
+const { openedWith, revealed, state } = vi.hoisted(() => ({
+  openedWith: [] as string[],
+  revealed: [] as string[],
+  state: { remote: false, win: false }
+}))
+
+vi.mock('@/lib/file-manager', async importOriginal => ({
+  ...(await importOriginal<typeof FileManager>()),
+  canOpenPathWith: () => state.win
+}))
 
 vi.mock('@/lib/external-link', async importOriginal => ({
   ...(await importOriginal<typeof ExternalLink>()),
@@ -23,6 +33,11 @@ vi.mock('@/lib/external-link', async importOriginal => ({
 vi.mock('@/lib/desktop-fs', () => ({
   copyTextToClipboard: () => Promise.resolve(),
   isDesktopFsRemoteMode: () => state.remote,
+  openWithDesktopPath: (path: string) => {
+    openedWith.push(path)
+
+    return Promise.resolve({ ok: true })
+  },
   readDesktopFileText: () => Promise.resolve({ binary: false, language: 'markdown', text: '# plan' }),
   renameDesktopPath: () => Promise.resolve(''),
   revealDesktopPath: (path: string) => {
@@ -46,8 +61,10 @@ function attach(html: string): HTMLElement {
 
 afterEach(() => {
   opened.length = 0
+  openedWith.length = 0
   revealed.length = 0
   state.remote = false
+  state.win = false
   $contextMenu.set(null)
   closeRightRail()
   cleanup()
@@ -199,6 +216,61 @@ it('offers a directory only what a directory can do', async () => {
   expect(screen.getByText('Copy file path')).toBeTruthy()
   expect(screen.queryByText('Open in Hermes preview')).toBeNull()
   expect(screen.queryByText('Open in editor')).toBeNull()
+})
+
+it('offers the OS application picker where the OS has one', async () => {
+  state.win = true
+  desktopWindow.hermesDesktop = {
+    openExternal: vi.fn().mockResolvedValue(undefined),
+    writeClipboard: vi.fn().mockResolvedValue(undefined)
+  } as unknown as Window['hermesDesktop']
+
+  render(
+    <MemoryRouter>
+      <AppContextMenu />
+    </MemoryRouter>
+  )
+
+  const host = attach(`<span ${RESOLVED_PATH_ATTR}="/work/looky/docs/plan.md">docs/plan.md</span>`)
+
+  fireEvent.contextMenu(host.querySelector('span')!)
+  fireEvent.click(await screen.findByText('Open with…'))
+
+  await waitFor(() => expect(openedWith).toEqual(['/work/looky/docs/plan.md']))
+})
+
+it.each([
+  ['the host has no application picker', { win: false }],
+  ['the file would be executed rather than opened', { path: '/work/looky/setup.command', win: true }],
+  ['the reference is a directory', { dir: true, win: true }],
+  ['the path lives on a remote gateway', { remote: true, win: true }]
+])('withholds the picker when %s', async (_label, setup: Record<string, unknown>) => {
+  // Same withholding rules as the editor entry — an entry that cannot do what
+  // its label says is worse than no entry.
+  state.win = Boolean(setup.win)
+  state.remote = Boolean(setup.remote)
+  desktopWindow.hermesDesktop = {
+    openExternal: vi.fn().mockResolvedValue(undefined),
+    writeClipboard: vi.fn().mockResolvedValue(undefined)
+  } as unknown as Window['hermesDesktop']
+
+  render(
+    <MemoryRouter>
+      <AppContextMenu />
+    </MemoryRouter>
+  )
+
+  const path = (setup.path as string) ?? '/work/looky/docs/plan.md'
+  const host = attach(
+    `<span ${RESOLVED_PATH_ATTR}="${path}" ${setup.dir ? RESOLVED_DIR_ATTR : ''}>ref</span>`
+  )
+
+  fireEvent.contextMenu(host.querySelector('span')!)
+
+  // Copy path is in every file section, so its presence proves the menu
+  // painted and the absence below is a real withholding.
+  expect(await screen.findByText('Copy file path')).toBeTruthy()
+  expect(screen.queryByText('Open with…')).toBeNull()
 })
 
 it('shows no file section when the click did not land on a resolved path', async () => {

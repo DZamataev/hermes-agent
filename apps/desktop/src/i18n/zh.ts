@@ -1210,6 +1210,11 @@ export const zh = defineLocale({
       daysAgo: count => `${count} 天前`
     },
     config: {
+      fileOpenAppTitle: "默认打开文件的位置",
+      fileOpenAppDesc: "从 Hermes 发送出去的文件在哪里打开。系统默认会遵循操作系统的文件关联，而某些安装程序和工具链更新会悄悄改写它——在此选择应用即可固定。仅列出在这台电脑上找到的应用。",
+      fileOpenAppSystem: "系统默认",
+      fileOpenAppLabel: "打开文件的默认应用",
+      fileOpenAppEmpty: "在这台电脑上未找到受支持的编辑器。",
       minimizeToTrayTitle: '最小化到托盘',
       minimizeToTrayDesc:
         '最小化窗口或关闭主窗口时，将其隐藏到系统托盘（macOS 上为菜单栏），让 Hermes 继续运行。通过托盘菜单中的“退出 Hermes”或 Cmd+Q 退出。默认关闭，仅适用于此设备。',
@@ -4088,6 +4093,7 @@ export const zh = defineLocale({
     file: {
       openInHermes: '在 Hermes 预览中打开',
       openInEditor: '在编辑器中打开',
+      openWith: '打开方式…',
       copyPath: '复制文件路径'
     },
     link: {

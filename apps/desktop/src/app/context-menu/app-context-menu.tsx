@@ -19,14 +19,14 @@ import {
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
-import { pickRevealLabel } from '@/lib/file-manager'
+import { canOpenPathWith, pickRevealLabel } from '@/lib/file-manager'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
 import { canOpenPathInEditor, openPathInEditor } from '@/lib/open-in-editor'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { openCommandPalette } from '@/store/command-palette'
-import { revealFile } from '@/store/file-actions'
+import { openFileWith, revealFile } from '@/store/file-actions'
 import { openPreview } from '@/store/preview'
 import { toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
@@ -242,6 +242,22 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
             key="file-reveal"
             label={pickRevealLabel(t.fileMenu.revealFinder, t.fileMenu.revealExplorer, t.fileMenu.revealFileManager)}
             onSelect={() => void revealFile(target.filePath)}
+          />
+        ),
+        // "Open with…" asks the OS which application to use. It sits beside
+        // the editor entry and is withheld in the same cases: a directory has
+        // no application to pick, and an executable must not gain a second
+        // route to being launched. Local-only and Windows-only — no other
+        // platform has a picker (`canOpenPathWith`).
+        target.filePathIsDirectory ||
+        isDesktopFsRemoteMode() ||
+        !canOpenPathWith() ||
+        !canOpenPathInEditor(target.filePath) ? null : (
+          <Item
+            icon="window"
+            key="file-open-with"
+            label={copy.file.openWith}
+            onSelect={() => void openFileWith(target.filePath)}
           />
         ),
         <Item

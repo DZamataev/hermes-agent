@@ -1,15 +1,22 @@
 import { openExternalLink } from '@/lib/external-link'
 import { IS_MAC } from '@/lib/keybinds/combo'
+import { $fileOpenApp, usesSystemEditor } from '@/store/file-open-prefs'
 
 /**
  * Opening a resolved file path outside the preview rail.
  *
- * The rail renders a file; an editor edits it, and which editor that is
- * belongs to the OS, not to Hermes. `file://` already routes through
- * Electron's `shell.openPath`, which dispatches to the user's own file
- * association and reveals the file in the file manager when nothing claims
- * it — so a path opens in whatever the user picked for that type, and
- * Hermes ships no editor setting to keep in sync with reality.
+ * The rail renders a file; an editor edits it. By default which editor that is
+ * belongs to the OS: `file://` routes through Electron's `shell.openPath`,
+ * which dispatches to the user's own file association. That is the right
+ * default — it needs no setting and it honours whatever the user configured
+ * system-wide.
+ *
+ * It is not sufficient, though, and the reason is not theoretical: on macOS
+ * the association for source files is rewritten by installers and toolchain
+ * updates, so a user who chose their editor finds "open" landing somewhere
+ * else weeks later, with nothing in Hermes to correct it. So the OS stays the
+ * default and Settings offers an explicit override (`$fileOpenApp`), which
+ * names an application by catalog id — never a command to run.
  */
 
 /**
@@ -86,10 +93,14 @@ export function canOpenPathInEditor(path: string): boolean {
 }
 
 /**
- * Hand *path* to the OS, which opens it in the associated application.
+ * Hand *path* to the chosen editor, or to the OS when none is chosen.
  *
  * Only absolute paths: a relative one would be resolved against whatever
  * directory Electron happens to have, which is never the session's.
+ *
+ * A picked editor that is gone (uninstalled since, or a remote connection with
+ * no bridge) falls back to the OS association rather than failing the click —
+ * the same read-falls-to-the-next-rung shape as the rest of the app.
  */
 export function openPathInEditor(path: string): void {
   const absolute = path.trim()
@@ -102,5 +113,18 @@ export function openPathInEditor(path: string): void {
     return
   }
 
-  openExternalLink(fileUrlForPath(absolute))
+  const appId = $fileOpenApp.get()
+  const bridge = window.hermesDesktop?.openInEditorApp
+
+  if (usesSystemEditor(appId) || !bridge) {
+    openExternalLink(fileUrlForPath(absolute))
+
+    return
+  }
+
+  void bridge(appId, absolute).then(result => {
+    if (!result?.ok) {
+      openExternalLink(fileUrlForPath(absolute))
+    }
+  })
 }

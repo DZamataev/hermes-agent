@@ -170,6 +170,14 @@ export async function revealDesktopPath(path: string): Promise<void> {
   }
 }
 
+// Open the OS "open with" application picker. Local only, and Windows-only in
+// practice — main answers `unsupported` elsewhere (see electron/fs-ipc.ts).
+export async function openWithDesktopPath(path: string): Promise<{ ok: boolean; error?: string }> {
+  const openWith = bridge().openWithPath
+
+  return openWith ? openWith(path) : { error: 'unsupported', ok: false }
+}
+
 // Rename a file/folder in place; returns the new absolute path. Local only.
 export async function renameDesktopPath(path: string, newName: string): Promise<string> {
   const desktop = bridge()
