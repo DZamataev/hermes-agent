@@ -11,24 +11,55 @@ import type { PhrasingContent, Root, RootContent } from 'mdast'
  * token that looks like a path frequently is not one that exists.
  */
 
-// Deliberately conservative: a slash-qualified file, or a familiar standalone
-// document name. Domains, commands, and incomplete streaming paths stay prose.
-// The extension ceiling is 16 because real project files reach it —
-// `.xcworkspacedata` is 15, `.entitlements` 12.
-const POSIX_PATH = String.raw`(?:[\p{L}\p{N}_~./-]+\/)[\p{L}\p{N}_.-]+\.[a-z\d]{1,16}`
-// A drive path (`C:\dir\file.ts`, `C:/dir/file.ts`) or a UNC share
-// (`\\server\share\file.txt`). Both are absolute to the resolver and are
-// normalized by the `file://` encoder, so only the marker was keeping Windows
-// paths from ever becoming candidates.
-const WINDOWS_PATH = String.raw`(?:[a-z]:[\\/]|\\\\[\p{L}\p{N}_.-]+\\)[\p{L}\p{N}_.\\/-]*[\p{L}\p{N}_.-]+\.[a-z\d]{1,16}`
-const DOCUMENT_NAME = String.raw`[\p{L}\p{N}_-]+\.(?:md|markdown|mdown|txt|json|yaml|yml|toml|csv|pdf)`
-// A directory has no extension, so its shape is indistinguishable from
-// slash-joined prose (`and/or`, `w/o`). The TRAILING SLASH is the author
-// saying "this is a directory", and it is the only thing that admits one —
-// without it every "n/a" in a sentence would become a candidate.
-const DIRECTORY_PATH = String.raw`(?:[a-z]:[\\/]|\\\\[\p{L}\p{N}_.-]+\\|[\p{L}\p{N}_~.-]+[\\/])[\p{L}\p{N}_.\\/-]*[\\/]`
+// The characters allowed inside one path segment. The hyphen stays LAST so
+// appending another character below cannot turn it into a range (`.- ` is the
+// range `-` to ` `, which is an invalid-regex error, not a silent bug).
+// Spaces are a parameter rather than a constant because their safety depends
+// entirely on who marks the END of the path: see DELIMITED_FILE_PATH.
+const SEGMENT = String.raw`\p{L}\p{N}_.`
 
-const FILE_PATH = new RegExp(`^(?:${WINDOWS_PATH}|${POSIX_PATH}|${DOCUMENT_NAME}|${DIRECTORY_PATH})$`, 'iu')
+/** The path shapes we accept, with *segment* as the per-segment char class. */
+function filePathPattern(segmentExtra = ''): string {
+  // The hyphen is appended here, after any extra characters, for the reason
+  // given above.
+  const segment = `${SEGMENT}${segmentExtra}-`
+  // An ABSOLUTE path needs neither an extension nor a trailing slash: a leading
+  // `/` or `~/` is a claim no prose makes. `and/or` and `w/o` are ambiguous only
+  // because they are RELATIVE — that ambiguity is what the trailing slash below
+  // resolves, and it does not apply here. Without this rung a named directory
+  // (`~/dev/teamclaude`) and an extensionless file (`/usr/bin/env`) were both
+  // invisible, and `/Users/me/apps/desktop/` failed too: DIRECTORY_PATH's first
+  // segment cannot start with a separator.
+  const absolute = String.raw`(?:\/|~\/)[${segment}]+(?:\/[${segment}]+)*\/?`
+  // Deliberately conservative: a slash-qualified file, or a familiar standalone
+  // document name. Domains, commands, and incomplete streaming paths stay prose.
+  // The extension ceiling is 16 because real project files reach it —
+  // `.xcworkspacedata` is 15, `.entitlements` 12.
+  const posix = String.raw`(?:[${segment}~/]+\/)[${segment}]+\.[a-z\d]{1,16}`
+  // A drive path (`C:\dir\file.ts`, `C:/dir/file.ts`) or a UNC share
+  // (`\\server\share\file.txt`). Both are absolute to the resolver and are
+  // normalized by the `file://` encoder, so only the marker was keeping Windows
+  // paths from ever becoming candidates.
+  const windows = String.raw`(?:[a-z]:[\\/]|\\\\[${segment}]+\\)[${segment}\\/]*[${segment}]+\.[a-z\d]{1,16}`
+  const documentName = String.raw`[\p{L}\p{N}_-]+\.(?:md|markdown|mdown|txt|json|yaml|yml|toml|csv|pdf)`
+  // A relative directory has no extension, so its shape is indistinguishable
+  // from slash-joined prose (`and/or`, `w/o`). The TRAILING SLASH is the author
+  // saying "this is a directory", and it is the only thing that admits one —
+  // without it every "n/a" in a sentence would become a candidate.
+  const directory = String.raw`(?:[a-z]:[\\/]|\\\\[${segment}]+\\|[${segment}~]+[\\/])[${segment}\\/]*[\\/]`
+
+  return `^(?:${absolute}|${windows}|${posix}|${documentName}|${directory})$`
+}
+
+const FILE_PATH = new RegExp(filePathPattern(), 'iu')
+
+// The same shapes, but allowing a space inside a segment (`Application
+// Support`). Safe ONLY where something other than whitespace ends the path —
+// inline code, where the author's backticks are the boundary. In bare prose a
+// pattern permitted to cross a space crosses the rest of the sentence too
+// ("/usr/bin и ещё слова" matches whole), so the plain tokenizer still stops
+// at the first space and that is deliberate, not a limitation to fix later.
+const DELIMITED_FILE_PATH = new RegExp(filePathPattern(' '), 'iu')
 
 // A path is routinely cited with the line (and column) it was read at —
 // `…/VideoMessageBubble.tsx:141`. That suffix belongs to the reference, not to
@@ -97,7 +128,9 @@ export function remarkFilePathCandidates() {
       const children: RootContent[] = []
 
       for (const child of node.children) {
-        if (child.type === 'inlineCode' && FILE_PATH.test(withoutLineSuffix(child.value))) {
+        // Backticks are an explicit boundary, so a space inside them is part
+        // of the path rather than the end of it.
+        if (child.type === 'inlineCode' && DELIMITED_FILE_PATH.test(withoutLineSuffix(child.value))) {
           children.push(candidate(candidatePath(child.value), [child]))
         } else if (child.type === 'text') {
           let cursor = 0
