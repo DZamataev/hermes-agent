@@ -17,6 +17,8 @@ export interface FilePathDirEntry {
   name: string
   /** The entry's own absolute path, as the filesystem reports it. */
   path: string
+  /** Whether the entry is a directory, as the filesystem reports it. */
+  isDirectory?: boolean
 }
 
 export interface FilePathResolverIo {
@@ -27,10 +29,20 @@ export interface FilePathResolverIo {
 }
 
 export interface ResolvedFilePath {
-  /** Absolute path of the file that was found. */
+  /** Absolute path of the entry that was found. */
   path: string
   /** Which base the candidate resolved against — for tests and diagnostics. */
   base: 'cwd' | 'git-root'
+  /**
+   * True when the filesystem says this is a directory.
+   *
+   * Decided by the listing, never by the token's shape: a trailing slash is
+   * how an author announces a directory, not proof of one, and a path without
+   * it can still name a real folder. Surfaces branch on this to offer only
+   * what makes sense — a directory has nothing to preview and nothing to open
+   * in an editor.
+   */
+  isDirectory: boolean
 }
 
 function trimTrailingSlashes(value: string) {
@@ -147,7 +159,11 @@ export async function resolveFilePath(
     const entry = (await listing)?.find(row => row.name === name)
 
     if (entry) {
-      return { base: candidate.base, path: entry.path || candidate.path }
+      return {
+        base: candidate.base,
+        isDirectory: Boolean(entry.isDirectory),
+        path: entry.path || candidate.path
+      }
     }
   }
 

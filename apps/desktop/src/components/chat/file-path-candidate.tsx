@@ -4,7 +4,7 @@ import { type MouseEvent as ReactMouseEvent, type ReactNode, useEffect, useState
 import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
 import { desktopGitRoot, readDesktopDir } from '@/lib/desktop-fs'
-import { resolveFilePath } from '@/lib/file-path-resolve'
+import { type ResolvedFilePath, resolveFilePath } from '@/lib/file-path-resolve'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { canOpenPathInEditor, openPathInEditor, wantsExternalEditor } from '@/lib/open-in-editor'
 import { cn } from '@/lib/utils'
@@ -20,6 +20,9 @@ interface FilePathCandidateProps {
 /** Carries the PROVEN absolute path to the context menu (see `target.ts`). */
 export const RESOLVED_PATH_ATTR = 'data-file-resolved'
 
+/** Present on a resolved reference the filesystem reports as a directory. */
+export const RESOLVED_DIR_ATTR = 'data-file-directory'
+
 /** Hover long enough to mean it. Sweeping the pointer across a paragraph
  *  crosses many tokens; only a rest probes the filesystem. */
 const HOVER_INTENT_MS = 200
@@ -29,7 +32,9 @@ const io = {
   listDir: async (dir: string) => {
     const result = await readDesktopDir(dir)
 
-    return result.error ? null : result.entries.map(entry => ({ name: entry.name, path: entry.path }))
+    return result.error
+      ? null
+      : result.entries.map(entry => ({ isDirectory: entry.isDirectory, name: entry.name, path: entry.path }))
   }
 }
 
@@ -41,7 +46,7 @@ const io = {
  * disk on every scroll. Keying by cwd is what makes an answer from another
  * working directory unreachable rather than something to invalidate.
  */
-const probed = new Map<string, string | null>()
+const probed = new Map<string, ResolvedFilePath | null>()
 
 function probeKey(cwd: string, path: string) {
   return `${cwd}\u0000${path}`
@@ -68,7 +73,7 @@ export function FilePathCandidate({ children, path }: FilePathCandidateProps) {
   // session's cwd, not the primary chat's.
   const cwd = useStore(useSessionView().$cwd)
   const armed = useStore($pathModifierHeld)
-  const [target, setTarget] = useState<string | null>(() => probed.get(probeKey(cwd, path)) ?? null)
+  const [resolved, setResolved] = useState<ResolvedFilePath | null>(() => probed.get(probeKey(cwd, path)) ?? null)
   const [hovered, setHovered] = useState(false)
 
   useEffect(() => {
@@ -76,14 +81,14 @@ export function FilePathCandidate({ children, path }: FilePathCandidateProps) {
     const known = probed.get(key)
 
     if (known !== undefined) {
-      setTarget(known)
+      setResolved(known)
 
       return
     }
 
     // Nothing is known about this (cwd, path) yet, so the token must not claim
     // anything either until a hover pays for the answer.
-    setTarget(null)
+    setResolved(null)
 
     if (!hovered) {
       return
@@ -93,10 +98,10 @@ export function FilePathCandidate({ children, path }: FilePathCandidateProps) {
 
     const timer = setTimeout(() => {
       void resolveFilePath(path, cwd, io).then(match => {
-        probed.set(key, match?.path ?? null)
+        probed.set(key, match)
 
         if (!cancelled) {
-          setTarget(match?.path ?? null)
+          setResolved(match)
         }
       })
     }, HOVER_INTENT_MS)
@@ -107,7 +112,10 @@ export function FilePathCandidate({ children, path }: FilePathCandidateProps) {
     }
   }, [hovered, cwd, path])
 
-  const openable = armed && target !== null
+  const target = resolved?.path ?? null
+  // A directory has nothing to render in the rail, so the click gesture is not
+  // offered for one — the context menu still reveals it in the file manager.
+  const openable = armed && target !== null && !resolved?.isDirectory
 
   async function openPreviewTab() {
     if (!target) {
@@ -149,9 +157,12 @@ export function FilePathCandidate({ children, path }: FilePathCandidateProps) {
     <span
       className={cn(openable && 'cursor-pointer underline decoration-dotted underline-offset-2')}
       data-file-path={path}
-      // Present only once the file is proven to exist: the context menu builds
-      // its entries from this, so an unresolved token offers nothing.
+      // Present only once the entry is proven to exist: the context menu builds
+      // its entries from this, so an unresolved token offers nothing. The
+      // directory marker rides along so the menu can drop what a folder cannot
+      // do without probing the filesystem a second time.
       {...(target ? { [RESOLVED_PATH_ATTR]: target } : {})}
+      {...(target && resolved?.isDirectory ? { [RESOLVED_DIR_ATTR]: '' } : {})}
       onClick={openable ? activate : undefined}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}

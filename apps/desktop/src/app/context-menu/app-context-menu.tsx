@@ -204,29 +204,34 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
   if (target.filePath) {
     sections.push(
       [
-        <Item
-          icon="preview"
-          key="file-open-preview"
-          label={copy.file.openInHermes}
-          onSelect={() =>
-            void normalizeOrLocalPreviewTarget(target.filePath).then(preview => {
-              if (preview) {
-                openPreview(preview, 'explicit-link')
-              }
-            })
-          }
-        />,
+        // A directory has nothing to render in the rail and nothing to hand a
+        // text editor, so a folder reference offers only the two verbs that
+        // still mean something: show it, and copy it.
+        target.filePathIsDirectory ? null : (
+          <Item
+            icon="preview"
+            key="file-open-preview"
+            label={copy.file.openInHermes}
+            onSelect={() =>
+              void normalizeOrLocalPreviewTarget(target.filePath).then(preview => {
+                if (preview) {
+                  openPreview(preview, 'explicit-link')
+                }
+              })
+            }
+          />
+        ),
         // Executables are deliberately absent: `shell.openPath` would RUN an
         // agent-written `.command`/`.sh`. The file stays previewable and
         // revealable — only the exit that executes is withheld.
-        canOpenPathInEditor(target.filePath) ? (
+        target.filePathIsDirectory || !canOpenPathInEditor(target.filePath) ? null : (
           <Item
             icon="edit"
             key="file-open-editor"
             label={copy.file.openInEditor}
             onSelect={() => openPathInEditor(target.filePath)}
           />
-        ) : null,
+        ),
         // Revealing goes through Electron's `shell.showItemInFolder`, which
         // acts on THIS machine's filesystem — a path that lives on a remote
         // gateway would silently select nothing, so the entry is local-only
