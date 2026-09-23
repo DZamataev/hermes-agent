@@ -962,6 +962,11 @@ export const ja = defineLocale({
       daysAgo: count => `${count} 日前`
     },
     config: {
+      fileOpenAppTitle: "ファイルを開く既定の場所",
+      fileOpenAppDesc: "Hermes から送り出したファイルをどこで開くか。システム既定は OS のファイル関連付けに従いますが、インストーラーやツールチェーンの更新が黙って書き換えることがあります。ここでアプリを選ぶと固定できます。このコンピューターで見つかったアプリのみ表示されます。",
+      fileOpenAppSystem: "システムの既定",
+      fileOpenAppLabel: "ファイルを開く既定のアプリ",
+      fileOpenAppEmpty: "このコンピューターで対応するエディターが見つかりません。",
       minimizeToTrayTitle: 'トレイに最小化',
       minimizeToTrayDesc:
         'ウィンドウの最小化やメインウィンドウを閉じる操作でシステムトレイ（macOS ではメニューバー）に隠し、Hermes を実行し続けます。終了するにはトレイメニューの「Hermes を終了」または Cmd+Q を使います。初期設定はオフで、このデバイスにのみ適用されます。',

@@ -1065,7 +1065,12 @@ export interface Translations {
       attachmentSizeDesc: string
       attachmentSizeUnit: string
       attachmentSizeLabel: string
-      showOptions: string
+      fileOpenAppTitle: string
+    fileOpenAppDesc: string
+    fileOpenAppSystem: string
+    fileOpenAppLabel: string
+    fileOpenAppEmpty: string
+    showOptions: string
     }
     hudModifier: {
       title: string

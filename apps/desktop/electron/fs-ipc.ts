@@ -16,8 +16,10 @@ import {
   migrateProfileScopedDesktopPlugins,
   reconcileUnifiedDesktopHalves
 } from './desktop-plugins-root'
+import { detectEditorApps, editorLaunchForId } from './editor-apps'
 import { readDirForIpc } from './fs-read-dir'
 import { gitRootForIpc } from './git-root'
+import { hiddenWindowsChildOptions } from './windows-child-options'
 
 export interface FsIpcDeps {
   hermesHome: string
@@ -96,6 +98,62 @@ export function registerFsIpc({
         detached: true,
         stdio: 'ignore',
         windowsHide: false
+      })
+
+      child.unref()
+
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  // The editors installed on THIS machine, for the settings picker. Detection
+  // is a read: it probes known install locations and PATH, never launches.
+  ipcMain.handle('hermes:fs:editorApps', async () =>
+    detectEditorApps({
+      platform: process.platform,
+      env: process.env,
+      exists: candidate => fs.existsSync(candidate)
+    })
+  )
+
+  // Open a file in the editor the user PICKED, identified by catalog id.
+  //
+  // The id is the whole security boundary: the renderer never sends a command,
+  // and an id absent from this machine's detected set resolves to nothing, so
+  // the caller falls back to the OS association. Nothing here interpolates a
+  // path into a shell — `spawn` gets an argv array.
+  ipcMain.handle('hermes:fs:openInEditorApp', async (_event, appId, targetPath) => {
+    const id = String(appId || '').trim()
+    const target = String(targetPath || '').trim()
+
+    if (!id || !target) {
+      return { ok: false, error: 'unsupported' }
+    }
+
+    try {
+      const local = resolveRequestedPathForIpc(expandUserPath(target), { purpose: 'Open in editor' })
+
+      if (!fs.existsSync(local)) {
+        return { ok: false, error: 'ENOENT' }
+      }
+
+      const launch = editorLaunchForId(id, local, {
+        platform: process.platform,
+        env: process.env,
+        exists: candidate => fs.existsSync(candidate)
+      })
+
+      // Uninstalled since it was picked, or an id this build never offered.
+      if (!launch) {
+        return { ok: false, error: 'unavailable' }
+      }
+
+      const child = spawn(launch.command, launch.args, {
+        detached: true,
+        stdio: 'ignore',
+        ...hiddenWindowsChildOptions({}, process.platform === 'win32')
       })
 
       child.unref()

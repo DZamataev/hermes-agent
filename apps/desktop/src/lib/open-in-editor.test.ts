@@ -1,8 +1,11 @@
-import { expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { setFileOpenApp, SYSTEM_EDITOR_APP } from '@/store/file-open-prefs'
 
 import { canOpenPathInEditor, fileUrlForPath, openPathInEditor, wantsExternalEditor } from './open-in-editor'
 
 const opened: string[] = []
+const launched: [string, string][] = []
 
 vi.mock('@/lib/external-link', () => ({
   openExternalLink: (href: string) => opened.push(href)
@@ -65,4 +68,77 @@ it('still opens the documents and sources a transcript is actually about', () =>
   for (const path of ['/w/plan.md', '/w/App.tsx', '/w/data.json', '/w/shot.png', '/w/Makefile']) {
     expect(canOpenPathInEditor(path)).toBe(true)
   }
+})
+
+describe('with an editor chosen in Settings', () => {
+  const desktopWindow = window as unknown as { hermesDesktop?: Record<string, unknown> }
+
+  afterEach(() => {
+    opened.length = 0
+    launched.length = 0
+    delete desktopWindow.hermesDesktop
+    setFileOpenApp(SYSTEM_EDITOR_APP)
+  })
+
+  it('sends the file to that editor instead of the OS association', async () => {
+    // The whole point of the setting: macOS rewrites the association, so a
+    // chosen editor must win over whatever the OS currently thinks.
+    desktopWindow.hermesDesktop = {
+      openInEditorApp: (appId: string, path: string) => {
+        launched.push([appId, path])
+
+        return Promise.resolve({ ok: true })
+      }
+    }
+    setFileOpenApp('zed')
+
+    openPathInEditor('/work/App.tsx')
+    await vi.waitFor(() => expect(launched).toEqual([['zed', '/work/App.tsx']]))
+
+    expect(opened).toEqual([])
+  })
+
+  it('falls back to the OS when the chosen editor is gone', async () => {
+    // Uninstalled after it was picked: main answers `unavailable`, and the
+    // click must still open the file rather than silently doing nothing.
+    desktopWindow.hermesDesktop = {
+      openInEditorApp: (appId: string, path: string) => {
+        launched.push([appId, path])
+
+        return Promise.resolve({ ok: false, error: 'unavailable' })
+      }
+    }
+    setFileOpenApp('zed')
+
+    openPathInEditor('/work/App.tsx')
+    await vi.waitFor(() => expect(opened).toEqual(['file:///work/App.tsx']))
+  })
+
+  it('uses the OS association when no bridge exists', () => {
+    // A remote/browser shell has no Electron bridge; the setting cannot apply.
+    setFileOpenApp('zed')
+
+    openPathInEditor('/work/App.tsx')
+
+    expect(opened).toEqual(['file:///work/App.tsx'])
+    expect(launched).toEqual([])
+  })
+
+  it('never routes an executable to the chosen editor either', () => {
+    // The executable gate runs BEFORE the editor branch, so picking an editor
+    // must not reopen the path that "open" means "run".
+    desktopWindow.hermesDesktop = {
+      openInEditorApp: (appId: string, path: string) => {
+        launched.push([appId, path])
+
+        return Promise.resolve({ ok: true })
+      }
+    }
+    setFileOpenApp('zed')
+
+    openPathInEditor('/work/deploy.sh')
+
+    expect(launched).toEqual([])
+    expect(opened).toEqual([])
+  })
 })

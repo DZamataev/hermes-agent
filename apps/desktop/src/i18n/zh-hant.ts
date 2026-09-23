@@ -1000,6 +1000,11 @@ export const zhHant = defineLocale({
       daysAgo: count => `${count} 天前`
     },
     config: {
+      fileOpenAppTitle: "預設開啟檔案的位置",
+      fileOpenAppDesc: "從 Hermes 送出的檔案要在哪裡開啟。系統預設會遵循作業系統的檔案關聯，而某些安裝程式和工具鏈更新會默默改寫它——在此選擇應用程式即可固定。僅列出在這台電腦上找到的應用程式。",
+      fileOpenAppSystem: "系統預設",
+      fileOpenAppLabel: "開啟檔案的預設應用程式",
+      fileOpenAppEmpty: "在這台電腦上找不到支援的編輯器。",
       minimizeToTrayTitle: '最小化至系統匣',
       minimizeToTrayDesc:
         '最小化視窗或關閉主視窗時，將其隱藏至系統匣（macOS 上為選單列），讓 Hermes 繼續執行。透過系統匣選單中的「結束 Hermes」或 Cmd+Q 結束。預設關閉，僅適用於此裝置。',

@@ -426,6 +426,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   gitRoot: startPath => ipcRenderer.invoke('hermes:fs:gitRoot', startPath),
   revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),
   openWithPath: targetPath => ipcRenderer.invoke('hermes:fs:openWith', targetPath),
+  editorApps: () => ipcRenderer.invoke('hermes:fs:editorApps'),
+  openInEditorApp: (appId, targetPath) => ipcRenderer.invoke('hermes:fs:openInEditorApp', appId, targetPath),
   openDir: dirPath => ipcRenderer.invoke('hermes:fs:openDir', dirPath),
   desktopPluginsRoot: () => ipcRenderer.invoke('hermes:fs:desktopPluginsRoot'),
   reconcileDesktopPlugins: () => ipcRenderer.invoke('hermes:fs:reconcileDesktopPlugins'),

@@ -1272,6 +1272,11 @@ export const en: Translations = {
         'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Max preview / image load size in megabytes',
+      fileOpenAppTitle: "Default file open destination",
+      fileOpenAppDesc: "Where files open when you send them out of Hermes. The system default follows your OS file association, which some installers and toolchain updates quietly rewrite — pick an app here to pin it. Only apps found on this computer are listed.",
+      fileOpenAppSystem: "System default",
+      fileOpenAppLabel: "Default app for opening files",
+      fileOpenAppEmpty: "No supported editors found on this computer.",
       showOptions: 'Show options'
     },
     hudModifier: {
