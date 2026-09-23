@@ -38,13 +38,37 @@ it('resolves a home-relative path against the real home directory', async () => 
 
   expect(await resolveFilePath('~/dev/notes.md', '/work/looky', fs)).toEqual({
     base: 'cwd',
+    isDirectory: false,
     path: '/Users/me/dev/notes.md'
+  })
+})
+
+it('reports a directory as one, on the filesystem\'s word rather than the token\'s shape', async () => {
+  // A trailing slash is how an author announces a directory, but it is not
+  // proof: surfaces that must not offer a preview for a folder need the
+  // listing's verdict, and a path written without the slash is a folder just
+  // the same.
+  const fs = {
+    gitRoot: () => Promise.resolve('/work/looky'),
+    listDir: (dir: string) =>
+      Promise.resolve(
+        dir === '/work/looky/app'
+          ? [{ isDirectory: true, name: 'features', path: '/work/looky/app/features' }]
+          : null
+      )
+  }
+
+  expect(await resolveFilePath('app/features', '/work/looky', fs)).toEqual({
+    base: 'cwd',
+    isDirectory: true,
+    path: '/work/looky/app/features'
   })
 })
 
 it('resolves a path that exists under the session cwd', async () => {
   expect(await resolveFilePath('docs/plan.md', '/work/looky', io())).toEqual({
     base: 'cwd',
+    isDirectory: false,
     path: '/work/looky/docs/plan.md'
   })
 })
@@ -53,6 +77,7 @@ it('resolves a repository-root-relative path from a session inside a subdirector
   // The agent names paths from the repo root; the session sits deeper.
   expect(await resolveFilePath('docs/plan.md', '/work/looky/app/features', io())).toEqual({
     base: 'git-root',
+    isDirectory: false,
     path: '/work/looky/docs/plan.md'
   })
 })
@@ -69,6 +94,7 @@ it('keeps an absolute path as its own single candidate', async () => {
 
   expect(await resolveFilePath('/work/looky/docs/plan.md', '/elsewhere', fs)).toEqual({
     base: 'cwd',
+    isDirectory: false,
     path: '/work/looky/docs/plan.md'
   })
   expect(fs.listed).toEqual(['/work/looky/docs'])

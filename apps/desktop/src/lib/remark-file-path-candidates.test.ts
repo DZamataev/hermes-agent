@@ -98,6 +98,24 @@ it('marks a path written in inline code, line suffix included', () => {
   expect(candidatesOf(inlineCode('docs/plan.md:7'))).toEqual([{ path: 'docs/plan.md', token: 'docs/plan.md:7' }])
 })
 
+it('marks a directory only when the trailing slash says it is one', () => {
+  // A directory has no extension, so nothing about its SHAPE separates it from
+  // ordinary prose — `and/or` and `w/o` are the same shape. The trailing slash
+  // is the author stating the intent, and it is the only admission ticket.
+  expect(candidates('лежит в ~/.hermes/desktop-plugins/ вот')).toEqual([
+    { path: '~/.hermes/desktop-plugins', token: '~/.hermes/desktop-plugins/' }
+  ])
+  expect(candidates('правь src/app/features/ тут')).toEqual([
+    { path: 'src/app/features', token: 'src/app/features/' }
+  ])
+})
+
+it('keeps slash-joined prose out even though a directory has the same shape', () => {
+  expect(candidates('and/or, w/o, 12:30, example.com:8080')).toEqual([])
+  // No trailing slash: not offered as a directory, however plausible.
+  expect(candidates('смотри в src/app/features тут')).toEqual([])
+})
+
 it('leaves prose that merely looks path-like alone', () => {
   // Widening the matcher must not start claiming clock times, host:port pairs,
   // or the slashes of ordinary writing.

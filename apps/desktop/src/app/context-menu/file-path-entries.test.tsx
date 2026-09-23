@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
-import { RESOLVED_PATH_ATTR } from '@/components/chat/file-path-candidate'
+import { RESOLVED_DIR_ATTR, RESOLVED_PATH_ATTR } from '@/components/chat/file-path-candidate'
 import { en } from '@/i18n/en'
 import type * as ExternalLink from '@/lib/external-link'
 import { pickRevealLabel } from '@/lib/file-manager'
@@ -169,6 +169,35 @@ it('withholds the editor entry for a file the OS would execute', async () => {
 
   expect(await screen.findByText('Open in Hermes preview')).toBeTruthy()
   expect(screen.getByText('Copy file path')).toBeTruthy()
+  expect(screen.queryByText('Open in editor')).toBeNull()
+})
+
+it('offers a directory only what a directory can do', async () => {
+  // A folder has nothing to render in the rail and nothing to hand a text
+  // editor. Reveal is the verb the reference exists for, and Copy path still
+  // applies — the other two would be dead entries.
+  desktopWindow.hermesDesktop = {
+    openExternal: vi.fn().mockResolvedValue(undefined),
+    writeClipboard: vi.fn().mockResolvedValue(undefined)
+  } as unknown as Window['hermesDesktop']
+
+  render(
+    <MemoryRouter>
+      <AppContextMenu />
+    </MemoryRouter>
+  )
+
+  const host = attach(
+    `<span ${RESOLVED_PATH_ATTR}="/work/looky/app/features" ${RESOLVED_DIR_ATTR}>app/features/</span>`
+  )
+
+  fireEvent.contextMenu(host.querySelector('span')!)
+
+  const reveal = pickRevealLabel(en.fileMenu.revealFinder, en.fileMenu.revealExplorer, en.fileMenu.revealFileManager)
+
+  expect(await screen.findByText(reveal)).toBeTruthy()
+  expect(screen.getByText('Copy file path')).toBeTruthy()
+  expect(screen.queryByText('Open in Hermes preview')).toBeNull()
   expect(screen.queryByText('Open in editor')).toBeNull()
 })
 

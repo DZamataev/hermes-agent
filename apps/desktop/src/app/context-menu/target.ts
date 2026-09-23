@@ -7,7 +7,7 @@
  * image section still appears because the target carries both.
  */
 
-import { RESOLVED_PATH_ATTR } from '@/components/chat/file-path-candidate'
+import { RESOLVED_DIR_ATTR, RESOLVED_PATH_ATTR } from '@/components/chat/file-path-candidate'
 
 export interface ContextMenuDomTarget {
   /** The enclosing dialog content node, when the click landed inside one. */
@@ -18,6 +18,10 @@ export interface ContextMenuDomTarget {
    *  click landed on one. Only paths already PROVEN to exist carry it, so a
    *  menu entry built from this never offers a file that cannot open. */
   filePath: string
+  /** True when that resolved reference is a directory rather than a file —
+   *  the filesystem's verdict, carried over from resolution. A folder has
+   *  nothing to preview and nothing to open in an editor. */
+  filePathIsDirectory: boolean
   /** `href` of the enclosing anchor, as written (never absolutized). */
   linkUrl: string
   /** Source URL of the clicked image, when the click landed on one. */
@@ -56,6 +60,7 @@ export function resolveDomTarget(element: Element | null): ContextMenuDomTarget 
     dialogPortalContainer: dialogContent instanceof HTMLElement ? dialogContent : null,
     editable: editableFrom(element),
     filePath: fileRef?.getAttribute(RESOLVED_PATH_ATTR)?.trim() ?? '',
+    filePathIsDirectory: fileRef?.hasAttribute(RESOLVED_DIR_ATTR) ?? false,
     // A placeholder anchor is not a link the menu can act on.
     linkUrl: linkUrl === '#' ? '' : linkUrl,
     imageUrl: image instanceof HTMLImageElement ? image.currentSrc || image.src : '',
