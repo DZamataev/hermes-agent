@@ -763,6 +763,43 @@ describe('preserveLocalPendingTurnMessages', () => {
     }
   })
 
+  // #119566: history folds a tool-using turn into one row, live keeps a bubble
+  // per round. Without a `persisted_turn` receipt (older backend, a receipt
+  // compaction left partial) the rounds were re-appended under the fold.
+  it('retires live tool-round bubbles the committed fold already carries without a receipt', () => {
+    const tool = (toolCallId: string) =>
+      ({ type: 'tool-call', toolCallId, toolName: 'terminal', result: 'ok' }) as ChatMessagePart
+
+    const round = (id: string, parts: ChatMessagePart[]) => ({ ...msg(id, 'assistant', ''), parts, pending: false })
+    const prompt = msg('stored-user', 'user', 'Polish it', { rowId: 10 })
+
+    const fold = round('stored-fold', [
+      textPart('Checking the code first.'),
+      tool('toolu_a'),
+      textPart('Two sources exist.'),
+      tool('toolu_b'),
+      textPart('## Proposal\n\n1. Human time')
+    ])
+
+    const liveTurn = [
+      msg('user-optimistic', 'user', 'Polish it'),
+      round('assistant-stream-1', [textPart('Checking the code first.')]),
+      round('assistant-stream-2', [tool('toolu_a'), textPart('Two sources exist.')]),
+      round('assistant-stream-3', [tool('toolu_b'), textPart('## Proposal\n\n1. Human time')])
+    ]
+
+    expect(preserveLocalPendingTurnMessages([prompt, fold], liveTurn)).toEqual([prompt, fold])
+
+    // A round whose tool occurrence never committed is still the only copy of
+    // that round, even when its prose repeats a committed paragraph.
+    const uncommitted = round('assistant-stream-4', [tool('toolu_c'), textPart('Two sources exist.')])
+    expect(preserveLocalPendingTurnMessages([prompt, fold], [...liveTurn, uncommitted])).toEqual([
+      prompt,
+      fold,
+      uncommitted
+    ])
+  })
+
   it('keeps an optimistic user turn and pending assistant when the server projection is behind', () => {
     const next = [msg('1-user', 'user', 'first'), msg('2-assistant', 'assistant', 'first answer')]
 

@@ -9,6 +9,7 @@ import {
   textPart,
   toChatMessages
 } from '@/lib/chat-messages'
+import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -611,6 +612,42 @@ function durableFoldCoversLiveResponse(messages: ChatMessage[], live: ChatMessag
   })
 }
 
+/**
+ * Live bubbles of the newest turn that its committed row already folds.
+ *
+ * History folds a tool-using turn into one row; the live view keeps a bubble
+ * per round. The `persisted_turn` receipt retires them when it arrives, but an
+ * older backend sends none and compaction can leave it partial. The same
+ * ordered, tool-anchored coverage the resume path uses proves the fold carries
+ * them — within the matched user interval only (#119566).
+ */
+function liveRoundsCoveredByFold(
+  nextMessages: ChatMessage[],
+  previousMessages: ChatMessage[],
+  lastPreviousUser: number
+): Set<string> {
+  const storedUserIndex = nextMessages.findLastIndex(
+    message => message.role === 'user' && !isGatewaySystemMarker(message)
+  )
+
+  const liveUser = previousMessages[lastPreviousUser]
+  const storedUser = nextMessages[storedUserIndex]
+
+  if (
+    !liveUser ||
+    !storedUser ||
+    conflictingTranscriptIdentity(liveUser, storedUser) ||
+    textWithoutReferenceLines(chatMessageText(liveUser)) !== textWithoutReferenceLines(chatMessageText(storedUser))
+  ) {
+    return new Set()
+  }
+
+  const live = previousMessages.slice(lastPreviousUser + 1)
+  const uncovered = new Set(withoutCoveredAssistantPrefix(nextMessages.slice(storedUserIndex + 1), live).map(m => m.id))
+
+  return new Set(live.filter(message => !uncovered.has(message.id)).map(message => message.id))
+}
+
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
   previousMessages: ChatMessage[]
@@ -679,6 +716,7 @@ export function preserveLocalPendingTurnMessages(
   // avoids painting both the empty inflight shell and the full stream bubble.
   const replacements = new Map<string, ChatMessage>()
   const lastPreviousUser = previousMessages.findLastIndex(row => row.role === 'user' && !isGatewaySystemMarker(row))
+  const coveredByFold = liveRoundsCoveredByFold(nextMessages, previousMessages, lastPreviousUser)
   let crossedUserBoundary = false
 
   for (const [index, message] of previousMessages.entries()) {
@@ -704,6 +742,10 @@ export function preserveLocalPendingTurnMessages(
       message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))
 
     if (!isOptimisticUser && !isPendingAssistant) {
+      continue
+    }
+
+    if (isPendingAssistant && coveredByFold.has(message.id)) {
       continue
     }
 
