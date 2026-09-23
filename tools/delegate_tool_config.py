@@ -213,7 +213,8 @@ def _child_route_capabilities(
     from agent.auxiliary_oauth import declared_route_capabilities
     route_provider = effective_provider or getattr(parent_agent, "requested_provider", None) \
         or getattr(parent_agent, "provider", None)
-    return _filter_runtime_capabilities(declared_route_capabilities(route_provider, effective_model))
+    return _filter_runtime_capabilities(declared_route_capabilities(
+        route_provider, effective_model, getattr(parent_agent, "base_url", None)))
 
 
 def _model_pins_route(parent_agent, effective_model) -> bool:
@@ -394,7 +395,11 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
             request_overrides = dict(runtime.get("request_overrides") or {}) or None
             # Same class as the request personality: the endpoint the operator pinned declares its
             # own wire semantics, and the child is the one calling it.
-            capabilities = _filter_runtime_capabilities(runtime.get("capabilities"))
+            # ...but only when the pinned URL IS that provider's endpoint: the declaration is trust
+            # in one server, and ``provider: relay`` + another ``base_url`` is a different server.
+            from hermes_cli.route_identity import same_provider_endpoint
+            if same_provider_endpoint(runtime.get("base_url"), v["base_url"]):
+                capabilities = _filter_runtime_capabilities(runtime.get("capabilities"))
 
         except Exception as exc:
             logger.debug(

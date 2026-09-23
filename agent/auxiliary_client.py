@@ -6055,10 +6055,11 @@ def _named_route_identity(prov: Optional[str], base_url: Optional[str]) -> Optio
     MoA slots, pinned routes and ``auxiliary.<task>`` blocks arrive with the endpoint their
     provider resolved to. That call IS the provider, not an anonymous ``custom`` endpoint: its
     per-provider and per-model declarations (``capabilities.anthropic_oauth_proxy``) are looked up
-    by name, so flattening it strips the wire policy. Another origin under the same name is a
-    different route and stays ``custom``.
+    by name, so flattening it strips the wire policy. Another endpoint under the same name
+    (``same_provider_endpoint``) is a different route and stays ``custom``. The name is normalized
+    like the entry lookup (``My Relay`` → ``my-relay``) so one provider has one cache key.
     """
-    name = str(prov or "").strip().lower()
+    name = str(prov or "").strip().lower().replace(" ", "-")
     if not name or name in {"auto", "custom"} or not base_url:
         return None
     from hermes_cli.route_identity import named_provider_owns_endpoint
