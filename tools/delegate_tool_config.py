@@ -179,18 +179,50 @@ def _get_inherit_mcp_toolsets() -> bool:
 def _normalized_runtime_url(value: Any) -> str:
     return str(value or "").strip().rstrip("/")
 
-def _child_route_capabilities(parent_agent, override_provider, override_base_url, declared) -> Dict[str, bool]:
+def _child_route_capabilities(
+    parent_agent, override_provider, override_base_url, declared,
+    *, effective_provider=None, effective_model=None,
+) -> Dict[str, bool]:
     """Endpoint-trust capability map for the route the child actually calls.
 
-    ``agent.capabilities`` is a trust decision scoped to one provider+endpoint. An unpinned child
-    runs the parent's exact route and inherits its map; a pinned one runs its OWN route and carries
-    the map that route declares (never the parent's — that stays DEFAULT-DENY, matching the /model
-    switch posture). A route declaring nothing gets nothing, so the pin cannot borrow trust.
+    ``agent.capabilities`` is a trust decision scoped to one provider+endpoint AND one model
+    (``providers.<name>.models.<model>.capabilities`` overrides the provider-level map). An
+    unpinned child runs the parent's exact route and inherits its map; a pinned one runs its OWN
+    route and carries the map that route declares (never the parent's — that stays DEFAULT-DENY,
+    matching the /model switch posture). A route declaring nothing gets nothing, so the pin cannot
+    borrow trust.
 
-    See #94036, #97292.
+    ``delegation.model`` is a routing pin in its own right (#105347 keys pinning on
+    ``override_provider or override_base_url or model``, as the sibling fallback-chain decision in
+    this same kwargs dict already does), so a child pinned only to model B must not inherit model
+    A's map: on one endpoint declaring provider-level ``true`` and model-B ``false``, inheriting
+    would hand B wire authority its own route denies. A model-only pin therefore consumes the
+    declared map of its own model-qualified route.
+
+    See #94036, #97292, #105347.
     """
-    source = declared if (override_provider or override_base_url) else getattr(parent_agent, "capabilities", None)
-    return _filter_runtime_capabilities(source)
+    if override_provider or override_base_url:
+        return _filter_runtime_capabilities(declared)
+    parent_capabilities = getattr(parent_agent, "capabilities", None)
+    if not _model_pins_route(parent_agent, effective_model):
+        return _filter_runtime_capabilities(parent_capabilities)
+    # Model-only pin: same endpoint, different model — that model's own declaration owns the
+    # decision. An explicitly declared override still wins; otherwise resolve the route's config.
+    if isinstance(declared, dict) and declared:
+        return _filter_runtime_capabilities(declared)
+    from agent.auxiliary_oauth import declared_route_capabilities
+    route_provider = effective_provider or getattr(parent_agent, "requested_provider", None) \
+        or getattr(parent_agent, "provider", None)
+    return _filter_runtime_capabilities(declared_route_capabilities(route_provider, effective_model))
+
+
+def _model_pins_route(parent_agent, effective_model) -> bool:
+    """True when the child runs a different model than its parent (a routing pin, #105347)."""
+    child = str(effective_model or "").strip().lower()
+    if not child:
+        return False
+    return child != str(getattr(parent_agent, "model", "") or "").strip().lower()
+
 
 def _inherit_parent_endpoint(parent_agent, surface_base_url: Optional[str], surface_api_key: Any) -> tuple:
     """``(base_url, api_key)`` the parent is actually calling, taken from ONE source. ``parent_agent.base_url`` /
@@ -599,7 +631,8 @@ def _resolve_child_runtime(
         "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
         "provider": effective_provider, "requested_provider": effective_requested_provider,
         "capabilities": _child_route_capabilities(
-            parent_agent, override_provider, override_base_url, override_capabilities),
+            parent_agent, override_provider, override_base_url, override_capabilities,
+            effective_provider=effective_provider, effective_model=effective_model),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,
         "reasoning_config": child_reasoning,
         # Resolve routing and recovery policy from the same configuration owner. A pinned provider, endpoint, or

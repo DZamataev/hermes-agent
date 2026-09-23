@@ -303,24 +303,61 @@ def test_custom_pool_rotation_preserves_oauth_wire_policy(relay, tmp_path, enabl
 
 
 def test_resume_resolves_same_provider_model_capabilities(relay):
+    """A resumed session's capability must reach the WIRE, not just switch_model's argument.
+
+    Asserting the kwarg passes even when the real ``switch_model`` drops the map before rebuilding
+    the client, so this drives a real ``AIAgent`` through the resume path and reads the request it
+    then emits.
+    """
     from cli import HermesCLI
+    from run_agent import AIAgent
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from agent.anthropic_adapter import build_anthropic_kwargs
 
-    class Destination:
-        def switch_model(self, **kwargs):
-            self.capabilities = kwargs.get("capabilities")
-
-    cli = object.__new__(HermesCLI)
-    cli.model = "claude-opus-4-6"
-    cli.provider = cli.requested_provider = "custom:relay"
-    cli.api_key, cli.base_url, cli.api_mode = KEY, URL, "anthropic_messages"
-    cli.agent = Destination()
-    cli._console_print = lambda message: None
-    cli._restore_session_model({
-        "model": MODEL,
-        "model_config": json.dumps({
-            "provider": "custom:relay",
-            "base_url": URL,
-            "api_mode": "anthropic_messages",
-        }),
-    })
-    assert cli.agent.capabilities == {"anthropic_oauth_proxy": True}
+    # Start on a route that carries NO OAuth policy, so a capability seen on the wire afterwards can
+    # only have come from the resumed route's own resolution.
+    agent = AIAgent(
+        model="claude-opus-4-6",
+        provider="custom",
+        api_key=KEY,
+        base_url=URL,
+        api_mode="anthropic_messages",
+        capabilities={},
+        enabled_toolsets=[],
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    try:
+        assert agent._is_anthropic_oauth is False
+        cli = object.__new__(HermesCLI)
+        cli.model = "claude-opus-4-6"
+        cli.provider = cli.requested_provider = "custom:relay"
+        cli.api_key, cli.base_url, cli.api_mode = KEY, URL, "anthropic_messages"
+        cli.agent = agent
+        cli._console_print = lambda message: None
+        cli._restore_session_model({
+            "model": MODEL,
+            "model_config": json.dumps({
+                "provider": "custom:relay",
+                "base_url": URL,
+                "api_mode": "anthropic_messages",
+            }),
+        })
+        assert agent.capabilities == {"anthropic_oauth_proxy": True}
+        # The rebuilt client must speak the resumed route's policy.
+        assert agent._is_anthropic_oauth is True
+        kwargs = build_anthropic_kwargs(
+            model=MODEL,
+            messages=[{"role": "user", "content": "hello"}],
+            tools=TOOLS,
+            max_tokens=32,
+            reasoning_config=None,
+            is_oauth=agent._is_anthropic_oauth,
+            base_url=agent.base_url,
+        )
+        agent._anthropic_client.messages.create(**kwargs)
+        assert_wire(relay[-1], True, TOOLS, key=resolve_runtime_provider(
+            requested="custom:relay", target_model=MODEL)["api_key"])
+    finally:
+        agent._anthropic_client.close()
