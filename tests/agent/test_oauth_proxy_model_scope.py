@@ -500,6 +500,9 @@ def _tenant_config():
         # so the URL a consumer compares never carries it while the entry's URL does.
         ("https://h/t?team=a", "https://h/t", True),
         ("https://h/t?team=a", "https://h/t?team=a", True),
+        # Two present queries must agree (as parameter sets): another tenant otherwise.
+        ("https://h/t?team=a", "https://h/t?team=b", False),
+        ("https://h/t?a=1&b=2", "https://h/t?b=2&a=1", True),
     ],
 )
 def test_same_provider_endpoint_is_origin_plus_path_modulo_v1(own, target, same):
@@ -610,8 +613,12 @@ def test_model_only_child_pin_takes_its_models_declaration_at_the_parents_endpoi
     assert (kwargs["capabilities"] or {}) == expected
 
 
-def _child_capabilities(parent_url, live_url, child_model, requested="relay"):
+def _child_capabilities(parent_url, live_url, child_model, requested="relay", default_query=None):
     """Capabilities of a model-only child, through the real ``_resolve_child_runtime``."""
+    return _child_runtime(parent_url, live_url, child_model, requested, default_query)["capabilities"] or {}
+
+
+def _child_runtime(parent_url, live_url, child_model, requested="relay", default_query=None):
     from types import SimpleNamespace
 
     from tools.delegate_tool_config import _resolve_child_runtime
@@ -619,24 +626,29 @@ def _child_capabilities(parent_url, live_url, child_model, requested="relay"):
     parent = SimpleNamespace(
         model="claude-opus-5", base_url=parent_url, api_key="k", provider="custom",
         requested_provider=requested, capabilities={"anthropic_oauth_proxy": True},
-        api_mode="chat_completions", _client_kwargs={"base_url": live_url, "api_key": "k"}, client=None,
+        api_mode="chat_completions", client=None,
+        _client_kwargs={"base_url": live_url, "api_key": "k",
+                        **({"default_query": default_query} if default_query else {})},
         acp_command=None, acp_args=[], reasoning_config=None, _fallback_chain=None,
     )
     kwargs = _resolve_child_runtime(
         parent, {}, "k", model=child_model, override_provider=None, override_base_url=None,
         override_api_key=None, override_api_mode=None, override_acp_command=None, override_acp_args=None,
     )
-    return kwargs["capabilities"] or {}
+    return kwargs
 
 
 def test_child_pin_on_a_query_bearing_entry_keeps_its_declaration(relay):
     """Finding 1 (review 4): the OpenAI-wire client moves ``?team=a`` into ``default_query``, so the
-    live URL the child calls has no query while the entry's URL does. Same server."""
+    live URL has no query while the entry's URL does. Same server — and the child must call the
+    same tenant (review 5, finding 2): the parent's ``default_query`` goes back into its URL."""
     _rewrite_config(providers={"relay": {
         "api": f"{URL}/t?team=a", "key_env": "TEST_RELAY_KEY", "transport": "chat_completions",
         "capabilities": {"anthropic_oauth_proxy": True},
     }})
-    assert _child_capabilities(f"{URL}/t", f"{URL}/t", TRUSTLESS_MODEL) == {"anthropic_oauth_proxy": True}
+    child = _child_runtime(f"{URL}/t?team=a", f"{URL}/t", TRUSTLESS_MODEL, default_query={"team": "a"})
+    assert child["base_url"] == f"{URL}/t?team=a"
+    assert child["capabilities"] == {"anthropic_oauth_proxy": True}
 
 
 def test_child_pin_takes_the_live_endpoint_not_the_lagging_surface(relay):
@@ -644,6 +656,21 @@ def test_child_pin_takes_the_live_endpoint_not_the_lagging_surface(relay):
     ``base_url`` still on the relay must not lend its declaration to where the child really goes."""
     assert _child_capabilities(URL, URL, TRUSTED_MODEL) == {"anthropic_oauth_proxy": True}
     assert _child_capabilities(URL, FOREIGN, TRUSTED_MODEL) == {}
+
+
+def test_an_entry_named_custom_does_not_take_over_another_entrys_child_pin(relay):
+    """Review 5, finding 1: the runtime provider is ``custom`` for every named entry. When an entry
+    literally named ``custom`` exists too, the pin must still read the entry the parent resolved
+    from — in both directions."""
+    for relay_trust, custom_trust in ((False, True), (True, False)):
+        _rewrite_config(providers={
+            "relay": {"api": URL, "key_env": "TEST_RELAY_KEY", "transport": "anthropic_messages",
+                      "capabilities": {"anthropic_oauth_proxy": relay_trust}},
+            "custom": {"api": f"{URL}/v1", "key_env": "TEST_RELAY_KEY", "transport": "anthropic_messages",
+                       "capabilities": {"anthropic_oauth_proxy": custom_trust}},
+        })
+        caps = _child_capabilities(URL, URL, TRUSTED_MODEL)
+        assert bool(caps.get("anthropic_oauth_proxy")) is relay_trust, (relay_trust, caps)
 
 
 def test_child_pin_on_an_entry_literally_named_custom(relay):

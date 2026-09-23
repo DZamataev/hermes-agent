@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Optional
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 
 def normalize_route_base_url(base_url: Any) -> str:
@@ -45,17 +45,29 @@ def normalize_route_base_url(base_url: Any) -> str:
 
 
 def _route_path(base_url: str) -> str:
-    """The path of *base_url* with the trailing ``/`` and one ``/v1`` suffix removed.
-
-    The query is deliberately NOT part of the identity: the OpenAI-wire clients (main agent and
-    auxiliary) move it into ``default_query``, so every consumer compares the URL it calls WITHOUT
-    it, while the entry keeps it — comparing it would reject the entry's own server."""
+    """The path of *base_url* with the trailing ``/`` and one ``/v1`` suffix removed."""
     path = (urlsplit(base_url).path or "").rstrip("/")
     return path[: -len("/v1")] if path.endswith("/v1") else path
 
 
+def _same_query(own_url: str, target_url: str) -> bool:
+    """Queries agree, or one side has none.
+
+    OpenAI-wire consumers (main agent, auxiliary) move the query into ``default_query`` and compare
+    the URL WITHOUT it while the entry keeps it — so a missing query cannot mean "another
+    endpoint". Two present queries are compared as parameter sets (order-insensitive): ``?team=a``
+    vs ``?team=b`` is another tenant. Consumers that compare with the query (the Anthropic wire,
+    an explicit ``--base-url``, delegation) get that check."""
+    own_query, target_query = urlsplit(own_url).query, urlsplit(target_url).query
+    if not own_query or not target_query:
+        return True
+    return sorted(parse_qsl(own_query, keep_blank_values=True)) == sorted(
+        parse_qsl(target_query, keep_blank_values=True))
+
+
 def same_provider_endpoint(own: Any, target: Any) -> bool:
-    """Whether *target* is the endpoint *own* declares: same origin, same path modulo one ``/v1``.
+    """Whether *target* is the endpoint *own* declares: same origin, same path modulo one ``/v1``,
+    no conflicting query (``_same_query``).
 
     Origin alone is not the trust boundary: one host commonly fronts several tenants or relays by
     path (Cloudflare AI Gateway ``/v1/<account>/<gateway>``, LiteLLM per-team prefixes, a reverse
@@ -75,7 +87,7 @@ def same_provider_endpoint(own: Any, target: Any) -> bool:
         own_origin, target_origin = base_url_origin(own_url), base_url_origin(target_url)
         if not target_origin[1] or own_origin != target_origin:
             return False
-        return _route_path(own_url) == _route_path(target_url)
+        return _route_path(own_url) == _route_path(target_url) and _same_query(own_url, target_url)
     except ValueError:
         return False
 
