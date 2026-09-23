@@ -44,21 +44,27 @@ def normalize_route_base_url(base_url: Any) -> str:
     return normalized
 
 
-def _route_path(base_url: str) -> str:
-    """The path of *base_url* with the trailing ``/`` and one ``/v1`` API-version suffix removed."""
-    path = (urlsplit(base_url).path or "").rstrip("/")
-    return path[: -len("/v1")] if path.endswith("/v1") else path
+def _route_path(base_url: str) -> tuple:
+    """``(path, query)`` of *base_url*: trailing ``/`` and one ``/v1`` suffix removed from the path.
+
+    The query is part of the endpoint: a gateway may pick the tenant by it (``?team=a``)."""
+    parts = urlsplit(base_url)
+    path = (parts.path or "").rstrip("/")
+    return (path[: -len("/v1")] if path.endswith("/v1") else path), parts.query
 
 
 def same_provider_endpoint(own: Any, target: Any) -> bool:
-    """Whether *target* is the endpoint *own* declares: same origin AND same path modulo ``/v1``.
+    """Whether *target* is the endpoint *own* declares: same origin, same path modulo one ``/v1``,
+    same query.
 
     Origin alone is not the trust boundary: one host commonly fronts several tenants or relays by
     path (Cloudflare AI Gateway ``/v1/<account>/<gateway>``, LiteLLM per-team prefixes, a reverse
-    proxy), and an entry's key, ``extra_headers`` and OAuth identity must not reach a sibling path.
-    The ``/v1`` allowance is the one rewrite resolvers really apply (OpenCode-family routing adds
-    or strips it). Scheme and port are part of the origin: an HTTPS→HTTP downgrade or another port
-    is another server (``base_url_origin``). Fail-closed on anything unparseable.
+    proxy), and an entry's OAuth identity and declared capabilities must not reach a sibling path.
+    ``/v1`` is allowed because resolvers add or strip it for the SAME relay. Other rewrites move
+    to a different relay and are deliberately NOT equal: OpenCode family routing swaps
+    ``/zen`` ↔ ``/zen/go``, dual-surface hosts swap ``/anthropic`` ↔ ``/v1``. Scheme and port are
+    part of the origin: an HTTPS→HTTP downgrade or another port is another server
+    (``base_url_origin``). Fail-closed on anything unparseable or spelled differently.
     """
     from utils import base_url_origin
 

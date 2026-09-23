@@ -211,8 +211,15 @@ def _child_route_capabilities(
     if isinstance(declared, dict) and declared:
         return _filter_runtime_capabilities(declared)
     from agent.auxiliary_oauth import declared_route_capabilities
-    route_provider = effective_provider or getattr(parent_agent, "requested_provider", None) \
-        or getattr(parent_agent, "provider", None)
+    # In production ``effective_provider`` is the parent's RUNTIME provider — ``custom`` for every
+    # named entry, which names no declaration. Take the first candidate that names an entry: the
+    # effective provider when it is one, else the parent's requested provider (the entry's name).
+    route_provider = next(
+        (p for p in (effective_provider, getattr(parent_agent, "requested_provider", None),
+                     getattr(parent_agent, "provider", None))
+         if str(p or "").strip().lower() not in {"", "custom"}),
+        None,
+    )
     return _filter_runtime_capabilities(declared_route_capabilities(
         route_provider, effective_model, getattr(parent_agent, "base_url", None)))
 

@@ -289,6 +289,8 @@ def assert_no_oauth_identity(request) -> None:
     """A request that carries none of the relay's declared OAuth identity: not its key as a
     Bearer, no OAuth / Claude Code betas, no conversation header."""
     assert request.headers.get("authorization") != f"Bearer {KEY}"
+    # NOT asserted: ``x-api-key`` — a name + foreign URL still sends the entry's key as x-api-key.
+    # That predates this work (reviews 2 and 3, finding 6) and is a separate decision.
     assert "oauth-2025-04-20" not in request.headers.get("anthropic-beta", "")
     assert "claude-code" not in request.headers.get("anthropic-beta", "")
     assert "x-claude-code-session-id" not in request.headers
@@ -494,6 +496,10 @@ def _tenant_config():
         ("https://h", "", False),
         ("", "https://h", False),
         ("https://h", "https://h:notaport", False),
+        # The query is part of the endpoint: a gateway may pick the tenant by it.
+        ("https://h/t?team=a", "https://h/t?team=a", True),
+        ("https://h/t?team=a", "https://h/t?team=b", False),
+        ("https://h/t?team=a", "https://h/t", False),
     ],
 )
 def test_same_provider_endpoint_is_origin_plus_path_modulo_v1(own, target, same):
@@ -565,20 +571,83 @@ def test_delegation_base_url_under_the_relays_name_gets_no_declaration(relay):
     assert not foreign["capabilities"]
 
 
-def test_model_only_pin_on_a_foreign_parent_endpoint_gets_no_declaration(relay):
-    """A parent already on another endpoint under the relay's name: a model-only child pin must
-    not look the relay's declaration up by name alone."""
+@pytest.mark.parametrize(
+    "parent_url,child_model,expected",
+    [
+        # Unpinned: the child is the parent's exact route and inherits the parent's live map.
+        (URL, None, {"anthropic_oauth_proxy": True}),
+        # Model-only pin at the relay's own endpoint: the child model's OWN declaration.
+        (URL, TRUSTED_MODEL, {"anthropic_oauth_proxy": True}),
+        (URL, TRUSTLESS_MODEL, {"anthropic_oauth_proxy": False}),
+        # Parent already on another endpoint under the relay's name: nothing to look up.
+        (FOREIGN, TRUSTED_MODEL, {}),
+    ],
+)
+def test_model_only_child_pin_takes_its_models_declaration_at_the_parents_endpoint(
+    relay, parent_url, child_model, expected,
+):
+    """Finding 3 (review 3): production calls ``_child_route_capabilities`` with
+    ``effective_provider=parent.provider``, which is ``custom`` for every named entry — built here
+    through the real ``_resolve_child_runtime`` from a real resolved runtime."""
     from types import SimpleNamespace
 
-    from tools.delegate_tool_config import _child_route_capabilities
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from tools.delegate_tool_config import _resolve_child_runtime
 
-    def parent(base_url):
-        return SimpleNamespace(model=TRUSTLESS_MODEL, base_url=base_url, capabilities=None,
-                               requested_provider="relay", provider="custom")
+    runtime = resolve_runtime_provider(requested="relay", target_model="claude-opus-5")
+    assert runtime["provider"] == "custom"
+    parent = SimpleNamespace(
+        model="claude-opus-5", base_url=parent_url, api_key="k", provider=runtime["provider"],
+        requested_provider=runtime.get("requested_provider"),
+        capabilities=dict(runtime.get("capabilities") or {}) if parent_url == URL else {},
+        api_mode="anthropic_messages", _client_kwargs={"base_url": parent_url, "api_key": "k"}, client=None,
+        acp_command=None, acp_args=[], reasoning_config=None, _fallback_chain=None,
+    )
+    kwargs = _resolve_child_runtime(
+        parent, {}, "k", model=child_model, override_provider=None, override_base_url=None,
+        override_api_key=None, override_api_mode=None, override_acp_command=None, override_acp_args=None,
+    )
+    assert (kwargs["capabilities"] or {}) == expected
 
-    assert _child_route_capabilities(parent(URL), None, None, None, effective_model=TRUSTED_MODEL) == {
-        "anthropic_oauth_proxy": True}
-    assert not _child_route_capabilities(parent(FOREIGN), None, None, None, effective_model=TRUSTED_MODEL)
+
+def test_pooled_runtime_drops_the_declaration_at_another_endpoint(relay, monkeypatch):
+    """Finding 2 (review 3): the credential-pool exit of ``_resolve_named_custom_runtime`` returns
+    before the final scoping; a pool keyed by the provider's name serves any explicit URL."""
+    from types import SimpleNamespace
+
+    from hermes_cli import runtime_provider
+
+    _tenant_config()
+    entry = SimpleNamespace(access_token="POOL-KEY", runtime_api_key="POOL-KEY", base_url=f"{GATEWAY}/tenant-a")
+    pool = SimpleNamespace(has_credentials=lambda: True, select=lambda: entry)
+    monkeypatch.setattr(runtime_provider, "load_pool", lambda key: pool)
+    own = runtime_provider.resolve_runtime_provider(requested="tenant", target_model=TRUSTED_MODEL)
+    assert own["source"] != "custom_provider:tenant"  # the pool path, not the key_env path
+    assert own["capabilities"] == {"anthropic_oauth_proxy": True}
+    foreign = runtime_provider.resolve_runtime_provider(
+        requested="tenant", target_model=TRUSTED_MODEL, explicit_base_url=f"{GATEWAY}/tenant-b")
+    assert foreign["source"] == own["source"]
+    assert not foreign.get("capabilities")
+
+
+def test_a_spaced_name_whose_dashed_form_is_a_builtin_alias_is_not_dashed(relay):
+    """Finding 1 (review 3): ``Claude Code`` dashed is ``claude-code``, the ``anthropic`` alias;
+    the downstream resolver would route it to the built-in and drop the relay's wire policy."""
+    from agent.auxiliary_client import _resolve_task_provider_model, call_llm
+    from hermes_cli.auth import known_provider_id
+
+    assert known_provider_id("claude-code") is not None
+    _rewrite_config(providers={"my-relay": {
+        "name": "Claude Code", "api": URL, "key_env": "TEST_RELAY_KEY", "transport": "anthropic_messages",
+        "capabilities": {"anthropic_oauth_proxy": True},
+    }})
+    assert _resolve_task_provider_model(None, "Claude Code", TRUSTED_MODEL, URL, None)[0] == "claude code"
+    call_llm(
+        provider="Claude Code", model=TRUSTED_MODEL, base_url=URL,
+        messages=[{"role": "user", "content": "hello"}], max_tokens=32,
+        main_runtime={"provider": "moa", "base_url": "moa://local", "model": "simple"},
+    )
+    assert_oauth_wire(relay[-1], True)
 
 
 # ── the cheap lookup picks exactly the entry the full lookup picks ────────────
