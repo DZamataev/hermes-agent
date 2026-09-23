@@ -6056,12 +6056,19 @@ def _named_route_identity(prov: Optional[str], base_url: Optional[str]) -> Optio
     provider resolved to. That call IS the provider, not an anonymous ``custom`` endpoint: its
     per-provider and per-model declarations (``capabilities.anthropic_oauth_proxy``) are looked up
     by name, so flattening it strips the wire policy. Another endpoint under the same name
-    (``same_provider_endpoint``) is a different route and stays ``custom``. The name is normalized
-    like the entry lookup (``My Relay`` → ``my-relay``) so one provider has one cache key.
+    (``same_provider_endpoint``) is a different route and stays ``custom``. A spaced display name
+    is dashed like the entry lookup (``My Relay`` → ``my-relay``) so one provider has one cache
+    key — unless the dashed form is a built-in id or alias (``Claude Code`` → ``claude-code`` is
+    the ``anthropic`` alias): the downstream resolver would then route it to the built-in.
     """
-    name = str(prov or "").strip().lower().replace(" ", "-")
+    name = str(prov or "").strip().lower()
     if not name or name in {"auto", "custom"} or not base_url:
         return None
+    dashed = name.replace(" ", "-")
+    if dashed != name:
+        from hermes_cli.auth import known_provider_id
+        if known_provider_id(dashed) is None:
+            name = dashed
     from hermes_cli.route_identity import named_provider_owns_endpoint
     return name if named_provider_owns_endpoint(name, base_url) else None
 
