@@ -22,8 +22,13 @@ const POSIX_PATH = String.raw`(?:[\p{L}\p{N}_~./-]+\/)[\p{L}\p{N}_.-]+\.[a-z\d]{
 // paths from ever becoming candidates.
 const WINDOWS_PATH = String.raw`(?:[a-z]:[\\/]|\\\\[\p{L}\p{N}_.-]+\\)[\p{L}\p{N}_.\\/-]*[\p{L}\p{N}_.-]+\.[a-z\d]{1,16}`
 const DOCUMENT_NAME = String.raw`[\p{L}\p{N}_-]+\.(?:md|markdown|mdown|txt|json|yaml|yml|toml|csv|pdf)`
+// A directory has no extension, so its shape is indistinguishable from
+// slash-joined prose (`and/or`, `w/o`). The TRAILING SLASH is the author
+// saying "this is a directory", and it is the only thing that admits one —
+// without it every "n/a" in a sentence would become a candidate.
+const DIRECTORY_PATH = String.raw`(?:[a-z]:[\\/]|\\\\[\p{L}\p{N}_.-]+\\|[\p{L}\p{N}_~.-]+[\\/])[\p{L}\p{N}_.\\/-]*[\\/]`
 
-const FILE_PATH = new RegExp(`^(?:${WINDOWS_PATH}|${POSIX_PATH}|${DOCUMENT_NAME})$`, 'iu')
+const FILE_PATH = new RegExp(`^(?:${WINDOWS_PATH}|${POSIX_PATH}|${DOCUMENT_NAME}|${DIRECTORY_PATH})$`, 'iu')
 
 // A path is routinely cited with the line (and column) it was read at —
 // `…/VideoMessageBubble.tsx:141`. That suffix belongs to the reference, not to
@@ -39,6 +44,17 @@ const FILE_TOKEN =
 /** The filename inside a `path:line[:col]` reference. */
 function withoutLineSuffix(token: string) {
   return token.replace(LINE_SUFFIX, '')
+}
+
+/**
+ * The path to resolve, given the token the reader sees.
+ *
+ * A trailing separator is how a directory announces itself, but it is not part
+ * of the path: the resolver probes a parent listing for an entry BY NAME, and
+ * `desktop-plugins/` is not the name of anything.
+ */
+function candidatePath(token: string) {
+  return withoutLineSuffix(token).replace(/(?<=.)[\\/]+$/, '')
 }
 
 /** Marks the mdast node carrying a candidate path; read by the renderer. */
@@ -82,17 +98,17 @@ export function remarkFilePathCandidates() {
 
       for (const child of node.children) {
         if (child.type === 'inlineCode' && FILE_PATH.test(withoutLineSuffix(child.value))) {
-          children.push(candidate(withoutLineSuffix(child.value), [child]))
+          children.push(candidate(candidatePath(child.value), [child]))
         } else if (child.type === 'text') {
           let cursor = 0
 
           for (const match of child.value.matchAll(FILE_TOKEN)) {
-            // The token is what the reader sees and clicks — line suffix
-            // included; the candidate is the filename inside it.
+            // The token is what the reader sees and clicks — line suffix and
+            // trailing separator included; the candidate is the path inside it.
             const token = match[2].replace(/\.+$/, '')
-            const path = withoutLineSuffix(token)
+            const path = candidatePath(token)
 
-            if (!FILE_PATH.test(path)) {
+            if (!FILE_PATH.test(withoutLineSuffix(token))) {
               continue
             }
 
