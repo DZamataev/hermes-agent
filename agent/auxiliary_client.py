@@ -6057,9 +6057,11 @@ def _named_route_identity(prov: Optional[str], base_url: Optional[str]) -> Optio
     per-provider and per-model declarations (``capabilities.anthropic_oauth_proxy``) are looked up
     by name, so flattening it strips the wire policy. Another endpoint under the same name
     (``same_provider_endpoint``) is a different route and stays ``custom``. A spaced display name
-    is dashed like the entry lookup (``My Relay`` → ``my-relay``) so one provider has one cache
-    key — unless the dashed form is a built-in id or alias (``Claude Code`` → ``claude-code`` is
-    the ``anthropic`` alias): the downstream resolver would then route it to the built-in.
+    is dashed like the entry lookup (``My Relay`` → ``my-relay``) — unless the dashed form is a
+    built-in id or alias (``Claude Code`` → ``claude-code`` is the ``anthropic`` alias): the
+    downstream resolver would then route it to the built-in. Such a name keeps its spaced
+    spelling, so it can occupy a second client-cache slot beside the entry key; that costs a
+    client, not correctness.
     """
     name = str(prov or "").strip().lower()
     if not name or name in {"auto", "custom"} or not base_url:

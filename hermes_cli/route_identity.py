@@ -44,18 +44,18 @@ def normalize_route_base_url(base_url: Any) -> str:
     return normalized
 
 
-def _route_path(base_url: str) -> tuple:
-    """``(path, query)`` of *base_url*: trailing ``/`` and one ``/v1`` suffix removed from the path.
+def _route_path(base_url: str) -> str:
+    """The path of *base_url* with the trailing ``/`` and one ``/v1`` suffix removed.
 
-    The query is part of the endpoint: a gateway may pick the tenant by it (``?team=a``)."""
-    parts = urlsplit(base_url)
-    path = (parts.path or "").rstrip("/")
-    return (path[: -len("/v1")] if path.endswith("/v1") else path), parts.query
+    The query is deliberately NOT part of the identity: the OpenAI-wire clients (main agent and
+    auxiliary) move it into ``default_query``, so every consumer compares the URL it calls WITHOUT
+    it, while the entry keeps it — comparing it would reject the entry's own server."""
+    path = (urlsplit(base_url).path or "").rstrip("/")
+    return path[: -len("/v1")] if path.endswith("/v1") else path
 
 
 def same_provider_endpoint(own: Any, target: Any) -> bool:
-    """Whether *target* is the endpoint *own* declares: same origin, same path modulo one ``/v1``,
-    same query.
+    """Whether *target* is the endpoint *own* declares: same origin, same path modulo one ``/v1``.
 
     Origin alone is not the trust boundary: one host commonly fronts several tenants or relays by
     path (Cloudflare AI Gateway ``/v1/<account>/<gateway>``, LiteLLM per-team prefixes, a reverse

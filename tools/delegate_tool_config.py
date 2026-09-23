@@ -181,7 +181,7 @@ def _normalized_runtime_url(value: Any) -> str:
 
 def _child_route_capabilities(
     parent_agent, override_provider, override_base_url, declared,
-    *, effective_provider=None, effective_model=None,
+    *, effective_provider=None, effective_model=None, effective_base_url=None,
 ) -> Dict[str, bool]:
     """Endpoint-trust capability map for the route the child actually calls.
 
@@ -211,17 +211,29 @@ def _child_route_capabilities(
     if isinstance(declared, dict) and declared:
         return _filter_runtime_capabilities(declared)
     from agent.auxiliary_oauth import declared_route_capabilities
+    from hermes_cli.runtime_provider_custom import named_custom_provider_entry
     # In production ``effective_provider`` is the parent's RUNTIME provider — ``custom`` for every
-    # named entry, which names no declaration. Take the first candidate that names an entry: the
-    # effective provider when it is one, else the parent's requested provider (the entry's name).
+    # named entry. The declaration lives under the entry's name, which the parent keeps as
+    # ``requested_provider``; take the first of the two that actually names an entry (an entry may
+    # literally be called ``custom``).
     route_provider = next(
-        (p for p in (effective_provider, getattr(parent_agent, "requested_provider", None),
-                     getattr(parent_agent, "provider", None))
-         if str(p or "").strip().lower() not in {"", "custom"}),
+        (p for p in (effective_provider, getattr(parent_agent, "requested_provider", None))
+         if str(p or "").strip() and _names_an_entry(named_custom_provider_entry, p)),
         None,
     )
+    if route_provider is None:
+        return {}
+    # The URL the child will actually call (the parent's LIVE endpoint, #90009), not the surface
+    # attribute, which can lag the live client together with ``requested_provider``.
     return _filter_runtime_capabilities(declared_route_capabilities(
-        route_provider, effective_model, getattr(parent_agent, "base_url", None)))
+        route_provider, effective_model, effective_base_url or getattr(parent_agent, "base_url", None)))
+
+
+def _names_an_entry(lookup, provider) -> bool:
+    try:
+        return bool(lookup(str(provider)))
+    except Exception:  # noqa: BLE001 — a malformed entry names nothing usable
+        return False
 
 
 def _model_pins_route(parent_agent, effective_model) -> bool:
@@ -644,7 +656,8 @@ def _resolve_child_runtime(
         "provider": effective_provider, "requested_provider": effective_requested_provider,
         "capabilities": _child_route_capabilities(
             parent_agent, override_provider, override_base_url, override_capabilities,
-            effective_provider=effective_provider, effective_model=effective_model),
+            effective_provider=effective_provider, effective_model=effective_model,
+            effective_base_url=effective_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,
         "reasoning_config": child_reasoning,
         # Resolve routing and recovery policy from the same configuration owner. A pinned provider, endpoint, or
