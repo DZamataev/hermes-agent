@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode, urlsplit
 from utils import base_url_hostname, is_truthy_value
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -181,7 +182,7 @@ def _normalized_runtime_url(value: Any) -> str:
 
 def _child_route_capabilities(
     parent_agent, override_provider, override_base_url, declared,
-    *, effective_provider=None, effective_model=None,
+    *, effective_provider=None, effective_model=None, effective_base_url=None,
 ) -> Dict[str, bool]:
     """Endpoint-trust capability map for the route the child actually calls.
 
@@ -211,9 +212,30 @@ def _child_route_capabilities(
     if isinstance(declared, dict) and declared:
         return _filter_runtime_capabilities(declared)
     from agent.auxiliary_oauth import declared_route_capabilities
-    route_provider = effective_provider or getattr(parent_agent, "requested_provider", None) \
-        or getattr(parent_agent, "provider", None)
-    return _filter_runtime_capabilities(declared_route_capabilities(route_provider, effective_model))
+    from hermes_cli.runtime_provider_custom import named_custom_provider_entry
+    # The declaration lives under the name the parent resolved from: ``requested_provider``. It
+    # goes FIRST — ``effective_provider`` is the RUNTIME provider (``custom`` for every named
+    # entry), and an entry literally named ``custom`` would otherwise take over the pin of a parent
+    # running on another entry. ``effective_provider`` is the fallback for parents without one.
+    route_provider = next(
+        (p for p in (getattr(parent_agent, "requested_provider", None), effective_provider)
+         if str(p or "").strip() and _names_an_entry(named_custom_provider_entry, p)),
+        None,
+    )
+    if route_provider is None:
+        return {}
+    # The URL the child will actually call (the parent's LIVE endpoint, #90009), not the surface
+    # attribute, which can lag the live client together with ``requested_provider``.
+    # ``_inherit_parent_endpoint`` already falls back to the surface URL without a live client.
+    return _filter_runtime_capabilities(declared_route_capabilities(
+        route_provider, effective_model, effective_base_url))
+
+
+def _names_an_entry(lookup, provider) -> bool:
+    try:
+        return bool(lookup(str(provider)))
+    except Exception:  # noqa: BLE001 — a malformed entry names nothing usable
+        return False
 
 
 def _model_pins_route(parent_agent, effective_model) -> bool:
@@ -238,11 +260,24 @@ def _inherit_parent_endpoint(parent_agent, surface_base_url: Optional[str], surf
         # OpenAI SDK exposes base_url as httpx.URL — coerce before comparing.
         (getattr(client, "base_url", ""), getattr(client, "api_key", None)) if client is not None else (None, None),
     )
-    for raw_url, live_key in live_candidates:
+    for index, (raw_url, live_key) in enumerate(live_candidates):
         url = _normalized_runtime_url(raw_url)
         if url and url.startswith(("http://", "https://")):
+            if index == 0:
+                url = _with_default_query(url, (client_kwargs or {}).get("default_query"))
             return url, (live_key or surface_api_key)
     return (surface_base_url or None), surface_api_key
+
+
+def _with_default_query(url: str, default_query: Any) -> str:
+    """*url* with the live client's ``default_query`` put back into it.
+
+    The parent's OpenAI-wire client carries a query-bearing base URL (``…/t?team=a``) as a clean
+    ``base_url`` plus ``default_query``; the child rebuilds its client from a URL alone, so without
+    this it would call the tenant-less endpoint."""
+    if not isinstance(default_query, dict) or not default_query or urlsplit(url).query:
+        return url
+    return f"{url}?{urlencode({str(k): str(v) for k, v in default_query.items()})}"
 
 def _loaded_pool(key: Any):
     """``load_pool(key)`` when it holds credentials, else None."""
@@ -394,7 +429,11 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
             request_overrides = dict(runtime.get("request_overrides") or {}) or None
             # Same class as the request personality: the endpoint the operator pinned declares its
             # own wire semantics, and the child is the one calling it.
-            capabilities = _filter_runtime_capabilities(runtime.get("capabilities"))
+            # ...but only when the pinned URL IS that provider's endpoint: the declaration is trust
+            # in one server, and ``provider: relay`` + another ``base_url`` is a different server.
+            from hermes_cli.route_identity import same_provider_endpoint
+            if same_provider_endpoint(runtime.get("base_url"), v["base_url"]):
+                capabilities = _filter_runtime_capabilities(runtime.get("capabilities"))
 
         except Exception as exc:
             logger.debug(
@@ -632,7 +671,8 @@ def _resolve_child_runtime(
         "provider": effective_provider, "requested_provider": effective_requested_provider,
         "capabilities": _child_route_capabilities(
             parent_agent, override_provider, override_base_url, override_capabilities,
-            effective_provider=effective_provider, effective_model=effective_model),
+            effective_provider=effective_provider, effective_model=effective_model,
+            effective_base_url=effective_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,
         "reasoning_config": child_reasoning,
         # Resolve routing and recovery policy from the same configuration owner. A pinned provider, endpoint, or

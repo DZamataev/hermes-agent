@@ -876,7 +876,11 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
                 from agent.moa_loop import bind_moa_runtime
                 bind_moa_runtime(agent, _fb["model"])
                 return None
-            agent.provider = _fb["provider"]
+            # Same identity fields as a runtime fallback (try_activate_fallback): requested_provider
+            # and capabilities belong to the entry now serving, not to the one that failed —
+            # otherwise its declaration (and a child pin that reads it) outlives the switch.
+            agent.provider = agent.requested_provider = _fb["provider"]
+            agent.capabilities = dict(vars(_fb_client).get("capabilities") or {})
             agent.model = _fb_model or _fb["model"]
             return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:

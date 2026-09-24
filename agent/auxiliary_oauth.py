@@ -25,7 +25,7 @@ def _bare_model(model: Any) -> str:
     return text.rsplit("/", 1)[-1] if text else ""
 
 
-def declared_route_capabilities(provider: Any, model: Any) -> Dict[str, bool]:
+def declared_route_capabilities(provider: Any, model: Any, base_url: Any = None) -> Dict[str, bool]:
     """The capability map *provider*'s config entry declares for *model* (``{}`` when none).
 
     Resolved by the canonical owner, so the provider-level map and its per-model override merge
@@ -33,11 +33,19 @@ def declared_route_capabilities(provider: Any, model: Any) -> Dict[str, bool]:
     A ``vendor/model`` id matches a bare ``models:`` key (and the reverse): aggregator-prefixed and
     native spellings of one model are one route, and the prefix must not silently fall the lookup
     back to the provider-level value.
+
+    A declaration is the entry's statement about its OWN endpoint: with a *base_url* that is not
+    that endpoint (``same_provider_endpoint``) the answer is ``{}``. Read-only and credential-free
+    (``named_custom_provider_entry``): this runs on every auxiliary call.
     """
     try:
-        from hermes_cli.runtime_provider_custom import _get_named_custom_provider, _lift_model_capabilities
-        entry = _get_named_custom_provider(str(provider or ""))
-        if not isinstance(entry, dict):
+        from hermes_cli.route_identity import same_provider_endpoint
+        from hermes_cli.runtime_provider_custom import _lift_model_capabilities, named_custom_provider_entry
+        found = named_custom_provider_entry(str(provider or ""))
+        if not found:
+            return {}
+        entry, own_url = found
+        if base_url and not same_provider_endpoint(own_url, base_url):
             return {}
         result: Dict[str, Any] = {}
         _lift_model_capabilities(entry, _entry_model_key(entry, model), result)
@@ -59,9 +67,9 @@ def _entry_model_key(entry: Dict[str, Any], model: Any) -> Optional[str]:
     return next((key for key in models if _bare_model(key) == bare), name)
 
 
-def declared_oauth_proxy(provider: Any, model: Any) -> Optional[bool]:
-    """``anthropic_oauth_proxy`` as *provider*'s entry declares it for *model*, else None."""
-    value = declared_route_capabilities(provider, model).get("anthropic_oauth_proxy")
+def declared_oauth_proxy(provider: Any, model: Any, base_url: Any = None) -> Optional[bool]:
+    """``anthropic_oauth_proxy`` as *provider*'s entry declares it for *model* at *base_url*, else None."""
+    value = declared_route_capabilities(provider, model, base_url).get("anthropic_oauth_proxy")
     return value if isinstance(value, bool) else None
 
 
@@ -106,8 +114,16 @@ def runtime_oauth_proxy(
     Inherits the main session's live value only for its own provider + endpoint + model; any other
     route — including a different model on the same relay — answers from its own model-qualified
     declaration, so a pin can neither borrow nor lose wire authority across models.
+
+    A declaration belongs to the provider's OWN endpoint (``same_provider_endpoint``: origin plus
+    path modulo ``/v1``). The same name pointed anywhere else (``auxiliary.<task>.base_url``, a
+    ``fallback_chain`` entry, a sibling tenant path on the relay's host) is a different server: it
+    gets the entry's key if the user composed it so, but never the Claude Code identity and
+    Bearer-as-OAuth policy the relay declared for itself. An empty *base_url* means the entry's
+    own endpoint. The main runtime carries capabilities only for its own endpoint
+    (``resolve_runtime_provider``), so the inherited branch cannot smuggle them to another URL.
     """
     inherited = _inherited_oauth_proxy(main_runtime, provider, base_url, model)
     if inherited is not None:
         return inherited
-    return declared_oauth_proxy(provider, model)
+    return declared_oauth_proxy(provider, model, base_url)

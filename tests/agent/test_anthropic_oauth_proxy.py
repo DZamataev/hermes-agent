@@ -302,6 +302,62 @@ def test_custom_pool_rotation_preserves_oauth_wire_policy(relay, tmp_path, enabl
         agent._anthropic_client.close()
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_key_cmd_relay_carries_the_oauth_identity_on_the_bearer_hook_client(relay, tmp_path, enabled):
+    """A ``key_cmd`` credential is a callable, which takes the bearer-hook client arm. That arm
+    must honour the relay's capability exactly like the static-key arm: OAuth-only betas, the
+    Claude Code user agent and ``x-app`` — on the first client and on a rebuilt one. An unflagged
+    third-party relay with the same callable stays without them."""
+    from agent.anthropic_adapter import build_anthropic_kwargs
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from run_agent import AIAgent
+
+    path = tmp_path / "config.yaml"
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    relay_entry = config["providers"]["relay"]
+    relay_entry.pop("key_env")
+    relay_entry["key_cmd"] = f"printf {KEY}"
+    relay_entry["capabilities"] = {"anthropic_oauth_proxy": enabled}
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    runtime = resolve_runtime_provider(requested="custom:relay", target_model=MODEL)
+    assert callable(runtime["api_key"])
+    agent = AIAgent(
+        model=MODEL,
+        provider=runtime["provider"],
+        api_key=runtime["api_key"],
+        base_url=runtime["base_url"],
+        api_mode=runtime["api_mode"],
+        capabilities=runtime.get("capabilities"),
+        enabled_toolsets=[],
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    try:
+        assert agent._is_anthropic_oauth is enabled
+        kwargs = build_anthropic_kwargs(
+            model=MODEL, messages=[{"role": "user", "content": "hello"}], tools=TOOLS,
+            max_tokens=32, reasoning_config=None, is_oauth=agent._is_anthropic_oauth,
+            base_url=agent.base_url,
+        )
+        for rebuilt in (False, True):
+            if rebuilt:
+                agent._rebuild_anthropic_client()
+            agent._anthropic_client.messages.create(**kwargs)
+            request = relay[-1]
+            assert request.headers.get("x-api-key") is None
+            assert ("oauth-2025-04-20" in request.headers.get("anthropic-beta", "")) is enabled
+            assert ("claude-code/" in request.headers.get("user-agent", "")) is enabled
+            assert (request.headers.get("x-app") == "cli") is enabled
+            assert body_says_claude_code(request) is enabled
+    finally:
+        agent._anthropic_client.close()
+
+
+def body_says_claude_code(request) -> bool:
+    return "Claude Code" in json.dumps(json.loads(request.content).get("system", []))
+
+
 def test_resume_resolves_same_provider_model_capabilities(relay):
     """A resumed session's capability must reach the WIRE, not just switch_model's argument.
 

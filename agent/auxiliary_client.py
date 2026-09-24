@@ -4825,6 +4825,11 @@ class _ResolveRequest(NamedTuple):
     main_runtime: Optional[Dict[str, Any]]
     is_vision: bool
     task: Optional[str]
+    # The identity whose config entry won resolution, when that is not ``provider``: a saved
+    # ``custom:claude`` is selected by its raw name, while ``provider`` is the alias-normalized
+    # built-in (``anthropic``). The wire policy is that entry's declaration, so it is read under
+    # this name up to the final client construction. Set only by the named-custom branch.
+    owner: Optional[str] = None
 
 
 _ResolveResult = Tuple[Optional[Any], Optional[str]]
@@ -4901,7 +4906,8 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
     # looks like; the same declaration gates ``_reasoning_config`` in _build_call_kwargs.
     api_mode = req.api_mode or _profile_declared_messages_wire(req.provider)
     from agent.auxiliary_oauth import runtime_oauth_proxy
-    force_oauth = bool(runtime_oauth_proxy(req.main_runtime, req.provider, base_url_str, final_model_str))
+    force_oauth = bool(runtime_oauth_proxy(
+        req.main_runtime, req.owner or req.provider, base_url_str, final_model_str))
     return _maybe_wrap_anthropic(
         client_obj, final_model_str, api_key_str, base_url_str, api_mode,
         force_oauth=force_oauth,
@@ -5111,10 +5117,13 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     custom_entry = None
     if req.original_provider and req.original_provider != provider:
         custom_entry = _get_named_custom_provider(req.original_provider)
+        if custom_entry:
+            req = req._replace(owner=req.original_provider)
     if custom_entry is None:
         custom_entry = _get_named_custom_provider(provider)
     if not custom_entry:
         return None
+    owner = req.owner or provider
     # A per-task/explicit base_url or api_key composes OVER the named entry's defaults: the entry supplies
     # whatever the caller left blank, never replaces what the caller set (compression prompts carry
     # conversation history, so a silently swapped destination is a data-routing bug, not a nuisance).
@@ -5158,7 +5167,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
         # Model-qualified: two models on this one relay may declare different values, and this
         # decides Bearer vs x-api-key plus the Claude Code transforms on the actual request.
         from agent.auxiliary_oauth import runtime_oauth_proxy
-        force_oauth = bool(runtime_oauth_proxy(req.main_runtime, req.provider, custom_base, final_model))
+        force_oauth = bool(runtime_oauth_proxy(req.main_runtime, owner, custom_base, final_model))
         try:
             from agent.anthropic_adapter import build_anthropic_client
             from agent.anthropic_credentials import anthropic_route_is_oauth
@@ -5176,7 +5185,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
             req, AnthropicAuxiliaryClient(
                 real_client, final_model, custom_key, custom_base,
                 is_oauth=anthropic_route_is_oauth(
-                    custom_base, custom_key, provider=provider, oauth_proxy=force_oauth,
+                    custom_base, custom_key, provider=owner, oauth_proxy=force_oauth,
                 ),
             ), final_model)
     client = _named_custom_openai_wire_client(custom_base, custom_key, entry_headers)
@@ -6049,6 +6058,32 @@ def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
         }
 
 
+def _named_route_identity(prov: Optional[str], base_url: Optional[str]) -> Optional[str]:
+    """The named provider *prov* (normalized) when *base_url* is its own endpoint, else None.
+
+    MoA slots, pinned routes and ``auxiliary.<task>`` blocks arrive with the endpoint their
+    provider resolved to. That call IS the provider, not an anonymous ``custom`` endpoint: its
+    per-provider and per-model declarations (``capabilities.anthropic_oauth_proxy``) are looked up
+    by name, so flattening it strips the wire policy. Another endpoint under the same name
+    (``same_provider_endpoint``) is a different route and stays ``custom``. A spaced display name
+    is dashed like the entry lookup (``My Relay`` → ``my-relay``) — unless the dashed form is a
+    built-in id or alias (``Claude Code`` → ``claude-code`` is the ``anthropic`` alias): the
+    downstream resolver would then route it to the built-in. Such a name keeps its spaced
+    spelling, so it can occupy a second client-cache slot beside the entry key; that costs a
+    client, not correctness.
+    """
+    name = str(prov or "").strip().lower()
+    if not name or name in {"auto", "custom"} or not base_url:
+        return None
+    dashed = name.replace(" ", "-")
+    if dashed != name:
+        from hermes_cli.auth import known_provider_id
+        if known_provider_id(dashed) is None:
+            name = dashed
+    from hermes_cli.route_identity import named_provider_owns_endpoint
+    return name if named_provider_owns_endpoint(name, base_url) else None
+
+
 def _resolve_task_provider_model(
     task: str = None, provider: str = None, model: str = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -6110,12 +6145,19 @@ def _resolve_task_provider_model(
         if not api_key:
             api_key = cfg_api_key
     if base_url:
-        kept = provider if _preserve_provider_with_base_url(provider) else "custom"
+        if _preserve_provider_with_base_url(provider):
+            kept = provider
+        else:
+            kept = _named_route_identity(provider, base_url) or "custom"
         return kept, resolved_model, base_url, api_key, resolved_api_mode
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode
     if cfg_base_url and cfg_api_key:
-        kept = cfg_provider if str(cfg_provider or "").strip().lower() in _LOCAL_SERVER_ALIASES else "custom"
+        # A credential in the task block does not make a named provider's own endpoint anonymous.
+        if str(cfg_provider or "").strip().lower() in _LOCAL_SERVER_ALIASES:
+            kept = cfg_provider
+        else:
+            kept = _named_route_identity(cfg_provider, cfg_base_url) or "custom"
         return kept, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
     if cfg_base_url and cfg_provider and cfg_provider != "auto":
         # base_url without api_key: keep the provider so it can resolve credentials from env
