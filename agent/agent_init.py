@@ -880,7 +880,8 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             # and capabilities belong to the entry now serving, not to the one that failed —
             # otherwise its declaration (and a child pin that reads it) outlives the switch.
             agent.provider = agent.requested_provider = _fb["provider"]
-            agent.capabilities = dict(vars(_fb_client).get("capabilities") or {})
+            from agent.auxiliary_oauth import routed_client_capabilities
+            agent.capabilities = routed_client_capabilities(_fb_client, _fb["provider"], _fb_model or _fb["model"])
             agent.model = _fb_model or _fb["model"]
             return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
@@ -1032,6 +1033,11 @@ def _client_kwargs_from_routed(client, timeout) -> Dict[str, Any]:
     )
     if headers:
         kwargs["default_headers"] = dict(headers)
+    # The SDK splits a query-bearing base URL into a clean ``base_url`` plus ``_custom_query``;
+    # dropping it here sends the session to the endpoint without its tenant query.
+    query = getattr(client, "_custom_query", None)
+    if isinstance(query, dict) and query:
+        kwargs["default_query"] = dict(query)
     return kwargs
 
 

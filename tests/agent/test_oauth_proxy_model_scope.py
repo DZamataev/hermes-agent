@@ -496,19 +496,19 @@ def _tenant_config():
         ("https://h", "", False),
         ("", "https://h", False),
         ("https://h", "https://h:notaport", False),
-        # The query is not part of the identity: OpenAI-wire clients move it into default_query,
-        # so the URL a consumer compares never carries it while the entry's URL does.
-        ("https://h/t?team=a", "https://h/t", True),
+        # The query is part of the route: it can select a tenant. Adding, dropping or changing it
+        # is another route — a query-less URL is not a wildcard in either direction.
+        ("https://h/t?team=a", "https://h/t", False),
+        ("https://h/t", "https://h/t?team=other", False),
         ("https://h/t?team=a", "https://h/t?team=a", True),
-        # Two present queries must agree (as parameter sets): another tenant otherwise.
         ("https://h/t?team=a", "https://h/t?team=b", False),
+        # Key order is not identity; values, blanks and repeats are.
         ("https://h/t?a=1&b=2", "https://h/t?b=2&a=1", True),
-        # Parsed like the default_query producers (parse_qs: first value, blanks dropped), so a URL
-        # rebuilt from default_query equals the entry it came from.
-        ("https://h/t?team=a&x=", "https://h/t?team=a", True),
-        ("https://h/t?team=a&team=b", "https://h/t?team=a", True),
-        # A blank-only query is a (blank) tenant, not "no query".
+        ("https://h/t?team=a&x=", "https://h/t?team=a", False),
+        ("https://h/t?team=a&team=b", "https://h/t?team=a", False),
+        ("https://h/t?team=a&team=b", "https://h/t?team=b&team=a", False),
         ("https://h/t?team=a", "https://h/t?team=", False),
+        ("https://h/t?team=", "https://h/t?team=", True),
     ],
 )
 def test_same_provider_endpoint_is_origin_plus_path_modulo_v1(own, target, same):
@@ -537,6 +537,139 @@ def test_a_sibling_tenant_path_is_not_the_relay(relay):
     assert request.headers.get("authorization") != f"Bearer {KEY}"
     assert "x-claude-code-session-id" not in request.headers
     assert_no_oauth_identity(request)
+
+
+# ── the query is part of the route: a tenant choice, never a wildcard ─────────
+
+def _query_tenant_config():
+    """Two relays on one path: one pinned to a tenant by query, one declared without a query."""
+    _rewrite_config(providers={
+        "qtenant": {"api": f"{URL}/t?team=a", "key_env": "TEST_RELAY_KEY", "transport": "anthropic_messages",
+                    "capabilities": {"anthropic_oauth_proxy": True}},
+        "qplain": {"api": f"{URL}/t", "key_env": "TEST_RELAY_KEY", "transport": "anthropic_messages",
+                   "capabilities": {"anthropic_oauth_proxy": True}},
+    })
+
+
+# (provider, explicit URL, keeps the declaration): the entry's own query — or its own absence of
+# one — keeps it; adding, dropping or changing the query is another tenant.
+QUERY_ROUTES = [
+    ("qtenant", f"{URL}/t?team=a", True),
+    ("qtenant", f"{URL}/t", False),
+    ("qtenant", f"{URL}/t?team=b", False),
+    ("qtenant", f"{URL}/t?team=a&team=b", False),
+    ("qplain", f"{URL}/t", True),
+    ("qplain", f"{URL}/t?team=other", False),
+]
+
+
+@pytest.mark.parametrize("provider,explicit,kept", QUERY_ROUTES)
+def test_explicit_base_url_with_another_query_drops_the_declaration(relay, provider, explicit, kept):
+    """andrexibiza review, P1: ``--base-url`` / ``/model`` / CLI fallback under the relay's name."""
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    _query_tenant_config()
+    runtime = resolve_runtime_provider(requested=provider, target_model=TRUSTED_MODEL, explicit_base_url=explicit)
+    assert bool((runtime.get("capabilities") or {}).get("anthropic_oauth_proxy")) is kept
+
+
+@pytest.mark.parametrize("provider,explicit,kept", QUERY_ROUTES)
+def test_delegation_base_url_with_another_query_drops_the_declaration(relay, provider, explicit, kept):
+    from tools.delegate_tool_config import _resolve_delegation_credentials
+
+    _query_tenant_config()
+    creds = _resolve_delegation_credentials({"provider": provider, "base_url": explicit, "model": TRUSTED_MODEL}, None)
+    assert bool((creds["capabilities"] or {}).get("anthropic_oauth_proxy")) is kept
+
+
+@pytest.mark.parametrize("provider,explicit,kept", QUERY_ROUTES)
+def test_auxiliary_call_with_another_query_gets_no_oauth_identity(relay, provider, explicit, kept):
+    """The MoA-slot / explicit auxiliary shape: name + URL, main session elsewhere."""
+    from agent.auxiliary_client import call_llm
+
+    _query_tenant_config()
+    call_llm(
+        provider=provider, model=TRUSTED_MODEL, base_url=explicit,
+        messages=[{"role": "user", "content": "hello"}], max_tokens=32,
+        main_runtime={"provider": "moa", "base_url": "moa://local", "model": "simple"},
+    )
+    request = relay[-1]
+    assert request.url.path.startswith("/t")
+    if kept:
+        assert_oauth_wire(request, True)
+    else:
+        assert_no_oauth_identity(request)
+
+
+def test_client_route_url_puts_the_sdk_split_query_back(relay):
+    """The OpenAI SDK keeps ``…/t?team=a`` as a clean base_url plus a default query; the identity
+    decision must see the query again, and must not see one that was never there."""
+    from openai import OpenAI
+
+    from agent.auxiliary_client import _client_route_url, _extract_url_query_params
+
+    clean, query = _extract_url_query_params(f"{URL}/t?team=a")
+    client = OpenAI(api_key="k", base_url=clean, default_query=query)
+    assert _client_route_url(client, client.base_url) == f"{URL}/t?team=a"
+    bare = OpenAI(api_key="k", base_url=f"{URL}/t")
+    assert _client_route_url(bare, bare.base_url) == f"{URL}/t"
+
+
+def _chat_query_relay():
+    _rewrite_config(providers={"qchat": {
+        "api": f"{URL}/t?team=a", "key_env": "TEST_RELAY_KEY", "transport": "chat_completions",
+        "capabilities": {"anthropic_oauth_proxy": True},
+    }})
+
+
+def test_chat_wire_call_on_a_query_bearing_relay_keeps_its_conversation_header(relay):
+    """End to end through ``call_llm``: the OpenAI client built for ``…/t?team=a`` reports the clean
+    ``…/t``; the relay's own route must still be recognised, so the conversation header goes out."""
+    from agent.auxiliary_client import call_llm
+    from agent.claude_code_session import CLAUDE_CODE_SESSION_HEADER
+
+    _chat_query_relay()
+    call_llm(
+        provider="qchat", model=TRUSTED_MODEL, messages=[{"role": "user", "content": "hello"}], max_tokens=32,
+        main_runtime={"provider": "moa", "base_url": "moa://local", "model": "simple",
+                      "session_id": "20260924_120000_query"},
+    )
+    request = relay[-1]
+    assert request.url.path.endswith("/chat/completions")
+    assert request.url.params.get("team") == "a"
+    assert request.headers.get(CLAUDE_CODE_SESSION_HEADER)
+
+
+def test_fallback_destination_keeps_the_clients_query(relay):
+    """A fallback built from a label or a chain entry without ``base_url`` reads the client; its
+    route must carry the SDK-split query, or the relay's own fallback loses its policy."""
+    from openai import OpenAI
+
+    from agent.auxiliary_client import _fallback_destination, _fallback_destination_from_entry
+
+    client = OpenAI(api_key="k", base_url=f"{URL}/t", default_query={"team": "a"})
+    from_entry = _fallback_destination_from_entry({"provider": "qchat"}, client, TRUSTED_MODEL)
+    assert from_entry.route_url == f"{URL}/t?team=a"
+    from_label = _fallback_destination(None, client, TRUSTED_MODEL, "qchat")
+    assert from_label.route_url == f"{URL}/t?team=a"
+
+
+def test_published_main_runtime_carries_the_client_query(relay):
+    """The main agent's ``base_url`` is the SDK-clean half; the runtime published to auxiliary
+    routing must carry the tenant query from ``_client_kwargs['default_query']``."""
+    from types import SimpleNamespace
+
+    from agent.auxiliary_oauth import runtime_oauth_proxy
+    from agent.turn_context import live_route_base_url
+
+    _query_tenant_config()
+    agent = SimpleNamespace(base_url=f"{URL}/t", _client_kwargs={"default_query": {"team": "a"}})
+    assert live_route_base_url(agent) == f"{URL}/t?team=a"
+    assert live_route_base_url(SimpleNamespace(base_url=f"{URL}/t", _client_kwargs={})) == f"{URL}/t"
+    main = {"provider": "custom", "requested_provider": "qtenant", "base_url": live_route_base_url(agent),
+            "model": TRUSTED_MODEL, "capabilities": {"anthropic_oauth_proxy": True}}
+    assert runtime_oauth_proxy(main, "custom", f"{URL}/t?team=a", TRUSTED_MODEL) is True
+    assert not runtime_oauth_proxy(main, "custom", f"{URL}/t", TRUSTED_MODEL)
 
 
 # ── the main runtime and delegation carry the declaration only to its own endpoint ──
@@ -659,6 +792,33 @@ def test_child_pin_on_a_query_bearing_entry_keeps_its_declaration(relay):
     # given the query a second time.
     child = _child_runtime(f"{URL}/t?team=a", f"{URL}/t?team=a", TRUSTLESS_MODEL, default_query={"team": "a"})
     assert child["base_url"] == f"{URL}/t?team=a"
+
+
+def test_child_pin_off_the_live_client_keeps_its_query(relay):
+    """No ``_client_kwargs`` URL: the child reads the live OpenAI client, whose ``base_url`` is the
+    SDK-clean half — its default query must come back with it, or the child loses the tenant."""
+    from types import SimpleNamespace
+
+    from openai import OpenAI
+
+    from tools.delegate_tool_config import _resolve_child_runtime
+
+    _rewrite_config(providers={"relay": {
+        "api": f"{URL}/t?team=a", "key_env": "TEST_RELAY_KEY", "transport": "chat_completions",
+        "capabilities": {"anthropic_oauth_proxy": True},
+    }})
+    parent = SimpleNamespace(
+        model="claude-opus-5", base_url=f"{URL}/t", api_key="k", provider="custom",
+        requested_provider="relay", capabilities={"anthropic_oauth_proxy": True}, api_mode="chat_completions",
+        client=OpenAI(api_key="k", base_url=f"{URL}/t", default_query={"team": "a"}), _client_kwargs={},
+        acp_command=None, acp_args=[], reasoning_config=None, _fallback_chain=None,
+    )
+    child = _resolve_child_runtime(
+        parent, {}, "k", model=TRUSTLESS_MODEL, override_provider=None, override_base_url=None,
+        override_api_key=None, override_api_mode=None, override_acp_command=None, override_acp_args=None,
+    )
+    assert child["base_url"] == f"{URL}/t?team=a"
+    assert child["capabilities"] == {"anthropic_oauth_proxy": True}
 
 
 def test_child_pin_takes_the_live_endpoint_not_the_lagging_surface(relay):
