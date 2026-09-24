@@ -507,6 +507,8 @@ def _tenant_config():
         # rebuilt from default_query equals the entry it came from.
         ("https://h/t?team=a&x=", "https://h/t?team=a", True),
         ("https://h/t?team=a&team=b", "https://h/t?team=a", True),
+        # A blank-only query is a (blank) tenant, not "no query".
+        ("https://h/t?team=a", "https://h/t?team=", False),
     ],
 )
 def test_same_provider_endpoint_is_origin_plus_path_modulo_v1(own, target, same):

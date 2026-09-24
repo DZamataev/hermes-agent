@@ -1008,7 +1008,12 @@ class ClientLifecycleMixin:
         # The OpenAI SDK appends paths to base_url verbatim, so a query-bearing pool URL (…/t?team=a)
         # must be split like agent_init's _explicit_client_kwargs, or requests go to …/t?team=a
         # with no /chat/completions.
+        # Only an entry that brings its OWN URL decides the query. A URL-less entry (Azure Foundry's
+        # env-seeded key, whose URL lives in model.base_url) falls back to self.base_url, which is
+        # already query-less — the live default_query (api-version, tenant) must stay.
         from agent.auxiliary_client import _extract_url_query_params
+        entry_has_url = bool(getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None))
+        old_route = (normalize_route_base_url(self.base_url), self._client_kwargs.get("default_query") or None)
         stripped_base, entry_query = _extract_url_query_params(stripped_base) if isinstance(stripped_base, str) else (stripped_base, None)
         self.api_key, self.base_url = runtime_key, stripped_base
         # Inlined (not _sync_client_kwargs_credentials): tests call this unbound on a SimpleNamespace agent.
@@ -1016,8 +1021,12 @@ class ClientLifecycleMixin:
         self._client_kwargs["base_url"] = self.base_url
         if entry_query:
             self._client_kwargs["default_query"] = entry_query
-        else:
+        elif entry_has_url:
             self._client_kwargs.pop("default_query", None)
+        # Compare split forms: the stored base_url is query-less, so comparing it with the raw pool
+        # URL would call every rotation onto a query-bearing entry a route change (and drop the
+        # user's default_headers each time).
+        route_changed = old_route != (normalize_route_base_url(self.base_url), self._client_kwargs.get("default_query") or None)
         self._reapply_route_client_config(route_changed=route_changed)
         self._replace_primary_openai_client(reason="credential_rotation")
         return True

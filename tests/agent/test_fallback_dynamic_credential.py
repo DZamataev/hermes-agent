@@ -70,3 +70,13 @@ def test_fallback_rebuild_keeps_the_tenant_query():
     finally:
         client.close()
         rebuilt.close()
+
+
+def test_fallback_without_a_query_adds_no_default_query():
+    client = OpenAI(api_key="k", base_url="https://relay.example.com/t")
+    agent = SimpleNamespace()
+    try:
+        _swap_fallback_clients(agent, client, "relay", "fixture", str(client.base_url), "chat_completions")
+        assert "default_query" not in agent._client_kwargs
+    finally:
+        client.close()
