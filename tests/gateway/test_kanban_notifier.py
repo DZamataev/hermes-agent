@@ -775,6 +775,28 @@ def test_board_quiescent_keeps_the_completion_handoff_in_the_same_wake(tmp_path,
     assert "THE REAL HANDOFF" in wake and "no work left" in wake
 
 
+def test_board_quiescent_alone_wakes_about_the_board_not_the_carrier_card(tmp_path, monkeypatch):
+    """The carrier finished in an earlier batch: the wake turn must not send the orchestrator back to that card."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-board-wake.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="Write the README", assignee="docs-bot",
+                             session_id="agent:main:telegram:dm:chat-1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm",
+                           delivery_mode="notify+wake")
+        kb._append_event(conn, tid, "board_quiescent", {"counts": {"blocked": 1, "done": 3}, "attention": ["t_left"]})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    wake = _wake_text(adapter)
+    assert "no work left" in wake and "t_left" in wake
+    assert tid not in wake and "Write the README" not in wake and "docs-bot" not in wake
+
+
 def test_board_quiescent_addressed_to_another_destination_is_not_delivered(tmp_path, monkeypatch):
     """Announcements are addressed: a second follower of the target card is not pinged about someone else's."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-addressed.db"))
@@ -785,7 +807,7 @@ def test_board_quiescent_addressed_to_another_destination_is_not_delivered(tmp_p
         kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm")
         kb._append_event(conn, tid, "board_quiescent", {
             "counts": {"done": 1}, "attention": [],
-            "to": {"platform": "telegram", "chat_id": "chat-2", "thread_id": ""}})
+            "to": kbn.quiescent_destination_tag(conn, {"platform": "telegram", "chat_id": "chat-2"})})
     finally:
         conn.close()
 

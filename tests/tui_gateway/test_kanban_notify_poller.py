@@ -345,7 +345,7 @@ class TestBoardQuiescentReachesTheSession:
         try:
             kb._append_event(conn, tid, "board_quiescent", {
                 "counts": {"done": 1}, "attention": [], "mark": 3,
-                "to": {"platform": "telegram", "chat_id": "chat-1", "thread_id": ""}})
+                "to": kbn.quiescent_destination_tag(conn, {"platform": "telegram", "chat_id": "chat-1"})})
             top = conn.execute("SELECT MAX(id) FROM task_events").fetchone()[0]
         finally:
             conn.close()
@@ -379,7 +379,7 @@ class TestLineageDelivery:
             for tid, key in ((old, "before-compress"), (new, "after-compress")):
                 kb._append_event(conn, tid, "board_quiescent", {
                     "counts": {"done": 2}, "attention": [], "mark": 7,
-                    "to": {"platform": "tui", "chat_id": key, "thread_id": ""}})
+                    "to": kbn.quiescent_destination_tag(conn, {"platform": "tui", "chat_id": key})})
         finally:
             conn.close()
 
@@ -396,13 +396,37 @@ class TestLineageDelivery:
             for mark in (7, 9):
                 kb._append_event(conn, tid, "board_quiescent", {
                     "counts": {"done": mark}, "attention": [], "mark": mark,
-                    "to": {"platform": "tui", "chat_id": "after-compress", "thread_id": ""}})
+                    "to": kbn.quiescent_destination_tag(conn, {"platform": "tui", "chat_id": "after-compress"})})
         finally:
             conn.close()
 
         texts = _collect_kanban_notifications(_session("after-compress"))
 
         assert len(texts) == 2
+
+    def test_a_second_compression_keeps_every_earlier_key(self, tmp_path, monkeypatch):
+        """The cached lineage belongs to one key: after the key rotates again, both ancestors and the new key count."""
+        _compressed_lineage(tmp_path, monkeypatch, "k1", "k2", "k3")
+        session = _session("k2")
+        assert _collect_kanban_notifications(session) == []
+        tids = [_create_subscribed_task(chat_id=key) for key in ("k1", "k2", "k3")]
+        for n, tid in enumerate(tids):
+            _complete(tid, summary=f"from key {n + 1}")
+
+        session["session_key"] = "k3"
+        texts = _collect_kanban_notifications(session)
+
+        assert sorted(t.split("\n")[-1] for t in texts) == ["from key 1", "from key 2", "from key 3"]
+
+    def test_an_ancestor_tab_does_not_take_its_continuations_subscriptions(self, tmp_path, monkeypatch):
+        """Ancestors only: a stale pre-compression tab must not claim what the conversation subscribed later."""
+        _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        tid = _create_subscribed_task(chat_id="after-compress")
+        pre_cursor = _sub_rows(tid)[0]["last_event_id"]
+        _complete(tid)
+
+        assert _collect_kanban_notifications(_session("before-compress")) == []
+        assert _sub_rows(tid)[0]["last_event_id"] == pre_cursor
 
     def test_failed_lineage_lookup_is_retried_on_the_next_poll(self, tmp_path, monkeypatch):
         import tui_gateway.server as server

@@ -72,6 +72,9 @@ def _scrub_local_state(conn: sqlite3.Connection) -> None:
     gateway chat ids subscribed to task events). Caller owns the transaction.
     Run on export and again on import (an archive is untrusted input)."""
     conn.execute("DELETE FROM kanban_notify_subs")
+    # The key of the idle-board destination tags: without it the tags left in exported events are meaningless.
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("DELETE FROM kanban_board_state WHERE key = 'quiescent_tag_salt'")
     conn.execute(
         """
         UPDATE tasks

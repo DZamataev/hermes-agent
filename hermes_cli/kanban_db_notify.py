@@ -472,6 +472,40 @@ def _newest_uncovered_claim(conn: sqlite3.Connection, active: tuple[str, ...]) -
     return (mark, int(newest)) if newest else None
 
 
+_QUIESCENT_SALT_KEY = "quiescent_tag_salt"
+_WAKING_MODES = ("notify+wake", "wake")
+
+
+def _quiescent_salt(conn: sqlite3.Connection, *, create: bool = False) -> bytes:
+    """Board-local secret keying destination tags (a bare hash of a numeric chat id is trivially reversed). Created by
+    the first announcement; export strips it with the subscriptions."""
+    row = conn.execute("SELECT value FROM kanban_board_state WHERE key = ?", (_QUIESCENT_SALT_KEY,)).fetchone()
+    if row is None:
+        if not create:
+            return b""
+        import secrets
+        conn.execute("INSERT OR IGNORE INTO kanban_board_state (key, value) VALUES (?, ?)",
+                     (_QUIESCENT_SALT_KEY, secrets.randbits(62)))
+        row = conn.execute("SELECT value FROM kanban_board_state WHERE key = ?", (_QUIESCENT_SALT_KEY,)).fetchone()
+    return str(int(row[0])).encode()
+
+
+def _destination(sub: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    """What an announcement is addressed to: one chat/topic as seen by one notifier profile (two profiles' bots in a
+    shared group each run their own orchestrator)."""
+    return (str(sub.get("platform") or "").lower(), str(sub.get("chat_id") or ""),
+            str(sub.get("thread_id") or ""), str(sub.get("notifier_profile") or ""))
+
+
+def quiescent_destination_tag(conn: sqlite3.Connection, sub: Mapping[str, Any]) -> str:
+    """Opaque tag of a subscription's destination on this board. Events are exported and shown to workers, so the
+    announcement carries this instead of a chat id or session key."""
+    import hashlib
+    import hmac
+    msg = "\x1f".join(_destination(sub)).encode()
+    return hmac.new(_quiescent_salt(conn), msg, hashlib.sha256).hexdigest()[:24]
+
+
 def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
     """Record one ``board_quiescent`` event per destination that took part in the work that just drained.
 
@@ -479,9 +513,10 @@ def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
     had to poll it. Fires when no card is active and a card was claimed past the board's claim mark
     (``kanban_board_state``, out of reach of event GC); every decision advances the mark, so a board that never ran
     anything stays silent and new work re-arms it. Recipients are the destinations following a card claimed since
-    the mark. Each gets one event, addressed to it (``payload["to"]``), on the non-archived card it follows with the
-    newest event, so the gateway notifier and the desktop poller carry it with no new subscription type; other
-    followers of that card skip it. Returns the carrier task ids.
+    the mark. Each gets one event, addressed by an opaque tag (``payload["to"]``), on a card it follows: one whose
+    subscription wakes the agent if any (so being woken never depends on which card finished last), then a live one
+    over an archived one, then the most recently active. The gateway notifier and the desktop poller carry it with no
+    new subscription type; other followers of that card skip it. Returns the carrier task ids.
     """
     active = _board_active_statuses()
     if _newest_uncovered_claim(conn, active) is None:  # read-only fast path outside the writer lock
@@ -493,21 +528,22 @@ def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
         mark, newest = found
         conn.execute("INSERT OR REPLACE INTO kanban_board_state (key, value) VALUES (?, ?)",
                      (_QUIESCENT_MARK_KEY, newest))
-        participants = {(r[0], r[1], r[2]) for r in conn.execute(
-            "SELECT DISTINCT s.platform, s.chat_id, s.thread_id FROM kanban_notify_subs s"
-            " WHERE s.task_id IN (SELECT task_id FROM task_events WHERE id > ? AND id <= ? AND kind = 'claimed')",
-            (mark, newest))}
-        if not participants:
-            return []
+        subs = [dict(r) for r in conn.execute(
+            "SELECT s.platform, s.chat_id, s.thread_id, s.notifier_profile, s.delivery_mode, s.task_id,"
+            " t.status = 'archived' AS archived,"
+            " (SELECT COALESCE(MAX(e.id), 0) FROM task_events e WHERE e.task_id = s.task_id) AS latest,"
+            " EXISTS (SELECT 1 FROM task_events c WHERE c.task_id = s.task_id AND c.kind = 'claimed'"
+            "         AND c.id > ? AND c.id <= ?) AS took_part"
+            " FROM kanban_notify_subs s JOIN tasks t ON t.id = s.task_id", (mark, newest))]
+        participants = {_destination(s) for s in subs if s["took_part"]}
         best: dict = {}
-        for row in conn.execute(
-            "SELECT s.platform, s.chat_id, s.thread_id, s.task_id,"
-            " (SELECT COALESCE(MAX(e.id), 0) FROM task_events e WHERE e.task_id = s.task_id) AS latest"
-            " FROM kanban_notify_subs s JOIN tasks t ON t.id = s.task_id WHERE t.status != 'archived'"
-        ):
-            dest = (row["platform"], row["chat_id"], row["thread_id"])
-            if dest in participants and (dest not in best or row["latest"] > best[dest][0]):
-                best[dest] = (row["latest"], row["task_id"])
+        for s in subs:
+            dest = _destination(s)
+            if dest not in participants:
+                continue
+            rank = ((s["delivery_mode"] or "notify") in _WAKING_MODES, not s["archived"], s["latest"])
+            if dest not in best or rank > best[dest][0]:
+                best[dest] = (rank, s)
         if not best:
             return []
         waiting = ("blocked", "triage") + (() if "review" in active else ("review",))
@@ -516,25 +552,25 @@ def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
         attention = [r[0] for r in conn.execute(
             f"SELECT id FROM tasks WHERE status IN ({','.join('?' * len(waiting))})"
             " ORDER BY priority DESC, created_at LIMIT ?", (*waiting, _QUIESCENT_ATTENTION_LIMIT))]
-        for (platform, chat_id, thread_id), (_latest, task_id) in sorted(best.items()):
-            _kb._append_event(conn, task_id, "board_quiescent", {
+        _quiescent_salt(conn, create=True)
+        for _dest, (_rank, s) in sorted(best.items()):
+            _kb._append_event(conn, s["task_id"], "board_quiescent", {
                 "counts": counts, "attention": attention, "mark": newest,
-                "to": {"platform": platform, "chat_id": chat_id, "thread_id": thread_id or ""},
+                "to": quiescent_destination_tag(conn, s),
             })
-    return sorted({task_id for _latest, task_id in best.values()})
+    return sorted({s["task_id"] for _rank, s in best.values()})
 
 
-def quiescent_addressed_to(ev: Any, sub: Mapping[str, Any]) -> bool:
-    """False for a ``board_quiescent`` event addressed to a different destination than ``sub``: it rides on a card
-    several destinations may follow, and only its addressee is told. Everything else is True."""
+def quiescent_addressed_to(conn: sqlite3.Connection, ev: Any, sub: Mapping[str, Any]) -> bool:
+    """False for a ``board_quiescent`` event addressed to a different destination than ``sub`` on this board: it
+    rides on a card several destinations may follow, and only its addressee is told. Everything else is True."""
     if getattr(ev, "kind", "") != "board_quiescent":
         return True
     to = (getattr(ev, "payload", None) or {}).get("to")
-    if not isinstance(to, Mapping):
+    if not isinstance(to, str) or not to:
         return True
-    return (str(to.get("platform") or "").lower() == str(sub.get("platform") or "").lower()
-            and str(to.get("chat_id") or "") == str(sub.get("chat_id") or "")
-            and str(to.get("thread_id") or "") == str(sub.get("thread_id") or ""))
+    import hmac
+    return hmac.compare_digest(to, quiescent_destination_tag(conn, sub))
 
 
 def describe_board_quiescent(payload: Mapping[str, Any]) -> str:

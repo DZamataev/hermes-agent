@@ -302,7 +302,7 @@ class _Collector:
             thread_id=sub.get("thread_id") or "", kinds=TERMINAL_KINDS,
         )
         # An idle-board announcement addressed to another follower of this card: the cursor moved past it, skip.
-        events = [ev for ev in events if _kbn().quiescent_addressed_to(ev, sub)]
+        events = [ev for ev in events if _kbn().quiescent_addressed_to(conn, ev, sub)]
         if not events:
             return None
         task = self.kb.get_task(conn, sub["task_id"])
@@ -586,11 +586,15 @@ class _KanbanNotification:
         # i18n keys: gateway.kanban.wake.<kind> for each _WAKE_KINDS entry.
         _parts = [t(f"gateway.kanban.wake.{k}") for k in _WAKE_KINDS if k in self.wake_kinds]
         _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
-        synth = t(
-            "gateway.kanban.wake.message",
-            task_id=sub["task_id"], status=_status, title=self.title,
-            assignee=task.assignee if task else "", board=self.board_slug,
-        )
+        if self.wake_kinds == {"board_quiescent"}:
+            # Board-level on its own: the carrier card is incidental and may be long handled; don't point at it.
+            synth = f"[kanban] {_status}.\nBoard: {self.board_slug}"
+        else:
+            synth = t(
+                "gateway.kanban.wake.message",
+                task_id=sub["task_id"], status=_status, title=self.title,
+                assignee=task.assignee if task else "", board=self.board_slug,
+            )
         # Label as an automatic notification and carry the handoff so the
         # creator inspects the board instead of re-decomposing.
         if self.wake_handoff:

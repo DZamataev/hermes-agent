@@ -427,7 +427,7 @@ def _kb_poll_board(_kb, slug: str, session: dict, sub_keys: tuple) -> list:
             for ev in events:
                 seen_as = (("board_quiescent", (ev.payload or {}).get("mark")) if ev.kind == "board_quiescent"
                            else ("event", ev.id))
-                if seen_as in shown or not _kbn.quiescent_addressed_to(ev, sub):
+                if seen_as in shown or not _kbn.quiescent_addressed_to(conn, ev, sub):
                     continue
                 shown.add(seen_as)
                 text = _format_kanban_event_text(sub, task, ev, slug)

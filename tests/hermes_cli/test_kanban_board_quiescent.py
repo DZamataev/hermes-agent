@@ -135,11 +135,19 @@ def test_dry_run_tick_writes_nothing(conn):
 
 
 def _addressed(conn):
-    """{(platform, chat_id): [task_id, ...]} of the announcements written so far."""
+    """{(platform, chat_id[, thread, profile]): [task_id, ...]} of the announcements written so far, resolved from the
+    opaque ``to`` tag back through the board's subscriptions (the payload itself never holds a chat id)."""
+    tags = {}
+    for s in kbn.list_notify_subs(conn):
+        key = (s["platform"], s["chat_id"])
+        if s.get("thread_id"):
+            key += (s["thread_id"],)
+        if s.get("notifier_profile"):
+            key += (s["notifier_profile"],)
+        tags[kbn.quiescent_destination_tag(conn, s)] = key
     out: dict = {}
     for task_id, payload in _quiescent(conn):
-        to = payload["to"]
-        out.setdefault((to["platform"], to["chat_id"]), []).append(task_id)
+        out.setdefault(tags.get(payload["to"], ("?", payload["to"])), []).append(task_id)
     return out
 
 
@@ -195,6 +203,97 @@ def test_archived_cards_never_carry_an_announcement(conn):
     _tick(conn)
 
     assert _addressed(conn) == {("telegram", "X"): [a]}
+
+
+def test_a_participant_whose_cards_are_all_archived_is_still_told(conn):
+    """The orchestrator archives its finished card before the next tick: the drain is still announced to it,
+    on the archived card, while that card's subscription exists."""
+    a = _card(conn, "a", sub=("telegram", "X"))
+    b = _card(conn, "b")
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    kb.block_task(conn, b, reason="needs a human", kind="needs_input")
+    kb.archive_task(conn, a)
+    _tick(conn)
+
+    assert _addressed(conn) == {("telegram", "X"): [a]}
+
+
+def test_a_waking_card_carries_the_announcement_over_a_notify_only_one(conn):
+    """Whether the orchestrator is woken must not depend on which of its cards finished last."""
+    w = _card(conn, "w")
+    kbn.add_notify_sub(conn, task_id=w, platform="telegram", chat_id="X", delivery_mode="notify+wake")
+    p = _card(conn, "p", sub=("telegram", "X"))
+    _tick(conn)
+    kb.complete_task(conn, w, summary="first")
+    kb.complete_task(conn, p, summary="last")
+    _tick(conn)
+
+    assert _addressed(conn) == {("telegram", "X"): [w]}
+
+
+def test_two_profiles_in_one_group_are_told_separately(conn):
+    a = _card(conn, "a")
+    kbn.add_notify_sub(conn, task_id=a, platform="telegram", chat_id="G", notifier_profile="profA")
+    b = _card(conn, "b")
+    kbn.add_notify_sub(conn, task_id=b, platform="telegram", chat_id="G", notifier_profile="profB")
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    kb.complete_task(conn, b, summary="ok")
+    _tick(conn)
+
+    assert _addressed(conn) == {("telegram", "G", "profA"): [a], ("telegram", "G", "profB"): [b]}
+
+
+def test_two_topics_of_one_group_are_told_separately(conn):
+    a = _card(conn, "a")
+    for topic in ("1", "2"):
+        kbn.add_notify_sub(conn, task_id=a, platform="telegram", chat_id="G", thread_id=topic)
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    _tick(conn)
+
+    assert _addressed(conn) == {("telegram", "G", "1"): [a], ("telegram", "G", "2"): [a]}
+    one, two = (s for s in kbn.list_notify_subs(conn, a))
+    ev_for = {e[1]["to"]: e for e in _quiescent(conn)}
+    tag_one = kbn.quiescent_destination_tag(conn, one)
+    ev = kb.Event(id=0, task_id=a, kind="board_quiescent", payload={"to": tag_one}, created_at=0, run_id=None)
+    assert tag_one in ev_for
+    assert kbn.quiescent_addressed_to(conn, ev, one) and not kbn.quiescent_addressed_to(conn, ev, two)
+
+
+def test_the_announcement_names_no_destination(conn):
+    """Events are exported and shown to workers (``kanban show``); a chat id or session key must not leak there."""
+    a = _card(conn, "a")
+    kbn.add_notify_sub(conn, task_id=a, platform="telegram", chat_id="-100SECRETCHAT", thread_id="77")
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    _tick(conn)
+
+    raw = conn.execute("SELECT payload FROM task_events WHERE kind = 'board_quiescent'").fetchone()[0]
+    assert "SECRETCHAT" not in raw and "77" not in json.loads(raw)["to"]
+
+
+def test_triage_cards_are_listed_for_attention(conn):
+    a = _card(conn, "a", sub=("tui", "orchestrator"))
+    t = kb.create_task(conn, title="needs sorting", assignee="worker", triage=True)
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    _tick(conn)
+
+    ((_, payload),) = _quiescent(conn)
+    assert payload["attention"] == [t]
+
+
+def test_a_restart_between_the_drain_and_the_next_tick_keeps_the_announcement(conn):
+    """Schema init runs on every process start; it must not re-seed the mark over a drain not yet announced."""
+    a = _card(conn, "a", sub=("tui", "orchestrator"))
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    kb.init_db()
+    _tick(conn)
+
+    assert len(_quiescent(conn)) == 1
 
 
 def test_event_gc_does_not_rearm_a_finished_announcement(conn):
