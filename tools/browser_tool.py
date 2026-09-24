@@ -243,8 +243,9 @@ from tools import browser_tool_session as _session
 
 
 def _get_vision_model() -> Optional[str]:
-    """Model for browser_vision (screenshot analysis — multimodal)."""
-    return os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+    """Model for browser_vision (screenshot analysis — multimodal): same resolution as vision_analyze."""
+    from tools.vision_tools import _configured_aux_model
+    return _configured_aux_model(("vision",), ("AUXILIARY_VISION_MODEL",))
 
 
 from tools import browser_tool_cdp as _cdp
