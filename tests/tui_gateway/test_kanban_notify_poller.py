@@ -312,6 +312,22 @@ class TestCompressedSessionOwnsItsSubscriptions:
         assert len(texts) == 1 and "for the live tab" in texts[0]
 
 
+class TestBoardQuiescentReachesTheSession:
+    def test_idle_board_announcement_is_delivered_with_leftovers(self):
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            kb._append_event(conn, tid, "board_quiescent",
+                             {"counts": {"blocked": 2, "done": 5}, "attention": ["t_aaa", "t_bbb"]})
+        finally:
+            conn.close()
+
+        texts = _collect_kanban_notifications(_session())
+
+        assert len(texts) == 1
+        assert "no work left" in texts[0] and "2 blocked" in texts[0] and "t_aaa" in texts[0]
+
+
 class TestFormatKanbanEventText:
     SUB = {"task_id": "t_abc123"}
     TASK = SimpleNamespace(title="build the thing", assignee="worker", result=None)

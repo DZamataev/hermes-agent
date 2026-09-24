@@ -436,6 +436,65 @@ def rewind_notify_cursor(
     return cur.rowcount > 0
 
 
+# A board is working while any card is in one of these; ``todo``/``blocked``/``triage``/``scheduled`` wait on a
+# parent, a human or the clock, so a board holding only those has nothing left to run on its own.
+_BOARD_ACTIVE_STATUSES = ("running", "ready", "review")
+_QUIESCENT_ATTENTION_LIMIT = 20
+
+
+def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
+    """Record one ``board_quiescent`` event per subscribed destination when the board has run out of work.
+
+    Card events say "this card finished/blocked" but never "nothing is left to run", so a session supervising a board
+    had to poll it. Fires only when no card is running/ready/review AND a card was claimed since the previous
+    announcement — a board that never ran anything stays silent, and new work re-arms it. The event lands on a card
+    each destination already follows (its most recently active one), so every delivery path — gateway notifier,
+    desktop poller — carries it with no new subscription type. Returns the task ids that received the event.
+    """
+    with _kb.write_txn(conn):
+        marks = ",".join("?" * len(_BOARD_ACTIVE_STATUSES))
+        if conn.execute(f"SELECT 1 FROM tasks WHERE status IN ({marks}) LIMIT 1", _BOARD_ACTIVE_STATUSES).fetchone():
+            return []
+        last = conn.execute("SELECT COALESCE(MAX(id), 0) FROM task_events WHERE kind = 'board_quiescent'").fetchone()[0]
+        if not conn.execute("SELECT 1 FROM task_events WHERE kind = 'claimed' AND id > ? LIMIT 1", (last,)).fetchone():
+            return []
+        # One card per destination: the one it follows with the newest event.
+        rows = conn.execute(
+            "SELECT s.platform, s.chat_id, s.thread_id, s.task_id,"
+            " (SELECT COALESCE(MAX(e.id), 0) FROM task_events e WHERE e.task_id = s.task_id) AS latest"
+            " FROM kanban_notify_subs s JOIN tasks t ON t.id = s.task_id WHERE t.status != 'archived'"
+        ).fetchall()
+        best: dict = {}
+        for row in rows:
+            dest = (row["platform"], row["chat_id"], row["thread_id"])
+            if dest not in best or row["latest"] > best[dest][0]:
+                best[dest] = (row["latest"], row["task_id"])
+        targets = sorted({task_id for _latest, task_id in best.values()})
+        if not targets:
+            return []
+        counts = {r[0]: r[1] for r in conn.execute(
+            "SELECT status, COUNT(*) FROM tasks WHERE status != 'archived' GROUP BY status ORDER BY status")}
+        attention = [r[0] for r in conn.execute(
+            "SELECT id FROM tasks WHERE status IN ('blocked', 'triage') ORDER BY priority DESC, created_at LIMIT ?",
+            (_QUIESCENT_ATTENTION_LIMIT,))]
+        payload = {"counts": counts, "attention": attention}
+        for task_id in targets:
+            _kb._append_event(conn, task_id, "board_quiescent", payload)
+    return targets
+
+
+def describe_board_quiescent(payload: Mapping[str, Any]) -> str:
+    """One-line human summary of a ``board_quiescent`` payload, shared by every notifier."""
+    raw_counts = payload.get("counts")
+    counts: Mapping[str, Any] = raw_counts if isinstance(raw_counts, Mapping) else {}
+    tally = ", ".join(f"{int(n)} {status}" for status, n in counts.items() if isinstance(n, int))
+    attention = [str(t) for t in (payload.get("attention") or []) if t][:_QUIESCENT_ATTENTION_LIMIT]
+    text = "board has no work left to run" + (f" ({tally})" if tally else "")
+    if attention:
+        text += "; needs attention: " + ", ".join(attention)
+    return text
+
+
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
 from hermes_cli import kanban_db as _kb  # noqa: E402

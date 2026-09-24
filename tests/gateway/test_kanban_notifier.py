@@ -728,6 +728,31 @@ def test_block_loop_detected_wakes_the_origin_session(tmp_path, monkeypatch):
     assert tid in _wake_text(adapter)
 
 
+def test_board_quiescent_pings_and_wakes_the_subscriber(tmp_path, monkeypatch):
+    """The dispatcher's "board ran out of work" event reaches Telegram subscribers: a ping naming the leftover
+    blocked cards, and a wake for notify+wake subscriptions (the orchestrator must decide what's next)."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="last card", assignee="worker",
+                             session_id="agent:main:telegram:dm:chat-1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm",
+                           delivery_mode="notify+wake")
+        kb._append_event(conn, tid, "board_quiescent",
+                         {"counts": {"blocked": 1, "done": 3}, "attention": ["t_left"]})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    ping = adapter.sent[0]["text"]
+    assert "no work left" in ping and "1 blocked" in ping and "t_left" in ping
+    assert "no work left" in _wake_text(adapter)
+
+
 def test_review_requested_does_not_wake_a_notify_only_subscription(
     tmp_path, monkeypatch,
 ):
