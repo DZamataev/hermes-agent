@@ -129,7 +129,6 @@ from hermes_cli.cli_render import (  # noqa: F401,E402
     _wrap_panel_text_keep_ws,
 )
 from hermes_cli.cli_config_load import (  # noqa: F401,E402
-    _AUXILIARY_TASK_ENV,
     _CWD_PLACEHOLDERS,
     _TERMINAL_ENV_MAPPINGS,
     _cli_config_defaults,

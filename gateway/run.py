@@ -2029,29 +2029,6 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
         os.environ[_env_var] = json.dumps(_val) if isinstance(_val, (list, dict)) else str(_val)
 
 
-def _bridge_auxiliary_config_to_env(_auxiliary_cfg: dict) -> None:
-    """Bridge auxiliary model/endpoint overrides (vision, approval, plugins); compression reads yaml."""
-    _aux_bridged_keys = {"vision", "approval"}
-    try:
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
-        for _entry in get_plugin_auxiliary_tasks():
-            _aux_bridged_keys.add(_entry["key"])
-    except Exception:
-        pass  # plugin discovery failure must not break startup; built-in bridging stays intact
-    for _task_key in _aux_bridged_keys:
-        _task_cfg = _auxiliary_cfg.get(_task_key, {})
-        if not isinstance(_task_cfg, dict):
-            continue
-        _upper = _task_key.upper()
-        _prov = str(_task_cfg.get("provider", "")).strip()
-        if _prov and _prov != "auto":
-            os.environ[f"AUXILIARY_{_upper}_PROVIDER"] = _prov
-        for _field, _suffix in (("model", "MODEL"), ("base_url", "BASE_URL"), ("api_key", "API_KEY")):
-            _value = str(_task_cfg.get(_field, "")).strip()
-            if _value:
-                os.environ[f"AUXILIARY_{_upper}_{_suffix}"] = _value
-
-
 def _bridge_config_to_env(_cfg: dict) -> None:
     """Export config.yaml settings to the env vars os.getenv() consumers read."""
     for _key, _val in _cfg.items():  # top-level scalars: fallback only, never override .env
@@ -2060,9 +2037,8 @@ def _bridge_config_to_env(_cfg: dict) -> None:
     _terminal_cfg = _cfg.get("terminal", {})
     if _terminal_cfg and isinstance(_terminal_cfg, dict):
         _bridge_terminal_config_to_env(_terminal_cfg)
-    _auxiliary_cfg = _cfg.get("auxiliary", {})
-    if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
-        _bridge_auxiliary_config_to_env(_auxiliary_cfg)
+    # No auxiliary.* bridge: readers take config.yaml at call time, and a startup copy in os.environ
+    # outlives config edits (and leaks the launch profile under multiplex) as a stale model override.
     # config.yaml is the documented, authoritative source for these settings — it unconditionally wins over
     # .env values. Previously the guards below read `if X not in os.environ` and let stale .env entries
     # (e.g. HERMES_MAX_ITERATIONS=60 written by an old `hermes setup` run) silently shadow the user's

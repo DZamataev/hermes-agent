@@ -865,7 +865,7 @@ class PluginContext:
         defaults: Optional[Dict[str, Any]] = None,
     ) -> PluginRegistration:
         """Register an auxiliary LLM task with its own ``auxiliary.<key>`` config block (picker entry,
-        ``AUXILIARY_<KEY>_*`` env bridge, defaults merged into loaded configs). ``defaults`` may
+        defaults merged into loaded configs). ``defaults`` may
         override provider/model/base_url/api_key/timeout/extra_body (unknown keys kept verbatim).
         Raises ``ValueError`` for an empty/invalid key, a built-in key, or another plugin's key."""
         me = self.manifest.name
