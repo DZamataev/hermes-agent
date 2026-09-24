@@ -234,6 +234,84 @@ class TestCollectKanbanNotifications:
         assert rows[0]["chat_id"] == SESSION_KEY
 
 
+def _compressed_lineage(tmp_path, monkeypatch, *ids: str):
+    """A state.db where each id in ``ids`` is the compression continuation of the previous one."""
+    import time as _time
+
+    import tui_gateway.server as server
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    conn = db._conn
+    assert conn is not None
+    base = int(_time.time()) - 10_000
+    for i, sid in enumerate(ids):
+        db.create_session(sid, source="desktop", parent_session_id=ids[i - 1] if i else None)
+        db.append_message(sid, role="user", content=f"turn in {sid}", timestamp=base + 100 * i + 10)
+        conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (base + 100 * i, sid))
+        if i < len(ids) - 1:
+            db.end_session(sid, "compression")
+            conn.execute("UPDATE sessions SET ended_at = ? WHERE id = ?", (base + 100 * i + 50, sid))
+    conn.commit()
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    return db
+
+
+class TestCompressedSessionOwnsItsSubscriptions:
+    """Context compression rotates the session key; subscriptions written under an earlier key of the
+    same conversation must still reach the live continuation (#91037)."""
+
+    def test_continuation_receives_events_for_a_subscription_made_before_compression(self, tmp_path, monkeypatch):
+        _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        tid = _create_subscribed_task(chat_id="before-compress")
+        conn = kbc.connect()
+        try:
+            kb.block_task(conn, tid, reason="needs the operator")
+        finally:
+            conn.close()
+
+        texts = _collect_kanban_notifications(_session("after-compress"))
+
+        assert len(texts) == 1 and tid in texts[0] and "needs the operator" in texts[0]
+        assert _collect_kanban_notifications(_session("after-compress")) == []
+
+    def test_subscriptions_of_an_unrelated_session_stay_unclaimed(self, tmp_path, monkeypatch):
+        _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        tid = _create_subscribed_task(chat_id="someone-else")
+        pre_cursor = _sub_rows(tid)[0]["last_event_id"]
+        _complete(tid)
+
+        assert _collect_kanban_notifications(_session("after-compress")) == []
+        assert _sub_rows(tid)[0]["last_event_id"] == pre_cursor
+
+    def test_foreign_subscription_on_a_shared_board_stays_unclaimed(self, tmp_path, monkeypatch):
+        _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        own = _create_subscribed_task(chat_id="before-compress")
+        foreign = _create_subscribed_task(chat_id="someone-else")
+        pre_cursor = _sub_rows(foreign)[0]["last_event_id"]
+        _complete(own, summary="mine")
+        _complete(foreign, summary="theirs")
+
+        texts = _collect_kanban_notifications(_session("after-compress"))
+
+        assert len(texts) == 1 and "mine" in texts[0]
+        assert _sub_rows(foreign)[0]["last_event_id"] == pre_cursor
+
+    def test_stale_pre_compression_tab_leaves_events_to_the_live_continuation(self, tmp_path, monkeypatch):
+        import tui_gateway.server as server
+
+        _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        tid = _create_subscribed_task(chat_id="before-compress")
+        _complete(tid, summary="for the live tab")
+        live = {"session_key": "after-compress"}
+        monkeypatch.setitem(server._sessions, "sid-live-continuation", live)
+
+        assert _collect_kanban_notifications(_session("before-compress")) == []
+        texts = _collect_kanban_notifications(live)
+
+        assert len(texts) == 1 and "for the live tab" in texts[0]
+
+
 class TestFormatKanbanEventText:
     SUB = {"task_id": "t_abc123"}
     TASK = SimpleNamespace(title="build the thing", assignee="worker", result=None)

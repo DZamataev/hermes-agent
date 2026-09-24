@@ -352,27 +352,55 @@ def _kb_board_key(_kb, board_meta) -> tuple[str, str]:
         return slug, f"slug:{slug}"
 
 
-def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
+def _notif_subscription_keys(session: dict) -> tuple:
+    """Session keys whose ``platform="tui"`` subscriptions this session may claim: the current key plus every
+    compression ancestor. Compression rotates the key while subscriptions keep the key they were written under, so an
+    exact match orphaned every card subscribed before the last compression (#91037). Ancestors of a key never
+    change, so the lineage is cached per current key."""
+    session_key = str(session.get("session_key") or "")
+    cached = session.get("_kanban_sub_keys")
+    if cached and cached[0] == session_key:
+        return cached[1]
+    keys: tuple = (session_key,)
+    try:
+        with _session_db(session) as db:
+            lineage = db.get_compression_lineage(session_key) if db is not None else []
+        if session_key in lineage:
+            keys = tuple(lineage[: lineage.index(session_key) + 1])
+    except Exception as exc:
+        _notif_log_failure("kanban subscription lineage lookup failed", exc)
+    session["_kanban_sub_keys"] = (session_key, keys)
+    return keys
+
+
+def _kb_poll_board(_kb, slug: str, session: dict, sub_keys: tuple) -> list:
     """Claim + format this session's unseen events on one board. One poller per live session: the board is not opened
-    writable unless it has a subscription owned by this exact session (a failed read-only probe — locked/corrupt DB —
-    falls through so delivery is preserved)."""
+    writable unless it has a subscription under one of ``sub_keys`` (a failed read-only probe — locked/corrupt DB —
+    falls through so delivery is preserved). A subscription is left unclaimed when a different live session owns its
+    key (a stale pre-compression tab must not take its continuation's events)."""
     from hermes_cli import kanban_db_connect as _kbc
     from hermes_cli import kanban_db_notify as _kbn
     with contextlib.suppress(Exception):
-        if _kbn.count_notify_subs(board=slug, platform="tui", chat_id=session_key) == 0:
+        if not any(_kbn.count_notify_subs(board=slug, platform="tui", chat_id=key) for key in sub_keys):
             return []
     try:
         conn = _kbc.connect(board=slug)
     except Exception:
         return []
     texts: list = []
+    elsewhere: dict = {}
     with contextlib.closing(conn):
         try:
             subs = _kbn.list_notify_subs(conn)
         except Exception:
             return []
         for sub in subs:
-            if (sub.get("platform") or "").lower() != "tui" or sub.get("chat_id") != session_key:
+            chat_id = sub.get("chat_id")
+            if (sub.get("platform") or "").lower() != "tui" or chat_id not in sub_keys:
+                continue
+            if chat_id not in elsewhere:
+                elsewhere[chat_id] = _notification_event_belongs_elsewhere("", session, {"session_key": chat_id})
+            if elsewhere[chat_id]:
                 continue
             sub_ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
                              thread_id=sub.get("thread_id") or "")
@@ -419,7 +447,8 @@ def _collect_kanban_notifications(session: dict) -> list:
     unique = {}
     for slug, resolved in (_kb_board_key(_kb, board_meta) for board_meta in boards):
         unique.setdefault(resolved, slug)
-    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key)]
+    sub_keys = _notif_subscription_keys(session)
+    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session, sub_keys)]
 
 
 def _notif_poll_kanban(sid: str, session: dict) -> None:
