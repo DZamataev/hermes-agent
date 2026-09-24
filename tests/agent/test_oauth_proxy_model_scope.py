@@ -735,6 +735,66 @@ def test_a_spaced_name_whose_dashed_form_is_a_builtin_alias_is_not_dashed(relay)
     assert_oauth_wire(relay[-1], True)
 
 
+# ── a named entry whose name is a built-in alias keeps its own authority ─────
+
+@pytest.mark.parametrize(
+    "entry_url,wire",
+    [
+        # api_mode declared: the named branch builds the Anthropic client itself.
+        (URL, {"transport": "anthropic_messages"}),
+        # No api_mode, an Anthropic-shaped URL: the named branch hands off to _wrap_transport.
+        (f"{URL}/anthropic", {}),
+    ],
+    ids=["named-branch", "wrap-transport"],
+)
+@pytest.mark.parametrize("aux_model,expected", [(TRUSTED_MODEL, True), (TRUSTLESS_MODEL, False)])
+def test_an_alias_named_relay_keeps_its_policy_through_the_cached_client(
+    relay, entry_url, wire, aux_model, expected,
+):
+    """``custom:claude`` is selected from the raw name (``claude`` is the ``anthropic`` alias); the
+    wire policy must be looked up under that same identity, not the alias-normalized built-in,
+    which owns no custom entry and would answer ``false`` for a relay declaring ``true``."""
+    from agent.auxiliary_client import _get_cached_client
+    from hermes_cli.auth import known_provider_id
+
+    assert known_provider_id("claude") == "anthropic"
+    _rewrite_config(providers={"claude": {
+        "api": entry_url, "key_env": "TEST_RELAY_KEY", **wire,
+        "capabilities": {"anthropic_oauth_proxy": True},
+        "models": {TRUSTLESS_MODEL: {"anthropic_oauth_proxy": False}},
+    }})
+    # A main session on another route, so nothing can be inherited: only the entry decides.
+    main = {"provider": "moa", "base_url": "moa://local", "model": "simple"}
+    client, model = _get_cached_client("custom:claude", aux_model, main_runtime=main)
+    client.chat.completions.create(
+        model=model, messages=[{"role": "user", "content": "hello"}], max_tokens=32,
+    )
+    assert_oauth_wire(relay[-1], expected)
+    assert ("Claude Code" in json.dumps(json.loads(relay[-1].content).get("system", []))) is expected
+
+
+def test_an_unflagged_alias_named_relay_does_not_turn_oauth_on_its_key_shape(relay, monkeypatch):
+    """The reverse of the same identity loss: normalized to ``anthropic``, an unflagged relay
+    named ``claude`` holding an OAuth-shaped key was classified as the native provider, so the
+    payload got the Claude Code transforms while the client itself sent ``x-api-key``."""
+    from agent.auxiliary_client import _get_cached_client
+
+    oauth_shaped = "sk-ant-oat01-" + "x" * 40
+    monkeypatch.setenv("TEST_RELAY_KEY", oauth_shaped)
+    _rewrite_config(providers={"claude": {
+        "api": URL, "key_env": "TEST_RELAY_KEY", "transport": "anthropic_messages",
+    }})
+    main = {"provider": "moa", "base_url": "moa://local", "model": "simple"}
+    client, model = _get_cached_client("custom:claude", TRUSTED_MODEL, main_runtime=main)
+    client.chat.completions.create(
+        model=model, messages=[{"role": "user", "content": "hello"}], max_tokens=32,
+    )
+    request = relay[-1]
+    assert request.headers.get("x-api-key") == oauth_shaped
+    assert "oauth-2025-04-20" not in request.headers.get("anthropic-beta", "")
+    assert "Claude Code" not in json.dumps(json.loads(request.content).get("system", []))
+
+
 # ── the cheap lookup picks exactly the entry the full lookup picks ────────────
 
 @pytest.mark.parametrize(
