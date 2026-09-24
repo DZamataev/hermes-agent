@@ -428,6 +428,31 @@ class TestLineageDelivery:
         assert _collect_kanban_notifications(_session("before-compress")) == []
         assert _sub_rows(tid)[0]["last_event_id"] == pre_cursor
 
+    def test_a_dispatcher_announcement_reaches_the_session_end_to_end(self, tmp_path, monkeypatch):
+        """dispatch_once writes the announcement; the poller of the subscribed session shows it, a second
+        session following the same card does not."""
+        from hermes_cli import kanban_db_dispatch as kbd
+        from hermes_cli import profiles
+
+        monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+        _compressed_lineage(tmp_path, monkeypatch, "orchestrator")
+        mine = _create_subscribed_task(chat_id="orchestrator")
+        other = _create_subscribed_task(chat_id="someone-else")
+        conn = kbc.connect()
+        try:
+            kbn.add_notify_sub(conn, task_id=other, platform="tui", chat_id="orchestrator")
+            kbn.add_notify_sub(conn, task_id=mine, platform="tui", chat_id="someone-else")
+            kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+            for tid in (mine, other):
+                kb.complete_task(conn, tid, summary="ok")
+            kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+        finally:
+            conn.close()
+
+        for key in ("orchestrator", "someone-else"):
+            quiescent = [t for t in _collect_kanban_notifications(_session(key)) if "no work left" in t]
+            assert len(quiescent) == 1, (key, quiescent)
+
     def test_failed_lineage_lookup_is_retried_on_the_next_poll(self, tmp_path, monkeypatch):
         import tui_gateway.server as server
 

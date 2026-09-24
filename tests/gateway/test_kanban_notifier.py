@@ -797,6 +797,79 @@ def test_board_quiescent_alone_wakes_about_the_board_not_the_carrier_card(tmp_pa
     assert tid not in wake and "Write the README" not in wake and "docs-bot" not in wake
 
 
+def test_board_quiescent_from_a_real_dispatcher_tick_pings_once_and_wakes(tmp_path, monkeypatch):
+    """dispatch_once → announce → notifier, with no hand-written event: one ping, one wake about the board."""
+    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-e2e.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="last card", assignee="worker", session_id="agent:main:telegram:dm:chat-1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm",
+                           delivery_mode="notify+wake")
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+        kbn.advance_notify_cursor(conn, task_id=tid, platform="telegram", chat_id="chat-1", thread_id="",
+                                  new_cursor=conn.execute("SELECT MAX(id) FROM task_events").fetchone()[0])
+        blocked = kb.create_task(conn, title="waits on a human", assignee="worker")
+        kb.block_task(conn, blocked, reason="needs input", kind="needs_input")
+        kb.complete_task(conn, tid, summary="ok")
+        kbn.advance_notify_cursor(conn, task_id=tid, platform="telegram", chat_id="chat-1", thread_id="",
+                                  new_cursor=conn.execute("SELECT MAX(id) FROM task_events").fetchone()[0])
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert [m["text"] for m in adapter.sent if "no work left" in m["text"]] == [adapter.sent[0]["text"]]
+    assert blocked in adapter.sent[0]["text"]
+    wake = _wake_text(adapter)
+    assert "no work left" in wake and "last card" not in wake
+
+
+def test_archived_card_delivered_before_the_tick_still_carries_the_announcement(tmp_path, monkeypatch):
+    """The gateway polls every 5 s, the dispatcher once a minute: the archival is delivered first, and the
+    subscription must survive it so the idle-board announcement can still ride on the archived card."""
+    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-archived.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="last card", assignee="worker", session_id="agent:main:telegram:dm:chat-1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm")
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+        kb.complete_task(conn, tid, summary="ok")
+        kb.archive_task(conn, tid)
+    finally:
+        conn.close()
+    first = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(first)))
+
+    conn = kbc.connect()
+    try:
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+    finally:
+        conn.close()
+    second = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(second)))
+
+    assert not any("no work left" in m["text"] for m in first.sent)
+    assert [m["text"] for m in second.sent if "no work left" in m["text"]]
+    conn = kbc.connect()
+    try:
+        assert kbn.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()
+
+
 def test_board_quiescent_addressed_to_another_destination_is_not_delivered(tmp_path, monkeypatch):
     """Announcements are addressed: a second follower of the target card is not pinged about someone else's."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-addressed.db"))

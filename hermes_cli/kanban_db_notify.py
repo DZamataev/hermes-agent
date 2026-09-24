@@ -275,13 +275,40 @@ def remove_notify_sub(
     return cur.rowcount > 0
 
 
+def release_archived_notify_sub(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+) -> bool:
+    """Drop a subscription whose card was archived and delivered, unless the card took part in work the dispatcher
+    has not yet ruled on: then the idle-board announcement may still ride on it (an orchestrator often archives its
+    last card before the next tick), and ``announce_board_quiescent`` drops the row once it has decided. Returns
+    True when removed."""
+    with _kb.write_txn(conn):
+        if conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'claimed' AND id > ? LIMIT 1",
+            (task_id, _quiescent_claim_mark(conn)),
+        ).fetchone():
+            return False
+        cur = conn.execute(
+            "DELETE FROM kanban_notify_subs " + _SUB_KEY_WHERE,
+            _sub_key(task_id, platform, chat_id, thread_id),
+        )
+    return cur.rowcount > 0
+
+
 def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int = 30) -> int:
-    """Delete notify subs whose task sat in ``done``/``blocked`` untouched for
+    """Delete notify subs whose task sat in ``done``/``blocked``/``archived`` untouched for
     longer than ``max_age_days`` (``<= 0`` disables); returns rows deleted.
 
     Subs survive ``done`` because a reopened task must still notify its origin,
     which accumulates forever on never-archiving boards. ``blocked`` is
-    abandoned (unlike ``backlog``/``ready``) so it reaps on the same clock. Age
+    abandoned (unlike ``backlog``/``ready``) so it reaps on the same clock, and so
+    does an ``archived`` row held for an idle-board decision that never came
+    (``release_archived_notify_sub``). Age
     = latest event, else ``completed_at``, else ``created_at`` — any activity,
     including a reopen, exempts the sub.
 
@@ -304,7 +331,7 @@ def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int 
         cur = conn.execute(
             "DELETE FROM kanban_notify_subs WHERE task_id IN ("
             " SELECT t.id FROM tasks t"
-            " WHERE t.status IN ('done', 'blocked')"
+            " WHERE t.status IN ('done', 'blocked', 'archived')"
             " AND COALESCE("
             "  (SELECT MAX(e.created_at) FROM task_events e"
             "   WHERE e.task_id = t.id),"
@@ -490,15 +517,19 @@ def _quiescent_salt(conn: sqlite3.Connection, *, create: bool = False) -> bytes:
     return str(int(row[0])).encode()
 
 
-def _destination(sub: Mapping[str, Any]) -> tuple[str, str, str, str]:
-    """What an announcement is addressed to: one chat/topic as seen by one notifier profile (two profiles' bots in a
-    shared group each run their own orchestrator)."""
-    return (str(sub.get("platform") or "").lower(), str(sub.get("chat_id") or ""),
-            str(sub.get("thread_id") or ""), str(sub.get("notifier_profile") or ""))
+def _destination(sub: Mapping[str, Any]) -> tuple[str, str, str]:
+    """The chat/topic a subscription reports to. The notifier profile is not part of it: legacy rows carry NULL and
+    get stamped on re-subscribe, and a NULL row is delivered by the dispatch owner, so it is not a recipient of its
+    own. Profiles split a destination only when several are stamped on it (see ``announce_board_quiescent``)."""
+    return (str(sub.get("platform") or "").lower(), str(sub.get("chat_id") or ""), str(sub.get("thread_id") or ""))
+
+
+def _profile(sub: Mapping[str, Any]) -> str:
+    return str(sub.get("notifier_profile") or "").strip()
 
 
 def quiescent_destination_tag(conn: sqlite3.Connection, sub: Mapping[str, Any]) -> str:
-    """Opaque tag of a subscription's destination on this board. Events are exported and shown to workers, so the
+    """Opaque tag of a subscription's chat/topic on this board. Events are exported and shown to workers, so the
     announcement carries this instead of a chat id or session key."""
     import hashlib
     import hmac
@@ -512,11 +543,18 @@ def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
     Card events say "this card finished/blocked" but never "nothing is left to run", so a session supervising a board
     had to poll it. Fires when no card is active and a card was claimed past the board's claim mark
     (``kanban_board_state``, out of reach of event GC); every decision advances the mark, so a board that never ran
-    anything stays silent and new work re-arms it. Recipients are the destinations following a card claimed since
-    the mark. Each gets one event, addressed by an opaque tag (``payload["to"]``), on a card it follows: one whose
-    subscription wakes the agent if any (so being woken never depends on which card finished last), then a live one
-    over an archived one, then the most recently active. The gateway notifier and the desktop poller carry it with no
-    new subscription type; other followers of that card skip it. Returns the carrier task ids.
+    anything stays silent and new work re-arms it.
+
+    Recipients are the destinations (chat/topic, see ``_destination``) with a subscription on a card claimed since
+    the mark; one on which several stamped notifier profiles took part is told once per profile (two bots in one
+    group each run their own orchestrator). Each gets one event on a card it follows, addressed by an opaque tag
+    (``payload["to"]``): a card whose subscription wakes the agent if any (so being woken never depends on which card
+    finished last), then a live one over an archived one, then the most recently active. A card holds one row per
+    chat/topic, so the tag picks exactly one follower of the carrier. Notifiers hold an archived card's row past its
+    archival while it took part in undecided work (``release_archived_notify_sub``), so an orchestrator that archived
+    its last card is still told; this decision then drops held rows it put nothing on. The gateway notifier and the
+    desktop poller carry the event with no new subscription type; other followers of the carrier skip it. Returns
+    the carrier task ids.
     """
     active = _board_active_statuses()
     if _newest_uncovered_claim(conn, active) is None:  # read-only fast path outside the writer lock
@@ -535,30 +573,53 @@ def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
             " EXISTS (SELECT 1 FROM task_events c WHERE c.task_id = s.task_id AND c.kind = 'claimed'"
             "         AND c.id > ? AND c.id <= ?) AS took_part"
             " FROM kanban_notify_subs s JOIN tasks t ON t.id = s.task_id", (mark, newest))]
-        participants = {_destination(s) for s in subs if s["took_part"]}
+        profiles: dict = {}
+        for s in subs:
+            if s["took_part"]:
+                profiles.setdefault(_destination(s), set()).add(_profile(s))
+        recipients = {(dest, prof) for dest, profs in profiles.items()
+                      for prof in (sorted(profs - {""}) or [""])}
+        split = {dest for dest, profs in profiles.items() if len(profs - {""}) > 1}
         best: dict = {}
         for s in subs:
-            dest = _destination(s)
-            if dest not in participants:
+            dest, prof = _destination(s), _profile(s)
+            if dest in split:
+                recipient = (dest, prof)  # an unstamped row cannot say which of the bots it belongs to
+            else:
+                recipient = next((r for r in recipients if r[0] == dest), None)
+            if recipient not in recipients:
                 continue
             rank = ((s["delivery_mode"] or "notify") in _WAKING_MODES, not s["archived"], s["latest"])
-            if dest not in best or rank > best[dest][0]:
-                best[dest] = (rank, s)
-        if not best:
-            return []
-        waiting = ("blocked", "triage") + (() if "review" in active else ("review",))
-        counts = {r[0]: r[1] for r in conn.execute(
-            "SELECT status, COUNT(*) FROM tasks WHERE status != 'archived' GROUP BY status ORDER BY status")}
-        attention = [r[0] for r in conn.execute(
-            f"SELECT id FROM tasks WHERE status IN ({','.join('?' * len(waiting))})"
-            " ORDER BY priority DESC, created_at LIMIT ?", (*waiting, _QUIESCENT_ATTENTION_LIMIT))]
-        _quiescent_salt(conn, create=True)
-        for _dest, (_rank, s) in sorted(best.items()):
-            _kb._append_event(conn, s["task_id"], "board_quiescent", {
-                "counts": counts, "attention": attention, "mark": newest,
-                "to": quiescent_destination_tag(conn, s),
-            })
+            if recipient not in best or rank > best[recipient][0]:
+                best[recipient] = (rank, s)
+        if best:
+            _append_board_quiescent(conn, best, active, newest)
+        # Rows held for this decision (see release_archived_notify_sub): their archival is delivered and no
+        # announcement is pending for them, so nothing more will ride on them. A carrier keeps its row until the
+        # notifier delivers the announcement and releases it.
+        conn.execute(
+            "DELETE FROM kanban_notify_subs WHERE task_id IN (SELECT id FROM tasks WHERE status = 'archived')"
+            " AND EXISTS (SELECT 1 FROM task_events a WHERE a.task_id = kanban_notify_subs.task_id"
+            "             AND a.kind = 'archived' AND a.id <= kanban_notify_subs.last_event_id)"
+            " AND NOT EXISTS (SELECT 1 FROM task_events q WHERE q.task_id = kanban_notify_subs.task_id"
+            "                 AND q.kind = 'board_quiescent' AND q.id > kanban_notify_subs.last_event_id)")
     return sorted({s["task_id"] for _rank, s in best.values()})
+
+
+def _append_board_quiescent(conn: sqlite3.Connection, best: Mapping, active: tuple[str, ...], newest: int) -> None:
+    """Write one announcement per recipient (``best``: recipient → (rank, carrier sub)). Caller holds write_txn."""
+    waiting = ("blocked", "triage", "scheduled") + (() if "review" in active else ("review",))
+    counts = {r[0]: r[1] for r in conn.execute(
+        "SELECT status, COUNT(*) FROM tasks WHERE status != 'archived' GROUP BY status ORDER BY status")}
+    attention = [r[0] for r in conn.execute(
+        f"SELECT id FROM tasks WHERE status IN ({','.join('?' * len(waiting))})"
+        " ORDER BY priority DESC, created_at LIMIT ?", (*waiting, _QUIESCENT_ATTENTION_LIMIT))]
+    _quiescent_salt(conn, create=True)
+    for _recipient, (_rank, s) in sorted(best.items()):
+        _kb._append_event(conn, s["task_id"], "board_quiescent", {
+            "counts": counts, "attention": attention, "mark": newest,
+            "to": quiescent_destination_tag(conn, s),
+        })
 
 
 def quiescent_addressed_to(conn: sqlite3.Connection, ev: Any, sub: Mapping[str, Any]) -> bool:

@@ -1126,6 +1126,25 @@ def test_gc_purges_stale_done_sub_keeps_fresh_one(kanban_home):
         conn.close()
 
 
+def test_gc_purges_a_stale_archived_sub_held_for_an_undecided_drain(kanban_home):
+    """Archived rows can be held for the idle-board decision (release_archived_notify_sub); a board whose
+    dispatcher never ticks again must not keep them forever."""
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+
+    conn = kbc.connect()
+    try:
+        tid = _make_done_task_with_sub(kb, conn, title="archived", chat_id="c-arch")
+        kb.archive_task(conn, tid)
+        _backdate_task(kb, conn, tid, days=45)
+
+        assert kbn.purge_stale_done_notify_subs(conn, max_age_days=30) == 1
+        assert kbn.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()
+
+
 def test_gc_honors_configured_retention_days(kanban_home):
     import hermes_cli.kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc

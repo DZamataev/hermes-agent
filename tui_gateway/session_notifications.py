@@ -435,9 +435,10 @@ def _kb_poll_board(_kb, slug: str, session: dict, sub_keys: tuple) -> list:
                     texts.append(DiagnosticText(text) if diagnostic_event(ev) else text)
             # Unsubscribe only on archive: ``done`` is reversible in review/controller flows, so keeping the sub lets a
             # later reopen notify the same session. The claimed cursor prevents replay.
+            # The row is held while the idle-board announcement may still ride on it (release_archived_notify_sub).
             if task and getattr(task, "status", "") == "archived":
                 with contextlib.suppress(Exception):
-                    _kbn.remove_notify_sub(conn, **sub_ident)
+                    _kbn.release_archived_notify_sub(conn, **sub_ident)
     return texts
 
 

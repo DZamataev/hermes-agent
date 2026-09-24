@@ -536,6 +536,9 @@ class _KanbanNotification:
     async def unsub(self) -> None:
         await _to_thread_process_service(self.runner._kanban_unsub, self.sub, self.board_slug)
 
+    async def release_archived(self) -> None:
+        await _to_thread_process_service(self.runner._kanban_release_archived, self.sub, self.board_slug)
+
     def clear_failures(self) -> None:
         self.sub_fail_counts.pop(self.sub_key, None)
 
@@ -588,7 +591,7 @@ class _KanbanNotification:
         _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
         if self.wake_kinds == {"board_quiescent"}:
             # Board-level on its own: the carrier card is incidental and may be long handled; don't point at it.
-            synth = f"[kanban] {_status}.\nBoard: {self.board_slug}"
+            synth = t("gateway.kanban.wake.board_message", status=_status, board=self.board_slug)
         else:
             synth = t(
                 "gateway.kanban.wake.message",
@@ -820,6 +823,7 @@ class _KanbanNotification:
         await self.advance()
         if not is_push:
             self.clear_failures()
-        # Unsubscribe only on archive; ``done`` is reversible.
+        # Unsubscribe only on archive; ``done`` is reversible. The row is held while the idle-board announcement
+        # may still ride on it (release_archived_notify_sub).
         if self.task and self.task.status == "archived":
-            await self.unsub()
+            await self.release_archived()

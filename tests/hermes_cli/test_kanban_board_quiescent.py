@@ -135,15 +135,13 @@ def test_dry_run_tick_writes_nothing(conn):
 
 
 def _addressed(conn):
-    """{(platform, chat_id[, thread, profile]): [task_id, ...]} of the announcements written so far, resolved from the
+    """{(platform, chat_id[, thread]): [task_id, ...]} of the announcements written so far, resolved from the
     opaque ``to`` tag back through the board's subscriptions (the payload itself never holds a chat id)."""
     tags = {}
     for s in kbn.list_notify_subs(conn):
         key = (s["platform"], s["chat_id"])
         if s.get("thread_id"):
             key += (s["thread_id"],)
-        if s.get("notifier_profile"):
-            key += (s["notifier_profile"],)
         tags[kbn.quiescent_destination_tag(conn, s)] = key
     out: dict = {}
     for task_id, payload in _quiescent(conn):
@@ -219,6 +217,58 @@ def test_a_participant_whose_cards_are_all_archived_is_still_told(conn):
     assert _addressed(conn) == {("telegram", "X"): [a]}
 
 
+def test_an_archived_participant_is_told_even_after_its_archival_was_delivered(conn):
+    """Notifiers poll every few seconds and the dispatcher ticks once a minute: the archival reaches the
+    orchestrator first. Its subscription must outlive that delivery until the drain is decided."""
+    from tui_gateway.server import _collect_kanban_notifications as poll
+
+    a = _card(conn, "a", sub=("tui", "K"))
+    b = _card(conn, "b")
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    kb.block_task(conn, b, reason="needs a human", kind="needs_input")
+    kb.archive_task(conn, a)
+    assert any("ok" in t for t in poll({"session_key": "K"}))
+    _tick(conn)
+
+    assert _addressed(conn) == {("tui", "K"): [a]}
+    shown = poll({"session_key": "K"})
+    assert any("no work left" in t for t in shown)
+    assert kbn.list_notify_subs(conn, a) == []
+
+
+def test_an_archived_card_outside_the_decided_work_is_unsubscribed_on_delivery(conn):
+    from tui_gateway.server import _collect_kanban_notifications as poll
+
+    a = _card(conn, "a", sub=("tui", "K"))
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    _tick(conn)
+    kb.archive_task(conn, a)
+    poll({"session_key": "K"})
+
+    assert kbn.list_notify_subs(conn, a) == []
+
+
+def test_held_rows_that_carry_nothing_are_dropped_by_the_decision(conn):
+    """Two archived cards of one orchestrator: one carries the announcement, the other's held row goes at once."""
+    from tui_gateway.server import _collect_kanban_notifications as poll
+
+    a1 = _card(conn, "a1", sub=("tui", "K"))
+    a2 = _card(conn, "a2", sub=("tui", "K"))
+    _tick(conn)
+    for tid in (a1, a2):
+        kb.complete_task(conn, tid, summary="ok")
+        kb.archive_task(conn, tid)
+    poll({"session_key": "K"})
+    _tick(conn)
+
+    ((carrier,),) = _addressed(conn).values()
+    other = a2 if carrier == a1 else a1
+    assert kbn.list_notify_subs(conn, other) == []
+    assert len(kbn.list_notify_subs(conn, carrier)) == 1
+
+
 def test_a_waking_card_carries_the_announcement_over_a_notify_only_one(conn):
     """Whether the orchestrator is woken must not depend on which of its cards finished last."""
     w = _card(conn, "w")
@@ -242,7 +292,37 @@ def test_two_profiles_in_one_group_are_told_separately(conn):
     kb.complete_task(conn, b, summary="ok")
     _tick(conn)
 
-    assert _addressed(conn) == {("telegram", "G", "profA"): [a], ("telegram", "G", "profB"): [b]}
+    assert _addressed(conn) == {("telegram", "G"): [a, b]}
+
+
+def test_a_legacy_unstamped_row_and_a_stamped_one_are_one_destination(conn):
+    """Old rows have no notifier profile and are delivered by the dispatch owner, the same bot that stamped rows of
+    a single-profile setup name: two announcements would ping and wake one topic twice."""
+    a = _card(conn, "a", sub=("telegram", "G"))
+    b = _card(conn, "b")
+    kbn.add_notify_sub(conn, task_id=b, platform="telegram", chat_id="G", notifier_profile="default")
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    kb.complete_task(conn, b, summary="ok")
+    _tick(conn)
+
+    assert sum(len(v) for v in _addressed(conn).values()) == 1
+
+
+def test_stamping_a_profile_later_keeps_the_announcement_addressed(conn):
+    """Re-subscribing fills a NULL profile; an announcement written before that must still reach its follower."""
+    a = _card(conn, "a", sub=("telegram", "G"))
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    _tick(conn)
+    kbn.add_notify_sub(conn, task_id=a, platform="telegram", chat_id="G", notifier_profile="default")
+
+    ((_, sub),) = [(s["task_id"], s) for s in kbn.list_notify_subs(conn, a)]
+    assert sub["notifier_profile"] == "default"
+    row = conn.execute("SELECT * FROM task_events WHERE kind = 'board_quiescent'").fetchone()
+    ev = kb.Event(id=row["id"], task_id=a, kind="board_quiescent", payload=json.loads(row["payload"]),
+                  created_at=row["created_at"], run_id=None)
+    assert kbn.quiescent_addressed_to(conn, ev, sub)
 
 
 def test_two_topics_of_one_group_are_told_separately(conn):
@@ -271,7 +351,35 @@ def test_the_announcement_names_no_destination(conn):
     _tick(conn)
 
     raw = conn.execute("SELECT payload FROM task_events WHERE kind = 'board_quiescent'").fetchone()[0]
-    assert "SECRETCHAT" not in raw and "77" not in json.loads(raw)["to"]
+    assert "SECRETCHAT" not in raw
+    import hashlib
+    import hmac
+    for salt in (b"", b"0"):  # the tag is keyed by the board's secret, not a bare or trivially keyed hash
+        guess = hmac.new(salt, "\x1f".join(("telegram", "-100SECRETCHAT", "77")).encode(), hashlib.sha256)
+        assert json.loads(raw)["to"] != guess.hexdigest()[:24]
+
+
+def test_a_card_waiting_for_its_reviewer_keeps_the_board_busy(conn):
+    """With review dispatch on (the default) a review card is about to get a reviewer: the board is not idle."""
+    a = _card(conn, "a", sub=("tui", "orchestrator"))
+    _tick(conn)
+    assert kb.request_review(conn, a, summary="please look", force=True)
+    kbn.announce_board_quiescent(conn)
+
+    assert _quiescent(conn) == []
+
+
+def test_scheduled_cards_are_listed_for_attention(conn):
+    """Nothing un-schedules a card automatically; it waits for someone to re-gate it."""
+    a = _card(conn, "a", sub=("tui", "orchestrator"))
+    s = _card(conn, "later")
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    assert kb.schedule_task(conn, s, reason="after the release")
+    _tick(conn)
+
+    ((_, payload),) = _quiescent(conn)
+    assert payload["attention"] == [s]
 
 
 def test_triage_cards_are_listed_for_attention(conn):
