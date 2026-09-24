@@ -60,10 +60,11 @@ def _same_query(own_url: str, target_url: str) -> bool:
     an explicit ``--base-url``, delegation) get that check. Parsed exactly like the producers of
     ``default_query`` (``parse_qs``, first value per key, blanks dropped), so a URL rebuilt from a
     ``default_query`` compares equal to the entry it came from."""
-    own_query, target_query = _query_params(own_url), _query_params(target_url)
-    if not own_query or not target_query:
+    # "Has a query" is decided on the raw string: ``?team=`` parses to {} but is still a tenant
+    # choice (the empty one), not an absent query.
+    if not urlsplit(own_url).query or not urlsplit(target_url).query:
         return True
-    return own_query == target_query
+    return _query_params(own_url) == _query_params(target_url)
 
 
 def _query_params(url: str) -> dict:
