@@ -301,6 +301,8 @@ class _Collector:
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
             thread_id=sub.get("thread_id") or "", kinds=TERMINAL_KINDS,
         )
+        # An idle-board announcement addressed to another follower of this card: the cursor moved past it, skip.
+        events = [ev for ev in events if _kbn().quiescent_addressed_to(ev, sub)]
         if not events:
             return None
         task = self.kb.get_task(conn, sub["task_id"])
@@ -417,7 +419,9 @@ def _fmt_board_quiescent(ev, n) -> tuple:
     """The dispatcher found no running/ready/review card after work ran: the orchestrator decides what's next."""
     from hermes_cli.kanban_db_notify import describe_board_quiescent
     summary = describe_board_quiescent(ev.payload or {})
-    return f"🏁 {n.board_tag}Kanban {summary}", summary, None
+    # Own wake line, not the handoff slot: a completion claimed in the same batch keeps its "Result:".
+    n.wake_board_summary = summary
+    return f"🏁 {n.board_tag}Kanban {summary}", None, None
 
 
 def _fmt_block_loop_detected(ev, n) -> tuple:
@@ -513,7 +517,7 @@ class _KanbanNotification:
         self.send_passive = mode != "wake"
         # Worker handoff carried into the synthetic wake turn so the woken
         # creator doesn't re-decompose work already on the board.
-        self.wake_handoff = self.wake_review_detail = self.session_key = self.synth = ""
+        self.wake_handoff = self.wake_review_detail = self.wake_board_summary = self.session_key = self.synth = ""
         self.plat: Any = None
         self.adapter: Any = None
         self.is_push_adapter = True
@@ -593,6 +597,8 @@ class _KanbanNotification:
             synth += "\n" + t("gateway.kanban.wake.handoff", summary=self.wake_handoff)
         if self.wake_review_detail:
             synth += "\n" + t("gateway.kanban.wake.review_detail", reason=self.wake_review_detail)
+        if self.wake_board_summary:
+            synth += "\n" + self.wake_board_summary
         self.synth = synth + "\n\n" + t("gateway.kanban.wake.guidance")
 
     def _log_woke(self) -> None:
@@ -777,7 +783,7 @@ class _KanbanNotification:
                 if not events:
                     continue
                 self.d = {**self.d, "events": events}
-                self.wake_handoff = self.wake_review_detail = ""
+                self.wake_handoff = self.wake_review_detail = self.wake_board_summary = ""
                 for ev in events:
                     self.format_event(ev)
                 self.build_wake_text()

@@ -946,6 +946,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 
     _rebuild_drifted_tables(conn)
 
+    # After the rebuild (it can renumber legacy event ids): a board that predates the idle-board announcement
+    # starts with every past claim already covered, so its first idle tick doesn't announce old history.
+    if _table_exists(conn, "kanban_board_state"):
+        conn.execute(
+            "INSERT OR IGNORE INTO kanban_board_state (key, value) "
+            "SELECT 'quiescent_claim_mark', COALESCE(MAX(id), 0) FROM task_events WHERE kind = 'claimed'"
+        )
+
 
 def _backfill_legacy_inflight_runs(conn: sqlite3.Connection) -> None:
     """One-shot backfill: tasks 'running' before runs existed carried

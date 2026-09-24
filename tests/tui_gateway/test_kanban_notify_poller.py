@@ -327,6 +327,101 @@ class TestBoardQuiescentReachesTheSession:
         assert len(texts) == 1
         assert "no work left" in texts[0] and "2 blocked" in texts[0] and "t_aaa" in texts[0]
 
+    def test_board_level_line_does_not_credit_the_carrier_card(self):
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            kb._append_event(conn, tid, "board_quiescent", {"counts": {"done": 1}, "attention": []})
+        finally:
+            conn.close()
+
+        (text,) = _collect_kanban_notifications(_session())
+
+        assert tid not in text and "@worker" not in text and "no work left" in text
+
+    def test_announcement_addressed_to_another_follower_is_skipped_without_wedging(self):
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            kb._append_event(conn, tid, "board_quiescent", {
+                "counts": {"done": 1}, "attention": [], "mark": 3,
+                "to": {"platform": "telegram", "chat_id": "chat-1", "thread_id": ""}})
+            top = conn.execute("SELECT MAX(id) FROM task_events").fetchone()[0]
+        finally:
+            conn.close()
+
+        assert _collect_kanban_notifications(_session()) == []
+        assert _sub_rows(tid)[0]["last_event_id"] == top
+
+
+class TestLineageDelivery:
+    def test_card_followed_under_two_keys_of_one_conversation_is_delivered_once(self, tmp_path, monkeypatch):
+        """kanban_create auto-subscribes the current key next to an inherited ancestor-key row; one event, one line."""
+        _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        tid = _create_subscribed_task(chat_id="before-compress")
+        conn = kbc.connect()
+        try:
+            kbn.add_notify_sub(conn, task_id=tid, platform="tui", chat_id="after-compress")
+        finally:
+            conn.close()
+        _complete(tid, summary="delivered once")
+
+        texts = _collect_kanban_notifications(_session("after-compress"))
+
+        assert len(texts) == 1 and "delivered once" in texts[0]
+
+    def test_idle_board_announced_to_two_keys_of_one_conversation_is_shown_once(self, tmp_path, monkeypatch):
+        _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        old = _create_subscribed_task(chat_id="before-compress")
+        new = _create_subscribed_task(chat_id="after-compress")
+        conn = kbc.connect()
+        try:
+            for tid, key in ((old, "before-compress"), (new, "after-compress")):
+                kb._append_event(conn, tid, "board_quiescent", {
+                    "counts": {"done": 2}, "attention": [], "mark": 7,
+                    "to": {"platform": "tui", "chat_id": key, "thread_id": ""}})
+        finally:
+            conn.close()
+
+        texts = _collect_kanban_notifications(_session("after-compress"))
+
+        assert len(texts) == 1 and "no work left" in texts[0]
+
+    def test_two_separate_idle_board_announcements_are_both_shown(self, tmp_path, monkeypatch):
+        """Deduplication is per drain (``mark``), not per kind: a later drain in the same poll still gets through."""
+        _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        tid = _create_subscribed_task(chat_id="after-compress")
+        conn = kbc.connect()
+        try:
+            for mark in (7, 9):
+                kb._append_event(conn, tid, "board_quiescent", {
+                    "counts": {"done": mark}, "attention": [], "mark": mark,
+                    "to": {"platform": "tui", "chat_id": "after-compress", "thread_id": ""}})
+        finally:
+            conn.close()
+
+        texts = _collect_kanban_notifications(_session("after-compress"))
+
+        assert len(texts) == 2
+
+    def test_failed_lineage_lookup_is_retried_on_the_next_poll(self, tmp_path, monkeypatch):
+        import tui_gateway.server as server
+
+        db = _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        tid = _create_subscribed_task(chat_id="before-compress")
+        _complete(tid, summary="after recovery")
+        session = _session("after-compress")
+
+        def _broken():
+            raise RuntimeError("state.db unavailable")
+
+        monkeypatch.setattr(server, "_get_db", _broken)
+        assert _collect_kanban_notifications(session) == []
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        texts = _collect_kanban_notifications(session)
+
+        assert len(texts) == 1 and "after recovery" in texts[0]
+
 
 class TestFormatKanbanEventText:
     SUB = {"task_id": "t_abc123"}

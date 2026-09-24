@@ -208,13 +208,14 @@ def count_notify_subs(
     platform: Optional[str] = None,
     chat_id: Optional[str] = None,
     thread_id: Optional[str] = None,
+    chat_ids: Optional[Iterable[str]] = None,
 ) -> int:
     """Count ``kanban_notify_subs`` rows via a read-only connection — the
     notifier's cheap zero-subscription early exit. Unlike :func:`connect` it
     never creates the file, runs init/migration or opens writable; WAL rows are
     still visible so a fresh sub is never missed. Missing DB / missing table
     counts as zero; platform matches case-insensitively (as notifier routing),
-    chat/thread exactly. Raises :class:`sqlite3.Error` if the DB exists but is
+    chat/thread exactly (``chat_ids``: any of several). Raises :class:`sqlite3.Error` if the DB exists but is
     unreadable — callers pick their own fallback.
     """
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
@@ -236,6 +237,12 @@ def count_notify_subs(
         if value is not None:
             clauses.append(clause)
             params.append(value)
+    if chat_ids is not None:
+        chat_list = list(chat_ids)
+        if not chat_list:
+            return 0
+        clauses.append("chat_id IN (" + ",".join("?" * len(chat_list)) + ")")
+        params.extend(chat_list)
     query = "SELECT COUNT(*) FROM kanban_notify_subs"
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
@@ -437,50 +444,97 @@ def rewind_notify_cursor(
 
 
 # A board is working while any card is in one of these; ``todo``/``blocked``/``triage``/``scheduled`` wait on a
-# parent, a human or the clock, so a board holding only those has nothing left to run on its own.
-_BOARD_ACTIVE_STATUSES = ("running", "ready", "review")
+# parent, a human or the clock, so a board holding only those has nothing left to run on its own. ``review`` counts
+# only while the dispatcher spawns reviewers (``kanban.review_dispatch``); otherwise it waits on a human too.
+_QUIESCENT_MARK_KEY = "quiescent_claim_mark"
 _QUIESCENT_ATTENTION_LIMIT = 20
 
 
+def _board_active_statuses() -> tuple[str, ...]:
+    from hermes_cli.kanban_db_dispatch import review_dispatch_enabled
+    return ("running", "ready", "review") if review_dispatch_enabled() else ("running", "ready")
+
+
+def _quiescent_claim_mark(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT value FROM kanban_board_state WHERE key = ?", (_QUIESCENT_MARK_KEY,)).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _newest_uncovered_claim(conn: sqlite3.Connection, active: tuple[str, ...]) -> Optional[tuple[int, int]]:
+    """``(mark, newest claimed event id)`` when the board is idle and a card was claimed past the mark, else None.
+    Both lookups are indexed (``tasks.status``, a rowid range over events newer than the mark)."""
+    marks = ",".join("?" * len(active))
+    if conn.execute(f"SELECT 1 FROM tasks WHERE status IN ({marks}) LIMIT 1", active).fetchone():
+        return None
+    mark = _quiescent_claim_mark(conn)
+    newest = conn.execute(
+        "SELECT MAX(id) FROM task_events WHERE id > ? AND kind = 'claimed'", (mark,)).fetchone()[0]
+    return (mark, int(newest)) if newest else None
+
+
 def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
-    """Record one ``board_quiescent`` event per subscribed destination when the board has run out of work.
+    """Record one ``board_quiescent`` event per destination that took part in the work that just drained.
 
     Card events say "this card finished/blocked" but never "nothing is left to run", so a session supervising a board
-    had to poll it. Fires only when no card is running/ready/review AND a card was claimed since the previous
-    announcement — a board that never ran anything stays silent, and new work re-arms it. The event lands on a card
-    each destination already follows (its most recently active one), so every delivery path — gateway notifier,
-    desktop poller — carries it with no new subscription type. Returns the task ids that received the event.
+    had to poll it. Fires when no card is active and a card was claimed past the board's claim mark
+    (``kanban_board_state``, out of reach of event GC); every decision advances the mark, so a board that never ran
+    anything stays silent and new work re-arms it. Recipients are the destinations following a card claimed since
+    the mark. Each gets one event, addressed to it (``payload["to"]``), on the non-archived card it follows with the
+    newest event, so the gateway notifier and the desktop poller carry it with no new subscription type; other
+    followers of that card skip it. Returns the carrier task ids.
     """
+    active = _board_active_statuses()
+    if _newest_uncovered_claim(conn, active) is None:  # read-only fast path outside the writer lock
+        return []
     with _kb.write_txn(conn):
-        marks = ",".join("?" * len(_BOARD_ACTIVE_STATUSES))
-        if conn.execute(f"SELECT 1 FROM tasks WHERE status IN ({marks}) LIMIT 1", _BOARD_ACTIVE_STATUSES).fetchone():
+        found = _newest_uncovered_claim(conn, active)  # re-check: another dispatcher may have decided meanwhile
+        if found is None:
             return []
-        last = conn.execute("SELECT COALESCE(MAX(id), 0) FROM task_events WHERE kind = 'board_quiescent'").fetchone()[0]
-        if not conn.execute("SELECT 1 FROM task_events WHERE kind = 'claimed' AND id > ? LIMIT 1", (last,)).fetchone():
+        mark, newest = found
+        conn.execute("INSERT OR REPLACE INTO kanban_board_state (key, value) VALUES (?, ?)",
+                     (_QUIESCENT_MARK_KEY, newest))
+        participants = {(r[0], r[1], r[2]) for r in conn.execute(
+            "SELECT DISTINCT s.platform, s.chat_id, s.thread_id FROM kanban_notify_subs s"
+            " WHERE s.task_id IN (SELECT task_id FROM task_events WHERE id > ? AND id <= ? AND kind = 'claimed')",
+            (mark, newest))}
+        if not participants:
             return []
-        # One card per destination: the one it follows with the newest event.
-        rows = conn.execute(
+        best: dict = {}
+        for row in conn.execute(
             "SELECT s.platform, s.chat_id, s.thread_id, s.task_id,"
             " (SELECT COALESCE(MAX(e.id), 0) FROM task_events e WHERE e.task_id = s.task_id) AS latest"
             " FROM kanban_notify_subs s JOIN tasks t ON t.id = s.task_id WHERE t.status != 'archived'"
-        ).fetchall()
-        best: dict = {}
-        for row in rows:
+        ):
             dest = (row["platform"], row["chat_id"], row["thread_id"])
-            if dest not in best or row["latest"] > best[dest][0]:
+            if dest in participants and (dest not in best or row["latest"] > best[dest][0]):
                 best[dest] = (row["latest"], row["task_id"])
-        targets = sorted({task_id for _latest, task_id in best.values()})
-        if not targets:
+        if not best:
             return []
+        waiting = ("blocked", "triage") + (() if "review" in active else ("review",))
         counts = {r[0]: r[1] for r in conn.execute(
             "SELECT status, COUNT(*) FROM tasks WHERE status != 'archived' GROUP BY status ORDER BY status")}
         attention = [r[0] for r in conn.execute(
-            "SELECT id FROM tasks WHERE status IN ('blocked', 'triage') ORDER BY priority DESC, created_at LIMIT ?",
-            (_QUIESCENT_ATTENTION_LIMIT,))]
-        payload = {"counts": counts, "attention": attention}
-        for task_id in targets:
-            _kb._append_event(conn, task_id, "board_quiescent", payload)
-    return targets
+            f"SELECT id FROM tasks WHERE status IN ({','.join('?' * len(waiting))})"
+            " ORDER BY priority DESC, created_at LIMIT ?", (*waiting, _QUIESCENT_ATTENTION_LIMIT))]
+        for (platform, chat_id, thread_id), (_latest, task_id) in sorted(best.items()):
+            _kb._append_event(conn, task_id, "board_quiescent", {
+                "counts": counts, "attention": attention, "mark": newest,
+                "to": {"platform": platform, "chat_id": chat_id, "thread_id": thread_id or ""},
+            })
+    return sorted({task_id for _latest, task_id in best.values()})
+
+
+def quiescent_addressed_to(ev: Any, sub: Mapping[str, Any]) -> bool:
+    """False for a ``board_quiescent`` event addressed to a different destination than ``sub``: it rides on a card
+    several destinations may follow, and only its addressee is told. Everything else is True."""
+    if getattr(ev, "kind", "") != "board_quiescent":
+        return True
+    to = (getattr(ev, "payload", None) or {}).get("to")
+    if not isinstance(to, Mapping):
+        return True
+    return (str(to.get("platform") or "").lower() == str(sub.get("platform") or "").lower()
+            and str(to.get("chat_id") or "") == str(sub.get("chat_id") or "")
+            and str(to.get("thread_id") or "") == str(sub.get("thread_id") or ""))
 
 
 def describe_board_quiescent(payload: Mapping[str, Any]) -> str:

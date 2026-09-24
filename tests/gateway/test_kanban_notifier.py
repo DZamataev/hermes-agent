@@ -753,6 +753,55 @@ def test_board_quiescent_pings_and_wakes_the_subscriber(tmp_path, monkeypatch):
     assert "no work left" in _wake_text(adapter)
 
 
+def test_board_quiescent_keeps_the_completion_handoff_in_the_same_wake(tmp_path, monkeypatch):
+    """Completion and idle-board announcement claimed together: the wake still carries the worker's result."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-handoff.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="last card", assignee="worker",
+                             session_id="agent:main:telegram:dm:chat-1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm",
+                           delivery_mode="notify+wake")
+        kb.complete_task(conn, tid, summary="THE REAL HANDOFF")
+        kb._append_event(conn, tid, "board_quiescent", {"counts": {"done": 1}, "attention": []})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    wake = _wake_text(adapter)
+    assert "THE REAL HANDOFF" in wake and "no work left" in wake
+
+
+def test_board_quiescent_addressed_to_another_destination_is_not_delivered(tmp_path, monkeypatch):
+    """Announcements are addressed: a second follower of the target card is not pinged about someone else's."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-addressed.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="shared card", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm")
+        kb._append_event(conn, tid, "board_quiescent", {
+            "counts": {"done": 1}, "attention": [],
+            "to": {"platform": "telegram", "chat_id": "chat-2", "thread_id": ""}})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    conn = kbc.connect()
+    try:
+        (row,) = kbn.list_notify_subs(conn, task_id=tid)
+        top = conn.execute("SELECT MAX(id) FROM task_events").fetchone()[0]
+    finally:
+        conn.close()
+    assert row["last_event_id"] == top, "the skipped announcement must not wedge the cursor"
+
+
 def test_review_requested_does_not_wake_a_notify_only_subscription(
     tmp_path, monkeypatch,
 ):

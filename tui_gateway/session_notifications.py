@@ -343,6 +343,9 @@ def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[
         return None
     glyph, fmt = entry
     task_id = sub.get("task_id", "")
+    if getattr(ev, "kind", "") == "board_quiescent":
+        # Board-level: the card that carries it is incidental, so neither its id nor its assignee is shown.
+        return f"{glyph} " + (f"[{board_slug}] " if board_slug else "") + "Kanban " + fmt(task, ev.payload or {}, "")[3:]
     title = (getattr(task, "title", None) or task_id)[:120]
     who = getattr(task, "assignee", None) or ""
     prefix = f"{glyph} " + (f"[{board_slug}] " if board_slug else "") + (f"@{who} " if who else "")
@@ -363,19 +366,20 @@ def _notif_subscription_keys(session: dict) -> tuple:
     """Session keys whose ``platform="tui"`` subscriptions this session may claim: the current key plus every
     compression ancestor. Compression rotates the key while subscriptions keep the key they were written under, so an
     exact match orphaned every card subscribed before the last compression (#91037). Ancestors of a key never
-    change, so the lineage is cached per current key."""
+    change, so a successful lookup is cached per current key; a failed or empty one is retried on the next poll."""
     session_key = str(session.get("session_key") or "")
     cached = session.get("_kanban_sub_keys")
     if cached and cached[0] == session_key:
         return cached[1]
-    keys: tuple = (session_key,)
     try:
         with _session_db(session) as db:
             lineage = db.get_compression_lineage(session_key) if db is not None else []
-        if session_key in lineage:
-            keys = tuple(lineage[: lineage.index(session_key) + 1])
     except Exception as exc:
         _notif_log_failure("kanban subscription lineage lookup failed", exc)
+        return (session_key,)
+    if session_key not in lineage:
+        return (session_key,)
+    keys = tuple(lineage[: lineage.index(session_key) + 1])
     session["_kanban_sub_keys"] = (session_key, keys)
     return keys
 
@@ -384,11 +388,13 @@ def _kb_poll_board(_kb, slug: str, session: dict, sub_keys: tuple) -> list:
     """Claim + format this session's unseen events on one board. One poller per live session: the board is not opened
     writable unless it has a subscription under one of ``sub_keys`` (a failed read-only probe — locked/corrupt DB —
     falls through so delivery is preserved). A subscription is left unclaimed when a different live session owns its
-    key (a stale pre-compression tab must not take its continuation's events)."""
+    key (a stale pre-compression tab must not take its continuation's events). One conversation can follow a card
+    under several of its keys, so an event reached through two of them is shown once, and so is the idle-board
+    announcement addressed to each key."""
     from hermes_cli import kanban_db_connect as _kbc
     from hermes_cli import kanban_db_notify as _kbn
     with contextlib.suppress(Exception):
-        if not any(_kbn.count_notify_subs(board=slug, platform="tui", chat_id=key) for key in sub_keys):
+        if _kbn.count_notify_subs(board=slug, platform="tui", chat_ids=sub_keys) == 0:
             return []
     try:
         conn = _kbc.connect(board=slug)
@@ -396,6 +402,7 @@ def _kb_poll_board(_kb, slug: str, session: dict, sub_keys: tuple) -> list:
         return []
     texts: list = []
     elsewhere: dict = {}
+    shown: set = set()
     with contextlib.closing(conn):
         try:
             subs = _kbn.list_notify_subs(conn)
@@ -418,6 +425,11 @@ def _kb_poll_board(_kb, slug: str, session: dict, sub_keys: tuple) -> list:
             from gateway.kanban_watchers_notifier import diagnostic_event
             from gateway.warning_notifications import DiagnosticText
             for ev in events:
+                seen_as = (("board_quiescent", (ev.payload or {}).get("mark")) if ev.kind == "board_quiescent"
+                           else ("event", ev.id))
+                if seen_as in shown or not _kbn.quiescent_addressed_to(ev, sub):
+                    continue
+                shown.add(seen_as)
                 text = _format_kanban_event_text(sub, task, ev, slug)
                 if text:
                     texts.append(DiagnosticText(text) if diagnostic_event(ev) else text)

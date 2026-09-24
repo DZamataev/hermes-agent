@@ -132,3 +132,137 @@ def test_dry_run_tick_writes_nothing(conn):
     kb.complete_task(conn, a, summary="ok")
     _tick(conn, dry_run=True)
     assert _quiescent(conn) == []
+
+
+def _addressed(conn):
+    """{(platform, chat_id): [task_id, ...]} of the announcements written so far."""
+    out: dict = {}
+    for task_id, payload in _quiescent(conn):
+        to = payload["to"]
+        out.setdefault((to["platform"], to["chat_id"]), []).append(task_id)
+    return out
+
+
+def test_each_destination_is_addressed_once_even_when_it_shares_a_card(conn):
+    """X follows a and b, Y follows only a: every destination gets exactly one announcement, not one per card."""
+    a = _card(conn, "a", sub=("telegram", "X"))
+    kbn.add_notify_sub(conn, task_id=a, platform="telegram", chat_id="Y")
+    b = _card(conn, "b", sub=("telegram", "X"))
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    kb.complete_task(conn, b, summary="ok")
+    _tick(conn)
+
+    addressed = _addressed(conn)
+    assert sorted(addressed) == [("telegram", "X"), ("telegram", "Y")]
+    assert all(len(cards) == 1 for cards in addressed.values())
+
+
+def test_announcement_lands_on_the_most_recently_active_card_the_destination_follows(conn):
+    a = _card(conn, "a", sub=("telegram", "X"))
+    b = _card(conn, "b", sub=("telegram", "X"))
+    _tick(conn)
+    kb.complete_task(conn, a, summary="first")
+    kb.complete_task(conn, b, summary="last")
+    _tick(conn)
+
+    assert _addressed(conn) == {("telegram", "X"): [b]}
+
+
+def test_destinations_that_took_no_part_in_the_work_are_not_told(conn):
+    """A session that followed a card finished before the previous announcement is not woken by later work."""
+    old = _card(conn, "old", sub=("tui", "last-week"))
+    _tick(conn)
+    kb.complete_task(conn, old, summary="ok")
+    _tick(conn)
+    assert list(_addressed(conn)) == [("tui", "last-week")]
+
+    new = _card(conn, "new", sub=("tui", "today"))
+    _tick(conn)
+    kb.complete_task(conn, new, summary="ok")
+    _tick(conn)
+
+    assert _addressed(conn) == {("tui", "last-week"): [old], ("tui", "today"): [new]}
+
+
+def test_archived_cards_never_carry_an_announcement(conn):
+    a = _card(conn, "a", sub=("telegram", "X"))
+    b = _card(conn, "b", sub=("telegram", "X"))
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    kb.complete_task(conn, b, summary="ok")
+    kb.archive_task(conn, b)
+    _tick(conn)
+
+    assert _addressed(conn) == {("telegram", "X"): [a]}
+
+
+def test_event_gc_does_not_rearm_a_finished_announcement(conn):
+    a = _card(conn, "a", sub=("tui", "orchestrator"))
+    b = _card(conn, "b", sub=("tui", "orchestrator"))
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    kb.block_task(conn, b, reason="needs a human", kind="needs_input")
+    _tick(conn)
+    assert len(_quiescent(conn)) == 1
+
+    kb.gc_events(conn, older_than_seconds=0)
+    _tick(conn)
+    _tick(conn)
+
+    assert len(_quiescent(conn)) == 1
+
+
+def test_event_gc_does_not_rearm_a_finished_announcement_even_when_it_prunes_the_carrier(conn):
+    a = _card(conn, "a", sub=("tui", "orchestrator"))
+    b = _card(conn, "b", sub=("tui", "orchestrator"))
+    _tick(conn)
+    kb.block_task(conn, b, reason="needs a human", kind="needs_input")
+    kb.complete_task(conn, a, summary="ok")
+    _tick(conn)
+    assert [t for t, _ in _quiescent(conn)] == [a], "the carrier is the card with the newest event: done card a"
+
+    conn.execute("UPDATE task_events SET created_at = created_at - 3600")
+    conn.commit()
+    assert kb.gc_events(conn, older_than_seconds=60) > 0
+    assert _quiescent(conn) == [], "the announcement on done card a was pruned"
+    _tick(conn)
+    _tick(conn)
+
+    assert _quiescent(conn) == []
+
+
+def test_a_subscription_added_after_an_unwatched_drain_is_not_told_about_it(conn):
+    a = _card(conn, "a")
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    _tick(conn)
+    late = kb.create_task(conn, title="decide later", assignee="worker", triage=True)
+    kbn.add_notify_sub(conn, task_id=late, platform="tui", chat_id="orchestrator")
+    _tick(conn)
+
+    assert _quiescent(conn) == []
+
+
+def test_history_from_before_the_feature_is_not_announced(conn):
+    """A board upgraded mid-life has old claims but no marker yet; migration seeds it, so the first idle tick is silent."""
+    a = _card(conn, "a", sub=("tui", "orchestrator"))
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    conn.execute("DROP TABLE kanban_board_state")
+    conn.commit()
+    kb.init_db()
+    _tick(conn)
+
+    assert _quiescent(conn) == []
+
+
+def test_review_cards_wait_on_a_human_when_review_dispatch_is_off(conn, monkeypatch):
+    import hermes_cli.config as cfgmod
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {"kanban": {"review_dispatch": False}})
+    a = _card(conn, "a", sub=("tui", "orchestrator"))
+    _tick(conn)
+    assert kb.request_review(conn, a, summary="please look", force=True)
+    _tick(conn)
+
+    assert [p["counts"] for _, p in _quiescent(conn)] == [{"review": 1}]
