@@ -503,6 +503,10 @@ def _tenant_config():
         # Two present queries must agree (as parameter sets): another tenant otherwise.
         ("https://h/t?team=a", "https://h/t?team=b", False),
         ("https://h/t?a=1&b=2", "https://h/t?b=2&a=1", True),
+        # Parsed like the default_query producers (parse_qs: first value, blanks dropped), so a URL
+        # rebuilt from default_query equals the entry it came from.
+        ("https://h/t?team=a&x=", "https://h/t?team=a", True),
+        ("https://h/t?team=a&team=b", "https://h/t?team=a", True),
     ],
 )
 def test_same_provider_endpoint_is_origin_plus_path_modulo_v1(own, target, same):
@@ -649,6 +653,10 @@ def test_child_pin_on_a_query_bearing_entry_keeps_its_declaration(relay):
     child = _child_runtime(f"{URL}/t?team=a", f"{URL}/t", TRUSTLESS_MODEL, default_query={"team": "a"})
     assert child["base_url"] == f"{URL}/t?team=a"
     assert child["capabilities"] == {"anthropic_oauth_proxy": True}
+    # A live URL that already carries its query (pool rotation onto a query-bearing entry) is not
+    # given the query a second time.
+    child = _child_runtime(f"{URL}/t?team=a", f"{URL}/t?team=a", TRUSTLESS_MODEL, default_query={"team": "a"})
+    assert child["base_url"] == f"{URL}/t?team=a"
 
 
 def test_child_pin_takes_the_live_endpoint_not_the_lagging_surface(relay):

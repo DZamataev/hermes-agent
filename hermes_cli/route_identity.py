@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Optional
-from urllib.parse import parse_qsl, urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 
 def normalize_route_base_url(base_url: Any) -> str:
@@ -57,12 +57,17 @@ def _same_query(own_url: str, target_url: str) -> bool:
     the URL WITHOUT it while the entry keeps it — so a missing query cannot mean "another
     endpoint". Two present queries are compared as parameter sets (order-insensitive): ``?team=a``
     vs ``?team=b`` is another tenant. Consumers that compare with the query (the Anthropic wire,
-    an explicit ``--base-url``, delegation) get that check."""
-    own_query, target_query = urlsplit(own_url).query, urlsplit(target_url).query
+    an explicit ``--base-url``, delegation) get that check. Parsed exactly like the producers of
+    ``default_query`` (``parse_qs``, first value per key, blanks dropped), so a URL rebuilt from a
+    ``default_query`` compares equal to the entry it came from."""
+    own_query, target_query = _query_params(own_url), _query_params(target_url)
     if not own_query or not target_query:
         return True
-    return sorted(parse_qsl(own_query, keep_blank_values=True)) == sorted(
-        parse_qsl(target_query, keep_blank_values=True))
+    return own_query == target_query
+
+
+def _query_params(url: str) -> dict:
+    return {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
 
 
 def same_provider_endpoint(own: Any, target: Any) -> bool:
