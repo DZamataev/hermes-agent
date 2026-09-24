@@ -362,13 +362,16 @@ def _base_client_kwargs(base_url, timeout) -> tuple[str, Dict[str, Any]]:
 
 
 def _build_anthropic_client_with_bearer_hook(
-    token_provider, base_url: str = None, timeout: float = None, *, drop_context_1m_beta: bool = False
+    token_provider, base_url: str = None, timeout: float = None, *, drop_context_1m_beta: bool = False,
+    force_oauth: bool = False,
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`. The SDK stores
     ``api_key``/``auth_token`` as static strings, so per-request bearer refresh (Microsoft's
     documented Foundry pattern) uses a custom ``httpx.Client`` whose request hook mints a fresh JWT
     and rewrites ``Authorization``; the SDK skips its own auth when ``http_client`` is given. The
-    placeholder ``auth_token`` is still required at construction and makes any leak diagnosable."""
+    placeholder ``auth_token`` is still required at construction and makes any leak diagnosable.
+    ``force_oauth`` is the caller's already-made OAuth decision (a relay declaring
+    ``anthropic_oauth_proxy`` with a ``key_cmd`` credential): the same identity as the static arm."""
     sdk = _require_sdk("Azure Foundry Anthropic-style endpoints with Entra ID auth", verb="Install with")
     normalize_proxy_env_vars()
     from agent.azure_identity_adapter import build_bearer_http_client
@@ -377,7 +380,7 @@ def _build_anthropic_client_with_bearer_hook(
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
     betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
     from agent.anthropic_credentials import anthropic_route_is_oauth
-    if anthropic_route_is_oauth(base_url, token_provider):
+    if force_oauth or anthropic_route_is_oauth(base_url, token_provider):
         # key_cmd-sourced Claude Code OAuth on the native host: a bare bearer without the Claude Code
         # identity is answered with 429 rate_limit_error "Error" (#114967) — same headers as the
         # static "oauth" style in build_anthropic_client.
@@ -462,7 +465,8 @@ def build_anthropic_client(
     sdk = _require_sdk("the Anthropic provider")
     if callable(api_key) and not isinstance(api_key, str):
         return _build_anthropic_client_with_bearer_hook(
-            api_key, base_url, timeout, drop_context_1m_beta=drop_context_1m_beta
+            api_key, base_url, timeout, drop_context_1m_beta=drop_context_1m_beta,
+            force_oauth=force_oauth,
         )
     normalize_proxy_env_vars()
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)

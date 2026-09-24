@@ -4825,6 +4825,11 @@ class _ResolveRequest(NamedTuple):
     main_runtime: Optional[Dict[str, Any]]
     is_vision: bool
     task: Optional[str]
+    # The identity whose config entry won resolution, when that is not ``provider``: a saved
+    # ``custom:claude`` is selected by its raw name, while ``provider`` is the alias-normalized
+    # built-in (``anthropic``). The wire policy is that entry's declaration, so it is read under
+    # this name up to the final client construction. Set only by the named-custom branch.
+    owner: Optional[str] = None
 
 
 _ResolveResult = Tuple[Optional[Any], Optional[str]]
@@ -4901,7 +4906,8 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
     # looks like; the same declaration gates ``_reasoning_config`` in _build_call_kwargs.
     api_mode = req.api_mode or _profile_declared_messages_wire(req.provider)
     from agent.auxiliary_oauth import runtime_oauth_proxy
-    force_oauth = bool(runtime_oauth_proxy(req.main_runtime, req.provider, base_url_str, final_model_str))
+    force_oauth = bool(runtime_oauth_proxy(
+        req.main_runtime, req.owner or req.provider, base_url_str, final_model_str))
     return _maybe_wrap_anthropic(
         client_obj, final_model_str, api_key_str, base_url_str, api_mode,
         force_oauth=force_oauth,
@@ -5111,10 +5117,13 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     custom_entry = None
     if req.original_provider and req.original_provider != provider:
         custom_entry = _get_named_custom_provider(req.original_provider)
+        if custom_entry:
+            req = req._replace(owner=req.original_provider)
     if custom_entry is None:
         custom_entry = _get_named_custom_provider(provider)
     if not custom_entry:
         return None
+    owner = req.owner or provider
     # A per-task/explicit base_url or api_key composes OVER the named entry's defaults: the entry supplies
     # whatever the caller left blank, never replaces what the caller set (compression prompts carry
     # conversation history, so a silently swapped destination is a data-routing bug, not a nuisance).
@@ -5158,7 +5167,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
         # Model-qualified: two models on this one relay may declare different values, and this
         # decides Bearer vs x-api-key plus the Claude Code transforms on the actual request.
         from agent.auxiliary_oauth import runtime_oauth_proxy
-        force_oauth = bool(runtime_oauth_proxy(req.main_runtime, req.provider, custom_base, final_model))
+        force_oauth = bool(runtime_oauth_proxy(req.main_runtime, owner, custom_base, final_model))
         try:
             from agent.anthropic_adapter import build_anthropic_client
             from agent.anthropic_credentials import anthropic_route_is_oauth
@@ -5176,7 +5185,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
             req, AnthropicAuxiliaryClient(
                 real_client, final_model, custom_key, custom_base,
                 is_oauth=anthropic_route_is_oauth(
-                    custom_base, custom_key, provider=provider, oauth_proxy=force_oauth,
+                    custom_base, custom_key, provider=owner, oauth_proxy=force_oauth,
                 ),
             ), final_model)
     client = _named_custom_openai_wire_client(custom_base, custom_key, entry_headers)
