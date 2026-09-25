@@ -849,6 +849,9 @@ _NOTIFY_SUB_COLUMNS = (
     # (which prefers ``user_id_alt``). NULL is inert.
     ("user_id_alt", "user_id_alt TEXT"),
     ("delivery_metadata", "delivery_metadata TEXT"),
+    # Cursor of FINISHED deliveries (``last_event_id`` is advanced by the claim, before the send). 0 on legacy rows:
+    # they are never treated as caught up, so an archived one waits for the stale-sub purge instead of a release.
+    ("delivered_event_id", "delivered_event_id INTEGER NOT NULL DEFAULT 0"),
 )
 
 _TASK_RUN_COLUMNS = (
@@ -945,6 +948,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE task_events SET kind = ? WHERE kind = ?", (new, old))
 
     _rebuild_drifted_tables(conn)
+
+    # After the rebuild (it can renumber legacy event ids): a board that predates the idle-board announcement
+    # starts with every past claim already covered, so its first idle tick doesn't announce old history.
+    if _table_exists(conn, "kanban_board_state"):
+        conn.execute(
+            "INSERT OR IGNORE INTO kanban_board_state (key, value) "
+            "SELECT 'quiescent_claim_mark', COALESCE(MAX(id), 0) FROM task_events WHERE kind = 'claimed'"
+        )
 
 
 def _backfill_legacy_inflight_runs(conn: sqlite3.Connection) -> None:
@@ -1050,6 +1061,7 @@ _REBUILD_SPECS = {
         " delivery_metadata TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
         " last_ping_event_id INTEGER NOT NULL DEFAULT 0,"
+        " delivered_event_id INTEGER NOT NULL DEFAULT 0,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
         ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
     ),

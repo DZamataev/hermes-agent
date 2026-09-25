@@ -134,7 +134,8 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
 
 # Mirror gateway/kanban_watchers.py TERMINAL_KINDS: claim silent kinds (archived/unblocked) too so the cursor advances
 # past them and they can't wedge a later completed/blocked event behind an unclaimed row.
-_KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
+_KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked",
+                        "board_quiescent")
 # kanban, /loop + /heartbeat and the bot mailbox share one idle-poll cadence; probing the lease registry on
 # every 0.5s queue timeout cost ~a core at 11 sessions (#108005).
 _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = _BOT_DELIVERY_POLL_SECONDS = 5.0
@@ -326,7 +327,13 @@ _KANBAN_EVENT_FORMATTERS = {
     "crashed": ("✖", lambda t, p, title: " worker crashed (pid gone); dispatcher will retry"),
     "timed_out": ("⏱", _kb_timed_out),
     "status": ("🔄", lambda t, p, title: f" → {p.get('status') or ''}"),
+    "board_quiescent": ("🏁", lambda t, p, title: " — " + _kanban_describe_quiescent(p)),
 }
+
+
+def _kanban_describe_quiescent(payload: dict) -> str:
+    from hermes_cli.kanban_db_notify import describe_board_quiescent
+    return describe_board_quiescent(payload)
 
 
 def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[str]:
@@ -336,6 +343,9 @@ def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[
         return None
     glyph, fmt = entry
     task_id = sub.get("task_id", "")
+    if getattr(ev, "kind", "") == "board_quiescent":
+        # Board-level: the card that carries it is incidental, so neither its id nor its assignee is shown.
+        return f"{glyph} " + (f"[{board_slug}] " if board_slug else "") + "Kanban " + fmt(task, ev.payload or {}, "")[3:]
     title = (getattr(task, "title", None) or task_id)[:120]
     who = getattr(task, "assignee", None) or ""
     prefix = f"{glyph} " + (f"[{board_slug}] " if board_slug else "") + (f"@{who} " if who else "")
@@ -352,27 +362,59 @@ def _kb_board_key(_kb, board_meta) -> tuple[str, str]:
         return slug, f"slug:{slug}"
 
 
-def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
+def _notif_subscription_keys(session: dict) -> tuple:
+    """Session keys whose ``platform="tui"`` subscriptions this session may claim: the current key plus every
+    compression ancestor. Compression rotates the key while subscriptions keep the key they were written under, so an
+    exact match orphaned every card subscribed before the last compression (#91037). Ancestors of a key never
+    change, so a successful lookup is cached per current key; a failed or empty one is retried on the next poll."""
+    session_key = str(session.get("session_key") or "")
+    cached = session.get("_kanban_sub_keys")
+    if cached and cached[0] == session_key:
+        return cached[1]
+    try:
+        with _session_db(session) as db:
+            lineage = db.get_compression_lineage(session_key) if db is not None else []
+    except Exception as exc:
+        _notif_log_failure("kanban subscription lineage lookup failed", exc)
+        return (session_key,)
+    if session_key not in lineage:
+        return (session_key,)
+    keys = tuple(lineage[: lineage.index(session_key) + 1])
+    session["_kanban_sub_keys"] = (session_key, keys)
+    return keys
+
+
+def _kb_poll_board(_kb, slug: str, session: dict, sub_keys: tuple) -> list:
     """Claim + format this session's unseen events on one board. One poller per live session: the board is not opened
-    writable unless it has a subscription owned by this exact session (a failed read-only probe — locked/corrupt DB —
-    falls through so delivery is preserved)."""
+    writable unless it has a subscription under one of ``sub_keys`` (a failed read-only probe — locked/corrupt DB —
+    falls through so delivery is preserved). A subscription is left unclaimed when a different live session owns its
+    key (a stale pre-compression tab must not take its continuation's events). One conversation can follow a card
+    under several of its keys, so an event reached through two of them is shown once, and so is the idle-board
+    announcement addressed to each key."""
     from hermes_cli import kanban_db_connect as _kbc
     from hermes_cli import kanban_db_notify as _kbn
     with contextlib.suppress(Exception):
-        if _kbn.count_notify_subs(board=slug, platform="tui", chat_id=session_key) == 0:
+        if _kbn.count_notify_subs(board=slug, platform="tui", chat_ids=sub_keys) == 0:
             return []
     try:
         conn = _kbc.connect(board=slug)
     except Exception:
         return []
     texts: list = []
+    elsewhere: dict = {}
+    shown: set = set()
     with contextlib.closing(conn):
         try:
             subs = _kbn.list_notify_subs(conn)
         except Exception:
             return []
         for sub in subs:
-            if (sub.get("platform") or "").lower() != "tui" or sub.get("chat_id") != session_key:
+            chat_id = sub.get("chat_id")
+            if (sub.get("platform") or "").lower() != "tui" or chat_id not in sub_keys:
+                continue
+            if chat_id not in elsewhere:
+                elsewhere[chat_id] = _notification_event_belongs_elsewhere("", session, {"session_key": chat_id})
+            if elsewhere[chat_id]:
                 continue
             sub_ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
                              thread_id=sub.get("thread_id") or "")
@@ -383,14 +425,23 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
             from gateway.kanban_watchers_notifier import diagnostic_event
             from gateway.warning_notifications import DiagnosticText
             for ev in events:
+                seen_as = (("board_quiescent", (ev.payload or {}).get("mark")) if ev.kind == "board_quiescent"
+                           else ("event", ev.id))
+                if seen_as in shown or not _kbn.quiescent_addressed_to(conn, ev, sub):
+                    continue
+                shown.add(seen_as)
                 text = _format_kanban_event_text(sub, task, ev, slug)
                 if text:
                     texts.append(DiagnosticText(text) if diagnostic_event(ev) else text)
             # Unsubscribe only on archive: ``done`` is reversible in review/controller flows, so keeping the sub lets a
             # later reopen notify the same session. The claimed cursor prevents replay.
+            # The poller has no send to fail: what it claimed is delivered (returned to the caller) here.
+            with contextlib.suppress(Exception):
+                _kbn.record_notify_delivered(conn, event_id=_new, **sub_ident)
+            # The row is held while the idle-board announcement may still ride on it (release_archived_notify_sub).
             if task and getattr(task, "status", "") == "archived":
                 with contextlib.suppress(Exception):
-                    _kbn.remove_notify_sub(conn, **sub_ident)
+                    _kbn.release_archived_notify_sub(conn, **sub_ident)
     return texts
 
 
@@ -419,7 +470,8 @@ def _collect_kanban_notifications(session: dict) -> list:
     unique = {}
     for slug, resolved in (_kb_board_key(_kb, board_meta) for board_meta in boards):
         unique.setdefault(resolved, slug)
-    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key)]
+    sub_keys = _notif_subscription_keys(session)
+    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session, sub_keys)]
 
 
 def _notif_poll_kanban(sid: str, session: dict) -> None:

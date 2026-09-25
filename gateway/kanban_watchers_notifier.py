@@ -33,10 +33,10 @@ def _kbn():
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
-TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested", "board_quiescent")
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
-_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected", "board_quiescent")
 
 
 def diagnostic_event(ev) -> bool:
@@ -301,7 +301,17 @@ class _Collector:
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
             thread_id=sub.get("thread_id") or "", kinds=TERMINAL_KINDS,
         )
+        # An idle-board announcement addressed to another follower of this card: the cursor moved past it, skip.
+        events = [ev for ev in events if _kbn().quiescent_addressed_to(conn, ev, sub)]
         if not events:
+            if cursor != old_cursor:  # claimed only announcements for another follower: nothing left to deliver
+                ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
+                             thread_id=sub.get("thread_id") or "")
+                with contextlib.suppress(Exception):
+                    _kbn().record_notify_delivered(conn, event_id=cursor, **ident)
+                    # The decision that passed this row by could not drop it (the announcement was pending on it)
+                    # and no delivery follows to release it: do it here. Guarded, so a live card keeps its row.
+                    _kbn().release_archived_notify_sub(conn, **ident)
             return None
         task = self.kb.get_task(conn, sub["task_id"])
         logger.debug("kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
@@ -413,6 +423,15 @@ def _fmt_changes_requested(ev, n) -> tuple:
     return msg, None, reason_text
 
 
+def _fmt_board_quiescent(ev, n) -> tuple:
+    """The dispatcher found no running/ready/review card after work ran: the orchestrator decides what's next."""
+    from hermes_cli.kanban_db_notify import describe_board_quiescent
+    summary = describe_board_quiescent(ev.payload or {})
+    # Own wake line, not the handoff slot: a completion claimed in the same batch keeps its "Result:".
+    n.wake_board_summary = summary
+    return f"🏁 {n.board_tag}Kanban {summary}", None, None
+
+
 def _fmt_block_loop_detected(ev, n) -> tuple:
     """Re-blocked for the same cause past the limit and routed to `triage`.
 
@@ -468,6 +487,7 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
     "block_loop_detected": _fmt_block_loop_detected,
+    "board_quiescent": _fmt_board_quiescent,
 }
 
 
@@ -505,7 +525,7 @@ class _KanbanNotification:
         self.send_passive = mode != "wake"
         # Worker handoff carried into the synthetic wake turn so the woken
         # creator doesn't re-decompose work already on the board.
-        self.wake_handoff = self.wake_review_detail = self.session_key = self.synth = ""
+        self.wake_handoff = self.wake_review_detail = self.wake_board_summary = self.session_key = self.synth = ""
         self.plat: Any = None
         self.adapter: Any = None
         self.is_push_adapter = True
@@ -523,6 +543,9 @@ class _KanbanNotification:
 
     async def unsub(self) -> None:
         await _to_thread_process_service(self.runner._kanban_unsub, self.sub, self.board_slug)
+
+    async def release_archived(self) -> None:
+        await _to_thread_process_service(self.runner._kanban_release_archived, self.sub, self.board_slug)
 
     def clear_failures(self) -> None:
         self.sub_fail_counts.pop(self.sub_key, None)
@@ -574,17 +597,23 @@ class _KanbanNotification:
         # i18n keys: gateway.kanban.wake.<kind> for each _WAKE_KINDS entry.
         _parts = [t(f"gateway.kanban.wake.{k}") for k in _WAKE_KINDS if k in self.wake_kinds]
         _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
-        synth = t(
-            "gateway.kanban.wake.message",
-            task_id=sub["task_id"], status=_status, title=self.title,
-            assignee=task.assignee if task else "", board=self.board_slug,
-        )
+        if self.wake_kinds == {"board_quiescent"}:
+            # Board-level on its own: the carrier card is incidental and may be long handled; don't point at it.
+            synth = t("gateway.kanban.wake.board_message", status=_status, board=self.board_slug)
+        else:
+            synth = t(
+                "gateway.kanban.wake.message",
+                task_id=sub["task_id"], status=_status, title=self.title,
+                assignee=task.assignee if task else "", board=self.board_slug,
+            )
         # Label as an automatic notification and carry the handoff so the
         # creator inspects the board instead of re-decomposing.
         if self.wake_handoff:
             synth += "\n" + t("gateway.kanban.wake.handoff", summary=self.wake_handoff)
         if self.wake_review_detail:
             synth += "\n" + t("gateway.kanban.wake.review_detail", reason=self.wake_review_detail)
+        if self.wake_board_summary:
+            synth += "\n" + self.wake_board_summary
         self.synth = synth + "\n\n" + t("gateway.kanban.wake.guidance")
 
     def _log_woke(self) -> None:
@@ -769,7 +798,7 @@ class _KanbanNotification:
                 if not events:
                     continue
                 self.d = {**self.d, "events": events}
-                self.wake_handoff = self.wake_review_detail = ""
+                self.wake_handoff = self.wake_review_detail = self.wake_board_summary = ""
                 for ev in events:
                     self.format_event(ev)
                 self.build_wake_text()
@@ -802,6 +831,7 @@ class _KanbanNotification:
         await self.advance()
         if not is_push:
             self.clear_failures()
-        # Unsubscribe only on archive; ``done`` is reversible.
+        # Unsubscribe only on archive; ``done`` is reversible. The row is held while the idle-board announcement
+        # may still ride on it (release_archived_notify_sub).
         if self.task and self.task.status == "archived":
-            await self.unsub()
+            await self.release_archived()

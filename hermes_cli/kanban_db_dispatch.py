@@ -1940,7 +1940,7 @@ def dispatch_once(
     resolved DB path so unrelated boards tick in parallel.
     """
     def _locked_tick() -> DispatchResult:
-        return _dispatch_once_locked(
+        result = _dispatch_once_locked(
             conn,
             spawn_fn=spawn_fn,
             ttl_seconds=ttl_seconds,
@@ -1954,6 +1954,14 @@ def dispatch_once(
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
         )
+        if not dry_run:
+            # Tell subscribers the board ran out of work; a failed announcement must not fail the tick.
+            try:
+                from hermes_cli import kanban_db_notify as _kbn
+                _kbn.announce_board_quiescent(conn)
+            except Exception:
+                _kb._log.debug("kanban dispatch: board_quiescent announcement failed", exc_info=True)
+        return result
 
     try:
         db_path = _kb.kanban_db_path(board=board)

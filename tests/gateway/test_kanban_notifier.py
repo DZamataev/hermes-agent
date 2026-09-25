@@ -780,6 +780,259 @@ def test_block_loop_detected_wakes_the_origin_session(tmp_path, monkeypatch):
     assert tid in _wake_text(adapter)
 
 
+def test_board_quiescent_pings_and_wakes_the_subscriber(tmp_path, monkeypatch):
+    """The dispatcher's "board ran out of work" event reaches Telegram subscribers: a ping naming the leftover
+    blocked cards, and a wake for notify+wake subscriptions (the orchestrator must decide what's next)."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="last card", assignee="worker",
+                             session_id="agent:main:telegram:dm:chat-1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm",
+                           delivery_mode="notify+wake")
+        kb._append_event(conn, tid, "board_quiescent",
+                         {"counts": {"blocked": 1, "done": 3}, "attention": ["t_left"]})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    ping = adapter.sent[0]["text"]
+    assert "no work left" in ping and "1 blocked" in ping and "t_left" in ping
+    assert "no work left" in _wake_text(adapter)
+
+
+def test_board_quiescent_keeps_the_completion_handoff_in_the_same_wake(tmp_path, monkeypatch):
+    """Completion and idle-board announcement claimed together: the wake still carries the worker's result."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-handoff.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="last card", assignee="worker",
+                             session_id="agent:main:telegram:dm:chat-1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm",
+                           delivery_mode="notify+wake")
+        kb.complete_task(conn, tid, summary="THE REAL HANDOFF")
+        kb._append_event(conn, tid, "board_quiescent", {"counts": {"done": 1}, "attention": []})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    wake = _wake_text(adapter)
+    assert "THE REAL HANDOFF" in wake and "no work left" in wake
+
+
+def test_board_quiescent_alone_wakes_about_the_board_not_the_carrier_card(tmp_path, monkeypatch):
+    """The carrier finished in an earlier batch: the wake turn must not send the orchestrator back to that card."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-board-wake.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="Write the README", assignee="docs-bot",
+                             session_id="agent:main:telegram:dm:chat-1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm",
+                           delivery_mode="notify+wake")
+        kb._append_event(conn, tid, "board_quiescent", {"counts": {"blocked": 1, "done": 3}, "attention": ["t_left"]})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    wake = _wake_text(adapter)
+    assert "no work left" in wake and "t_left" in wake
+    assert tid not in wake and "Write the README" not in wake and "docs-bot" not in wake
+
+
+def test_board_quiescent_from_a_real_dispatcher_tick_pings_once_and_wakes(tmp_path, monkeypatch):
+    """dispatch_once → announce → notifier, with no hand-written event: one ping, one wake about the board."""
+    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-e2e.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="last card", assignee="worker", session_id="agent:main:telegram:dm:chat-1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm",
+                           delivery_mode="notify+wake")
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+        kbn.advance_notify_cursor(conn, task_id=tid, platform="telegram", chat_id="chat-1", thread_id="",
+                                  new_cursor=conn.execute("SELECT MAX(id) FROM task_events").fetchone()[0])
+        blocked = kb.create_task(conn, title="waits on a human", assignee="worker")
+        kb.block_task(conn, blocked, reason="needs input", kind="needs_input")
+        kb.complete_task(conn, tid, summary="ok")
+        kbn.advance_notify_cursor(conn, task_id=tid, platform="telegram", chat_id="chat-1", thread_id="",
+                                  new_cursor=conn.execute("SELECT MAX(id) FROM task_events").fetchone()[0])
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert [m["text"] for m in adapter.sent if "no work left" in m["text"]] == [adapter.sent[0]["text"]]
+    assert blocked in adapter.sent[0]["text"]
+    wake = _wake_text(adapter)
+    assert "no work left" in wake and "last card" not in wake
+
+
+def test_archived_card_delivered_before_the_tick_still_carries_the_announcement(tmp_path, monkeypatch):
+    """The gateway polls every 5 s, the dispatcher once a minute: the archival is delivered first, and the
+    subscription must survive it so the idle-board announcement can still ride on the archived card."""
+    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-archived.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="last card", assignee="worker", session_id="agent:main:telegram:dm:chat-1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm")
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+        kb.complete_task(conn, tid, summary="ok")
+        kb.archive_task(conn, tid)
+    finally:
+        conn.close()
+    first = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(first)))
+
+    conn = kbc.connect()
+    try:
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+    finally:
+        conn.close()
+    second = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(second)))
+
+    assert not any("no work left" in m["text"] for m in first.sent)
+    assert [m["text"] for m in second.sent if "no work left" in m["text"]]
+    conn = kbc.connect()
+    try:
+        assert kbn.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()
+
+
+def test_held_archived_rows_are_gone_once_the_announcement_is_delivered(tmp_path, monkeypatch):
+    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-held.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        cards = [kb.create_task(conn, title=f"card {i}", assignee="worker",
+                                session_id="agent:main:telegram:dm:chat-1") for i in (1, 2)]
+        for tid in cards:
+            kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm")
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+        for tid in cards:
+            kb.complete_task(conn, tid, summary="ok")
+            kb.archive_task(conn, tid)
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(RecordingAdapter())))
+    conn = kbc.connect()
+    try:
+        assert all(len(kbn.list_notify_subs(conn, tid)) == 1 for tid in cards)  # held for the decision
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert sum("no work left" in m["text"] for m in adapter.sent) == 1
+    conn = kbc.connect()
+    try:
+        assert [kbn.list_notify_subs(conn, tid) for tid in cards] == [[], []]
+    finally:
+        conn.close()
+
+
+def test_a_held_row_whose_announcement_rode_on_another_card_is_released_by_its_skip(tmp_path, monkeypatch):
+    """Card X is followed by chats A and B, B also follows Y. After the drain A's announcement rides on X and B's on
+    Y, so the X/B row only skips A's. The decision could not drop it (an announcement was pending on it) and no
+    delivery follows, so the skip itself must release it."""
+    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-skip.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        x = kb.create_task(conn, title="X shared", assignee="worker")
+        y = kb.create_task(conn, title="Y only B", assignee="worker")
+        for tid, chat in ((x, "chat-A"), (x, "chat-B"), (y, "chat-B")):
+            kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id=chat, chat_type="dm")
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+        kb.complete_task(conn, x, summary="x ok")
+        kb.complete_task(conn, y, summary="y ok")
+        kb.archive_task(conn, x)
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(RecordingAdapter())))
+    conn = kbc.connect()
+    try:
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+        carriers = {kbn.quiescent_destination_tag(conn, {"platform": "telegram", "chat_id": c}): c
+                    for c in ("chat-A", "chat-B")}
+        rides = {carriers[(e.payload or {})["to"]]: e.task_id
+                 for e in kb.list_events(conn, x) + kb.list_events(conn, y) if e.kind == "board_quiescent"}
+        assert rides == {"chat-A": x, "chat-B": y}
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert sorted(m["chat_id"] for m in adapter.sent if "no work left" in m["text"]) == ["chat-A", "chat-B"]
+    conn = kbc.connect()
+    try:
+        assert kbn.list_notify_subs(conn, x) == []
+        assert [s["chat_id"] for s in kbn.list_notify_subs(conn, y)] == ["chat-B"]  # live card keeps its row
+    finally:
+        conn.close()
+
+
+def test_board_quiescent_addressed_to_another_destination_is_not_delivered(tmp_path, monkeypatch):
+    """Announcements are addressed: a second follower of the target card is not pinged about someone else's."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-addressed.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="shared card", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm")
+        kb._append_event(conn, tid, "board_quiescent", {
+            "counts": {"done": 1}, "attention": [],
+            "to": kbn.quiescent_destination_tag(conn, {"platform": "telegram", "chat_id": "chat-2"})})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    conn = kbc.connect()
+    try:
+        (row,) = kbn.list_notify_subs(conn, task_id=tid)
+        top = conn.execute("SELECT MAX(id) FROM task_events").fetchone()[0]
+    finally:
+        conn.close()
+    assert row["last_event_id"] == top, "the skipped announcement must not wedge the cursor"
+
+
 def test_review_requested_does_not_wake_a_notify_only_subscription(
     tmp_path, monkeypatch,
 ):
@@ -796,3 +1049,40 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+def test_a_second_gateway_with_nothing_new_leaves_a_row_the_first_is_still_sending(tmp_path, monkeypatch):
+    """Two gateways on one board: the first has claimed the archived card's completion and archival and is still
+    sending. The second gateway's tick claims nothing for that row, so it must neither mark it delivered nor
+    release it, or the first gateway's failed send has no row to rewind onto."""
+    from gateway.kanban_watchers_notifier import TERMINAL_KINDS
+    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-inflight.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="in flight", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm")
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)  # decide nothing: keep the claim mark out of it
+        kb.complete_task(conn, tid, summary="THE RESULT")
+        kb.archive_task(conn, tid)
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+        ident = dict(task_id=tid, platform="telegram", chat_id="chat-1", thread_id="")
+        old, claimed, events = kbn.claim_unseen_events_for_sub(conn, kinds=TERMINAL_KINDS, **ident)  # gateway 1
+        assert "archived" in {e.kind for e in events}
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))  # gateway 2
+    assert adapter.sent == []
+
+    conn = kbc.connect()
+    try:
+        assert kbn.rewind_notify_cursor(conn, claimed_cursor=claimed, old_cursor=old, **ident)  # gateway 1 failed
+    finally:
+        conn.close()

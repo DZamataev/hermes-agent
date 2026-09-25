@@ -1066,7 +1066,17 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     last_ping_event_id INTEGER NOT NULL DEFAULT 0,
+    -- Highest event id whose delivery finished (``last_event_id`` moves at claim time, before the send).
+    delivered_event_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
+);
+
+-- Board-level scalars that must outlive event GC (``gc_events`` prunes the
+-- events of done cards). ``quiescent_claim_mark``: id of the newest
+-- ``claimed`` event already covered by a ``board_quiescent`` decision.
+CREATE TABLE IF NOT EXISTS kanban_board_state (
+    key   TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
