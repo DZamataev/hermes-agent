@@ -2005,3 +2005,29 @@ def test_rebuilt_legacy_notify_subs_matches_the_fresh_schema(kanban_home):
         assert tuple(row) == (7, 0)
     finally:
         conn.close()
+
+
+def test_an_upgraded_board_gains_delivered_event_id_and_delivers(kanban_home):
+    """The common upgrade path: a board created before ``delivered_event_id`` gets it added on open (default 0),
+    and delivery bookkeeping works on it (without the column every advance raises ``no such column``)."""
+    from hermes_cli import kanban_db_notify as kbn
+
+    db_path = kanban_home / "pre-delivered.db"
+    seed = sqlite3.connect(db_path)
+    seed.executescript(kb.SCHEMA_SQL)
+    seed.execute("ALTER TABLE kanban_notify_subs DROP COLUMN delivered_event_id")
+    seed.execute("INSERT INTO tasks (id, title, status, created_at) VALUES ('t_old', 'old', 'done', 1)")
+    seed.execute("INSERT INTO kanban_notify_subs (task_id, platform, chat_id, thread_id, created_at, last_event_id)"
+                 " VALUES ('t_old', 'telegram', 'X', '', 1, 5)")
+    seed.commit()
+    seed.close()
+
+    conn = kbc.connect(db_path)
+    try:
+        row = conn.execute("SELECT last_event_id, delivered_event_id FROM kanban_notify_subs").fetchone()
+        assert tuple(row) == (5, 0)
+        kbn.advance_notify_cursor(conn, task_id="t_old", platform="telegram", chat_id="X", thread_id="", new_cursor=9)
+        row = conn.execute("SELECT last_event_id, delivered_event_id FROM kanban_notify_subs").fetchone()
+        assert tuple(row) == (9, 9)
+    finally:
+        conn.close()

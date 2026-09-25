@@ -313,8 +313,9 @@ def release_archived_notify_sub(
 ) -> bool:
     """Drop an archived card's subscription after a delivery, unless the idle-board announcement may still ride on
     it (see ``_RELEASABLE_ARCHIVED_SUB``: an orchestrator often archives its last card before the next tick). A row
-    kept here is dropped by the delivery of that announcement, by the decision that passes it by, or by the stale-sub
-    purge. One guarded DELETE, so a delivery another notifier claimed meanwhile keeps the row. True when removed."""
+    kept here is dropped by the delivery of that announcement, by the decision that passes it by, by the gateway's
+    claim that only skips another follower's announcement, or by the stale-sub purge. One guarded DELETE, so a
+    delivery another notifier claimed meanwhile keeps the row. True when removed."""
     with _kb.write_txn(conn):
         cur = conn.execute(
             "DELETE FROM kanban_notify_subs " + _SUB_KEY_WHERE + " AND " + _RELEASABLE_ARCHIVED_SUB,

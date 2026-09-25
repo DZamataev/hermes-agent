@@ -305,10 +305,13 @@ class _Collector:
         events = [ev for ev in events if _kbn().quiescent_addressed_to(conn, ev, sub)]
         if not events:
             if cursor != old_cursor:  # claimed only announcements for another follower: nothing left to deliver
+                ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
+                             thread_id=sub.get("thread_id") or "")
                 with contextlib.suppress(Exception):
-                    _kbn().record_notify_delivered(conn, task_id=sub["task_id"], platform=sub["platform"],
-                                                   chat_id=sub["chat_id"], thread_id=sub.get("thread_id") or "",
-                                                   event_id=cursor)
+                    _kbn().record_notify_delivered(conn, event_id=cursor, **ident)
+                    # The decision that passed this row by could not drop it (the announcement was pending on it)
+                    # and no delivery follows to release it: do it here. Guarded, so a live card keeps its row.
+                    _kbn().release_archived_notify_sub(conn, **ident)
             return None
         task = self.kb.get_task(conn, sub["task_id"])
         logger.debug("kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",

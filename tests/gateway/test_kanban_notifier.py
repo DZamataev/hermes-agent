@@ -908,6 +908,52 @@ def test_held_archived_rows_are_gone_once_the_announcement_is_delivered(tmp_path
         conn.close()
 
 
+def test_a_held_row_whose_announcement_rode_on_another_card_is_released_by_its_skip(tmp_path, monkeypatch):
+    """Card X is followed by chats A and B, B also follows Y. After the drain A's announcement rides on X and B's on
+    Y, so the X/B row only skips A's. The decision could not drop it (an announcement was pending on it) and no
+    delivery follows, so the skip itself must release it."""
+    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-skip.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        x = kb.create_task(conn, title="X shared", assignee="worker")
+        y = kb.create_task(conn, title="Y only B", assignee="worker")
+        for tid, chat in ((x, "chat-A"), (x, "chat-B"), (y, "chat-B")):
+            kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id=chat, chat_type="dm")
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+        kb.complete_task(conn, x, summary="x ok")
+        kb.complete_task(conn, y, summary="y ok")
+        kb.archive_task(conn, x)
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(RecordingAdapter())))
+    conn = kbc.connect()
+    try:
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+        carriers = {kbn.quiescent_destination_tag(conn, {"platform": "telegram", "chat_id": c}): c
+                    for c in ("chat-A", "chat-B")}
+        rides = {carriers[(e.payload or {})["to"]]: e.task_id
+                 for e in kb.list_events(conn, x) + kb.list_events(conn, y) if e.kind == "board_quiescent"}
+        assert rides == {"chat-A": x, "chat-B": y}
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert sorted(m["chat_id"] for m in adapter.sent if "no work left" in m["text"]) == ["chat-A", "chat-B"]
+    conn = kbc.connect()
+    try:
+        assert kbn.list_notify_subs(conn, x) == []
+        assert [s["chat_id"] for s in kbn.list_notify_subs(conn, y)] == ["chat-B"]  # live card keeps its row
+    finally:
+        conn.close()
+
+
 def test_board_quiescent_addressed_to_another_destination_is_not_delivered(tmp_path, monkeypatch):
     """Announcements are addressed: a second follower of the target card is not pinged about someone else's."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-addressed.db"))
