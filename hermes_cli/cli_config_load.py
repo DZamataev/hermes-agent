@@ -99,29 +99,12 @@ _TERMINAL_ENV_MAPPINGS = {
 _TERMINAL_ENV_MAPPINGS = {"env_type": "TERMINAL_ENV", **_TERMINAL_ENV_MAPPINGS, "sudo_password": "SUDO_PASSWORD"}
 
 
-# Per-task auxiliary endpoint tuples (config key -> env var).
-_AUXILIARY_TASK_ENV = {
-    "vision": {
-        "provider": "AUXILIARY_VISION_PROVIDER",
-        "model": "AUXILIARY_VISION_MODEL",
-        "base_url": "AUXILIARY_VISION_BASE_URL",
-        "api_key": "AUXILIARY_VISION_API_KEY",
-    },
-    "approval": {
-        "provider": "AUXILIARY_APPROVAL_PROVIDER",
-        "model": "AUXILIARY_APPROVAL_MODEL",
-        "base_url": "AUXILIARY_APPROVAL_BASE_URL",
-        "api_key": "AUXILIARY_APPROVAL_API_KEY",
-    },
-}
-
-
 _CWD_PLACEHOLDERS = (".", "auto", "cwd")
 
 
 def _mirror_config_to_env(defaults, _file_has_terminal_config):
-    """Project config.yaml values into the env vars the tool modules read (terminal/browser/auxiliary/security/sessions). Env always wins when already set."""
-    from cli import _AUXILIARY_TASK_ENV, _CWD_PLACEHOLDERS, _TERMINAL_ENV_MAPPINGS
+    """Project config.yaml values into the env vars the tool modules read (terminal/browser/security/sessions). Env always wins when already set."""
+    from cli import _CWD_PLACEHOLDERS, _TERMINAL_ENV_MAPPINGS
     terminal_config = defaults.get("terminal", {})
 
     # "backend" (documented) and legacy "env_type" are both accepted; "backend" wins.
@@ -153,17 +136,6 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
     browser_config = defaults.get("browser", {})
     if "inactivity_timeout" in browser_config:
         os.environ["BROWSER_INACTIVITY_TIMEOUT"] = str(browser_config["inactivity_timeout"])
-
-    # Only non-empty / non-"auto" auxiliary values are bridged so auto-detection still works.
-    auxiliary_config = defaults.get("auxiliary", {})
-    for task_key, env_map in _AUXILIARY_TASK_ENV.items():
-        task_cfg = auxiliary_config.get(task_key, {})
-        if not isinstance(task_cfg, dict):
-            continue
-        for field, env_var in env_map.items():
-            val = str(task_cfg.get(field, "")).strip()
-            if val and not (field == "provider" and val == "auto"):
-                os.environ[env_var] = val
 
     security_config = defaults.get("security", {})
     if isinstance(security_config, dict):

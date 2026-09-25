@@ -416,7 +416,7 @@ TIPS = [
     # --- Auxiliary Tasks & Image Generation ---
     'image_gen.model in config.yaml picks the FAL model: flux-2/klein, gpt-image-2, nano-banana-pro, and more.',
     'image_gen.provider routes image generation through a plugin (OpenAI Images, Codex, FAL) instead of the default.',
-    'AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY point vision analysis at any OpenAI-compatible endpoint.',
+    'auxiliary.vision.base_url + api_key in config.yaml point vision analysis at any OpenAI-compatible endpoint.',
     # --- Security ---
     'security.tirith_fail_open: false makes Hermes block commands when the tirith scanner itself errors out.',
     'TIRITH_FAIL_OPEN env var overrides the tirith_fail_open config — a quick toggle without editing config.yaml.',
