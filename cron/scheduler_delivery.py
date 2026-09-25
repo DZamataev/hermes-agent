@@ -881,7 +881,9 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
     except Exception:
         found = False
     if found:
-        argv = [sys.executable, "-m", "hermes_cli.main"]
+        from pathlib import Path
+        from hermes_cli._launchers import runtime_command
+        argv = runtime_command(Path(__file__).resolve().parents[1])  # the tree travels in the argv
     else:
         hermes_bin = shutil.which("hermes")
         if not hermes_bin:

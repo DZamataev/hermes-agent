@@ -92,11 +92,16 @@ class TestHandleUpdateCommand:
 
 
     @pytest.mark.asyncio
-    async def test_resolve_hermes_bin_module_argv(self):
-        """_resolve_hermes_bin uses the running interpreter's module argv when hermes_cli is
-        importable, even when PATH also offers a ``hermes`` binary (#111569: a PATH-first
-        lookup would re-exec an attacker-planted executable on /update and /restart)."""
-        import sys
+    async def test_resolve_hermes_bin_module_argv(self, tmp_path):
+        """_resolve_hermes_bin runs THIS install when hermes_cli is importable, even when PATH also
+        offers a ``hermes`` binary (#111569: a PATH-first lookup would re-exec an attacker-planted
+        executable on /update and /restart), and the argv works on its own: under the install
+        launcher (``python -I`` + its own ``sys.path`` entry) a bare ``python -m hermes_cli.main``
+        finds no hermes_cli."""
+        import os
+        import subprocess
+        from pathlib import Path
+        from gateway import run as gateway_run
         from gateway.run import _resolve_hermes_bin
 
         fake_spec = MagicMock()
@@ -104,7 +109,12 @@ class TestHandleUpdateCommand:
              patch("importlib.util.find_spec", return_value=fake_spec):
             result = _resolve_hermes_bin()
 
-        assert result == [sys.executable, "-m", "hermes_cli.main"]
+        assert "/tmp/attacker/hermes" not in result
+        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}
+        r = subprocess.run([*result, "--version"], capture_output=True, text=True, timeout=60,
+                           cwd=tmp_path, env=env)
+        assert r.returncode == 0, r.stderr[-300:]
+        assert f"Install directory: {Path(gateway_run.__file__).resolve().parents[1]}" in r.stdout
 
     @pytest.mark.asyncio
     async def test_resolve_hermes_bin_falls_back_to_path_then_none(self):

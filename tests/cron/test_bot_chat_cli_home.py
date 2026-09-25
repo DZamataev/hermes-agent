@@ -34,8 +34,10 @@ def test_cli_keeps_discovered_home_when_launch_selection_changes(tmp_path, monke
         code = ('import json,sys; sys.argv=["hermes"]+json.loads(sys.argv[1]); '
                 'import hermes_cli.main; from hermes_constants import get_hermes_home; '
                 'print(json.dumps(str(get_hermes_home())))')
-        # Everything after the launcher (binary or ``python -m hermes_cli.main``) is the CLI argv.
-        cli_argv = argv[3:] if argv[1:3] == ["-m", "hermes_cli.main"] else argv[1:]
+        # Everything after the launcher (this install's runtime command, or a bare binary) is the CLI argv.
+        from hermes_cli._launchers import runtime_command
+        launcher = runtime_command(Path(delivery.__file__).resolve().parents[1])
+        cli_argv = argv[len(launcher):] if argv[:len(launcher)] == launcher else argv[1:]
         result = real_run([sys.executable, "-c", code, json.dumps(cli_argv)],
                           env=env, capture_output=True, text=True, timeout=30)
         assert result.returncode == 0, result.stderr

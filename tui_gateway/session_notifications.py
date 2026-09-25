@@ -424,7 +424,7 @@ def _kb_poll_board(_kb, slug: str, session: dict, sub_keys: tuple) -> list:
             task = _kb.get_task(conn, sub["task_id"])
             from gateway.kanban_watchers_notifier import diagnostic_event
             from gateway.warning_notifications import DiagnosticText
-            for ev in events:
+            for ev in _kbn.collapse_superseded_failures(events):
                 seen_as = (("board_quiescent", (ev.payload or {}).get("mark")) if ev.kind == "board_quiescent"
                            else ("event", ev.id))
                 if seen_as in shown or not _kbn.quiescent_addressed_to(conn, ev, sub):
