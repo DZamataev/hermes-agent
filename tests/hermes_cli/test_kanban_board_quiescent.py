@@ -251,9 +251,9 @@ def test_an_archived_card_outside_the_decided_work_is_unsubscribed_on_delivery(c
     assert kbn.list_notify_subs(conn, a) == []
 
 
-def test_held_rows_that_carry_nothing_are_released_by_the_next_poll(conn):
-    """Two archived cards of one orchestrator: one carries the announcement; the other's held row is released by the
-    owner's next poll (not by the decision, which cannot tell whether a delivery for it is still in flight)."""
+def test_held_rows_that_carry_nothing_are_dropped_by_the_decision_the_carrier_by_its_delivery(conn):
+    """Two archived cards of one orchestrator, both fully delivered: the decision drops the one it put nothing on;
+    the carrier goes once the announcement is delivered."""
     from tui_gateway.server import _collect_kanban_notifications as poll
 
     a1 = _card(conn, "a1", sub=("tui", "K"))
@@ -267,10 +267,11 @@ def test_held_rows_that_carry_nothing_are_released_by_the_next_poll(conn):
 
     ((carrier,),) = _addressed(conn).values()
     other = a2 if carrier == a1 else a1
-    assert len(kbn.list_notify_subs(conn, other)) == 1  # the decision deletes nothing
+    assert kbn.list_notify_subs(conn, other) == []
+    assert len(kbn.list_notify_subs(conn, carrier)) == 1
     shown = poll({"session_key": "K"})
     assert sum("no work left" in t for t in shown) == 1
-    assert kbn.list_notify_subs(conn, other) == [] and kbn.list_notify_subs(conn, carrier) == []
+    assert kbn.list_notify_subs(conn, carrier) == []
 
 
 def test_an_archived_card_not_yet_polled_at_the_decision_keeps_its_row(conn):
@@ -583,9 +584,9 @@ def test_review_cards_wait_on_a_human_when_review_dispatch_is_off(conn, monkeypa
     assert [p["counts"] for _, p in _quiescent(conn)] == [{"review": 1}]
 
 
-def test_release_never_drops_a_live_card_or_an_undelivered_archival(conn):
-    """Release is called on every empty claim: it must only ever drop a row whose card is archived and whose
-    archival that row has already been told about."""
+def test_release_never_drops_a_live_card_an_undelivered_archival_or_a_delivery_in_flight(conn):
+    """Release must only drop a row whose card is archived and whose archival was delivered, with no claim of
+    anyone's still being sent (the claim moves the cursor before the send; a failed send rewinds it)."""
     live = _card(conn, "live", sub=("tui", "K"))
     gone = _card(conn, "gone", sub=("tui", "K"))
     _tick(conn)
@@ -600,7 +601,106 @@ def test_release_never_drops_a_live_card_or_an_undelivered_archival(conn):
     assert kbn.release_archived_notify_sub(conn, task_id=gone, **ident) is False
     assert len(kbn.list_notify_subs(conn, live)) == 1 and len(kbn.list_notify_subs(conn, gone)) == 1
 
-    for tid in (live, gone):
-        kbn.claim_unseen_events_for_sub(conn, task_id=tid, **ident)
+    claimed = {tid: kbn.claim_unseen_events_for_sub(conn, task_id=tid, **ident) for tid in (live, gone)}
+    assert kbn.release_archived_notify_sub(conn, task_id=gone, **ident) is False  # claimed, not yet sent
+
+    for tid, (old, new, _events) in claimed.items():
+        kbn.advance_notify_cursor(conn, task_id=tid, new_cursor=new, **ident)
     assert kbn.release_archived_notify_sub(conn, task_id=live, **ident) is False
     assert kbn.release_archived_notify_sub(conn, task_id=gone, **ident) is True
+
+
+def test_a_second_notifier_cannot_release_a_row_the_first_is_still_delivering(conn):
+    """Two gateways on one board (``--force``, a multiplexer next to a profile gateway): the second one's empty
+    claim or post-delivery release must leave a row the first has claimed and not yet delivered."""
+    a = _card(conn, "a", sub=("telegram", "X"))
+    b = _card(conn, "b")
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    kb.block_task(conn, b, reason="needs a human", kind="needs_input")
+    kb.archive_task(conn, a)
+    _tick(conn)
+    ident = dict(task_id=a, platform="telegram", chat_id="X", thread_id="")
+    old, claimed, events = kbn.claim_unseen_events_for_sub(conn, **ident)  # notifier 1, sending...
+    assert {"completed", "board_quiescent", "archived"} <= {e.kind for e in events}
+    assert kbn.claim_unseen_events_for_sub(conn, **ident)[2] == []  # notifier 2: nothing new
+
+    assert kbn.release_archived_notify_sub(conn, **ident) is False
+    kbn.announce_board_quiescent(conn)
+    assert kbn.rewind_notify_cursor(conn, claimed_cursor=claimed, old_cursor=old, **ident)  # notifier 1's send failed
+
+
+def test_a_legacy_unstamped_row_never_carries_a_drain_a_stamped_profile_did(conn):
+    """An unstamped row is delivered by whichever process owns the dispatcher, possibly another bot."""
+    old = _card(conn, "old")
+    kbn.add_notify_sub(conn, task_id=old, platform="telegram", chat_id="G", delivery_mode="notify+wake")
+    _tick(conn)
+    kb.complete_task(conn, old, summary="earlier drain")
+    _tick(conn)
+    first = len(_quiescent(conn))
+    a = _card(conn, "a")
+    kbn.add_notify_sub(conn, task_id=a, platform="telegram", chat_id="G", notifier_profile="profA")
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    _tick(conn)
+
+    assert [t for t, _ in _quiescent(conn)[first:]] == [a]
+
+
+def test_held_rows_wait_while_the_board_is_busy_and_the_purge_reaps_them_without_a_dispatcher(conn):
+    """No dispatcher (``dispatch_in_gateway: false`` and no daemon) never advances the mark; the purge still
+    reaps held archived rows once they go stale."""
+    import time as _time
+
+    a = _card(conn, "a", sub=("tui", "K"))
+    kb.claim_task(conn, a)
+    kb.complete_task(conn, a, summary="ok")
+    kb.archive_task(conn, a)
+    ident = dict(task_id=a, platform="tui", chat_id="K", thread_id="")
+    _o, new, _e = kbn.claim_unseen_events_for_sub(conn, **ident)
+    kbn.advance_notify_cursor(conn, new_cursor=new, **ident)
+    assert kbn.release_archived_notify_sub(conn, **ident) is False  # claimed past a mark nobody advances
+
+    past = int(_time.time()) - 45 * 86400
+    conn.execute("UPDATE task_events SET created_at = ? WHERE task_id = ?", (past, a))
+    conn.commit()
+    assert kbn.purge_stale_done_notify_subs(conn, max_age_days=30) == 1
+
+
+def test_an_announcement_in_flight_on_an_already_told_row_blocks_its_release(conn):
+    """The archival was delivered long ago; the announcement is claimed and still being sent. Neither the other
+    notifier nor the decision may drop the row, or a failed send has nothing to rewind onto."""
+    a = _card(conn, "a", sub=("tui", "K"))
+    b = _card(conn, "b")
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    kb.archive_task(conn, a)
+    ident = dict(task_id=a, platform="tui", chat_id="K", thread_id="")
+    _o, told, _e = kbn.claim_unseen_events_for_sub(conn, **ident)
+    kbn.advance_notify_cursor(conn, new_cursor=told, **ident)  # completion + archival delivered, row held
+    kb.block_task(conn, b, reason="needs a human", kind="needs_input")
+    _tick(conn)
+    old, claimed, events = kbn.claim_unseen_events_for_sub(conn, **ident)
+    assert [e.kind for e in events] == ["board_quiescent"]
+
+    assert kbn.release_archived_notify_sub(conn, **ident) is False
+    kbn.announce_board_quiescent(conn)
+    assert kbn.rewind_notify_cursor(conn, claimed_cursor=claimed, old_cursor=old, **ident)
+
+
+def test_the_decision_keeps_a_row_whose_archival_is_not_delivered_yet(conn):
+    """The completion was delivered, the archival not yet: the decision passing this row by must not drop it,
+    or the orchestrator never learns the card was archived."""
+    a = _card(conn, "a", sub=("tui", "K"))
+    c = _card(conn, "c", sub=("tui", "K"))
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    ident = dict(task_id=a, platform="tui", chat_id="K", thread_id="")
+    _o, told, _e = kbn.claim_unseen_events_for_sub(conn, **ident)
+    kbn.advance_notify_cursor(conn, new_cursor=told, **ident)
+    kb.complete_task(conn, c, summary="carrier")
+    kb.archive_task(conn, a)
+    _tick(conn)
+
+    assert [t for t, _ in _quiescent(conn)] == [c]
+    assert len(kbn.list_notify_subs(conn, a)) == 1

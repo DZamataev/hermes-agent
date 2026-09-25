@@ -870,7 +870,7 @@ def test_archived_card_delivered_before_the_tick_still_carries_the_announcement(
         conn.close()
 
 
-def test_held_archived_rows_the_announcement_skipped_are_released_by_the_next_gateway_poll(tmp_path, monkeypatch):
+def test_held_archived_rows_are_gone_once_the_announcement_is_delivered(tmp_path, monkeypatch):
     from hermes_cli import kanban_db_dispatch as kbd
     from hermes_cli import profiles
 

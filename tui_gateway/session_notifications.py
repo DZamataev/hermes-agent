@@ -420,8 +420,6 @@ def _kb_poll_board(_kb, slug: str, session: dict, sub_keys: tuple) -> list:
                              thread_id=sub.get("thread_id") or "")
             _old, _new, events = _kbn.claim_unseen_events_for_sub(conn, kinds=_KANBAN_NOTIFY_KINDS, **sub_ident)
             if not events:
-                with contextlib.suppress(Exception):  # a held archived row whose decision passed it by
-                    _kbn.release_archived_notify_sub(conn, **sub_ident)
                 continue
             task = _kb.get_task(conn, sub["task_id"])
             from gateway.kanban_watchers_notifier import diagnostic_event
@@ -437,6 +435,9 @@ def _kb_poll_board(_kb, slug: str, session: dict, sub_keys: tuple) -> list:
                     texts.append(DiagnosticText(text) if diagnostic_event(ev) else text)
             # Unsubscribe only on archive: ``done`` is reversible in review/controller flows, so keeping the sub lets a
             # later reopen notify the same session. The claimed cursor prevents replay.
+            # The poller has no send to fail: what it claimed is delivered (returned to the caller) here.
+            with contextlib.suppress(Exception):
+                _kbn.record_notify_delivered(conn, event_id=_new, **sub_ident)
             # The row is held while the idle-board announcement may still ride on it (release_archived_notify_sub).
             if task and getattr(task, "status", "") == "archived":
                 with contextlib.suppress(Exception):

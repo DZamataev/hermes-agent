@@ -275,6 +275,34 @@ def remove_notify_sub(
     return cur.rowcount > 0
 
 
+# A subscription of an archived card that nothing will ride on any more. Holds while the card took part in work the
+# idle-board decision has not ruled on (param: the claim mark), while a delivery is in flight (claimed past what was
+# delivered), until its own archival was delivered, and while an announcement waits on it unclaimed. Shared by the
+# notifiers' post-delivery release and the decision, so both apply exactly the same rule.
+_RELEASABLE_ARCHIVED_SUB = (
+    "kanban_notify_subs.task_id IN (SELECT id FROM tasks WHERE status = 'archived')"
+    " AND kanban_notify_subs.delivered_event_id >= kanban_notify_subs.last_event_id"
+    " AND EXISTS (SELECT 1 FROM task_events a WHERE a.task_id = kanban_notify_subs.task_id"
+    "             AND a.kind = 'archived' AND a.id <= kanban_notify_subs.delivered_event_id)"
+    " AND NOT EXISTS (SELECT 1 FROM task_events c WHERE c.task_id = kanban_notify_subs.task_id"
+    "                 AND c.kind = 'claimed' AND c.id > ?)"
+    " AND NOT EXISTS (SELECT 1 FROM task_events q WHERE q.task_id = kanban_notify_subs.task_id"
+    "                 AND q.kind = 'board_quiescent' AND q.id > kanban_notify_subs.last_event_id)"
+)
+
+
+def record_notify_delivered(
+    conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
+    thread_id: Optional[str] = None, event_id: int,
+) -> None:
+    """Checkpoint a finished delivery (or a claim that had nothing to deliver) up to ``event_id``."""
+    with _kb.write_txn(conn):
+        conn.execute(
+            "UPDATE kanban_notify_subs SET delivered_event_id = MAX(delivered_event_id, ?) " + _SUB_KEY_WHERE,
+            (int(event_id), *_sub_key(task_id, platform, chat_id, thread_id)),
+        )
+
+
 def release_archived_notify_sub(
     conn: sqlite3.Connection,
     *,
@@ -283,36 +311,15 @@ def release_archived_notify_sub(
     chat_id: str,
     thread_id: Optional[str] = None,
 ) -> bool:
-    """Drop a subscription once its card is archived and the archival delivered, unless the idle-board announcement
-    may still ride on it: the card took part in work the dispatcher has not yet ruled on (an orchestrator often
-    archives its last card before the next tick), or an announcement landed on it after this delivery was claimed.
-
-    The owning notifier calls it after delivering to an archived card and on every claim that found nothing new, so a
-    held row is released by the first poll after the decision, carrier or not. Only the owner calls it, and only with
-    none of its own deliveries for the row in flight, so a failed send can still rewind the cursor. Anything else is a
-    cheap no-op (read-only check first). Returns True when removed."""
-    key = _sub_key(task_id, platform, chat_id, thread_id)
-    settled = ("SELECT 1 FROM kanban_notify_subs s JOIN tasks t ON t.id = s.task_id "
-               "WHERE s.task_id = ? AND s.platform = ? AND s.chat_id = ? AND s.thread_id = ? AND t.status = 'archived'"
-               " AND EXISTS (SELECT 1 FROM task_events a WHERE a.task_id = s.task_id AND a.kind = 'archived'"
-               "             AND a.id <= s.last_event_id)")
-    if not conn.execute(settled, key).fetchone():
-        return False
+    """Drop an archived card's subscription after a delivery, unless the idle-board announcement may still ride on
+    it (see ``_RELEASABLE_ARCHIVED_SUB``: an orchestrator often archives its last card before the next tick). A row
+    kept here is dropped by the delivery of that announcement, by the decision that passes it by, or by the stale-sub
+    purge. One guarded DELETE, so a delivery another notifier claimed meanwhile keeps the row. True when removed."""
     with _kb.write_txn(conn):
-        if not conn.execute(settled, key).fetchone():
-            return False
-        if conn.execute(
-            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'claimed' AND id > ? LIMIT 1",
-            (task_id, _quiescent_claim_mark(conn)),
-        ).fetchone():
-            return False
-        if conn.execute(
-            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'board_quiescent' AND id > "
-            "(SELECT last_event_id FROM kanban_notify_subs " + _SUB_KEY_WHERE + ") LIMIT 1",
-            (task_id, *key),
-        ).fetchone():
-            return False
-        cur = conn.execute("DELETE FROM kanban_notify_subs " + _SUB_KEY_WHERE, key)
+        cur = conn.execute(
+            "DELETE FROM kanban_notify_subs " + _SUB_KEY_WHERE + " AND " + _RELEASABLE_ARCHIVED_SUB,
+            (*_sub_key(task_id, platform, chat_id, thread_id), _quiescent_claim_mark(conn)),
+        )
     return cur.rowcount > 0
 
 
@@ -450,8 +457,9 @@ def advance_notify_cursor(
 ) -> None:
     with _kb.write_txn(conn):
         conn.execute(
-            "UPDATE kanban_notify_subs SET last_event_id = ? " + _SUB_KEY_WHERE,
-            (int(new_cursor), *_sub_key(task_id, platform, chat_id, thread_id)),
+            "UPDATE kanban_notify_subs SET last_event_id = ?, delivered_event_id = MAX(delivered_event_id, ?) "
+            + _SUB_KEY_WHERE,
+            (int(new_cursor), int(new_cursor), *_sub_key(task_id, platform, chat_id, thread_id)),
         )
 
 
@@ -569,11 +577,12 @@ def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
     chat/topic, so the tag picks exactly one follower of the carrier; a destination that is not split is carried only
     by an unstamped row or one of a participating profile (another bot's row would wake the wrong orchestrator).
     Notifiers hold an archived card's row past its archival while it took part in undecided work
-    (``release_archived_notify_sub``), so an orchestrator that archived its last card is still told. The decision
-    deletes nothing: a held row it put nothing on may still be mid-delivery (the claim advances the cursor before the
-    send, and a failed send rewinds it), so the owning notifier releases it on its next empty claim. The gateway
-    notifier and the desktop poller carry the event with no new subscription type; other followers of the carrier
-    skip it. Returns the carrier task ids.
+    (``release_archived_notify_sub``), so an orchestrator that archived its last card is still told; the decision
+    then drops the held rows it put nothing on that are fully delivered (a row mid-delivery stays, so a failed send
+    can still rewind). A stamped participant row outranks a legacy unstamped one: the latter is delivered by
+    whichever process owns the dispatcher, which may be another bot. The gateway notifier and the desktop poller
+    carry the event with no new subscription type; other followers of the carrier skip it. Returns the carrier task
+    ids.
     """
     active = _board_active_statuses()
     if _newest_uncovered_claim(conn, active) is None:  # read-only fast path outside the writer lock
@@ -606,6 +615,8 @@ def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
                 recipient = (dest, prof)  # an unstamped row cannot say which of the bots it belongs to
             elif prof and prof not in profiles.get(dest, ()):
                 continue  # another bot's row in the same chat: its gateway would wake the wrong orchestrator
+            elif not prof and profiles.get(dest, set()) - {""}:
+                continue  # unstamped: delivered by the dispatcher's owner, maybe not the bot that did the work
             else:
                 recipient = next((r for r in recipients if r[0] == dest), None)
             if recipient not in recipients:
@@ -615,6 +626,7 @@ def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
                 best[recipient] = (rank, s)
         if best:
             _append_board_quiescent(conn, best, active, newest)
+        conn.execute("DELETE FROM kanban_notify_subs WHERE " + _RELEASABLE_ARCHIVED_SUB, (newest,))
     return sorted({s["task_id"] for _rank, s in best.values()})
 
 

@@ -849,6 +849,9 @@ _NOTIFY_SUB_COLUMNS = (
     # (which prefers ``user_id_alt``). NULL is inert.
     ("user_id_alt", "user_id_alt TEXT"),
     ("delivery_metadata", "delivery_metadata TEXT"),
+    # Cursor of FINISHED deliveries (``last_event_id`` is advanced by the claim, before the send). 0 on legacy rows:
+    # they are never treated as caught up, so an archived one waits for the stale-sub purge instead of a release.
+    ("delivered_event_id", "delivered_event_id INTEGER NOT NULL DEFAULT 0"),
 )
 
 _TASK_RUN_COLUMNS = (
@@ -1058,6 +1061,7 @@ _REBUILD_SPECS = {
         " delivery_metadata TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
         " last_ping_event_id INTEGER NOT NULL DEFAULT 0,"
+        " delivered_event_id INTEGER NOT NULL DEFAULT 0,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
         ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
     ),
