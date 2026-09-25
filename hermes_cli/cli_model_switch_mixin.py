@@ -571,9 +571,12 @@ class CLIModelSwitchMixin:
         """Capture current CLI and agent model runtime for one-turn restore."""
         agent = getattr(self, "agent", None)
         # ``reasoning_config`` is a mutable dict: deepcopy it so a later in-place edit cannot alias the snapshot.
+        # ``capabilities``: the map the session had, so a restore that falls through to ``switch_model``
+        # puts it back instead of clearing it.
         return {
             **_runtime_fields(self),
             "reasoning_config": copy.deepcopy(getattr(self, "reasoning_config", None)),
+            "capabilities": dict(getattr(agent, "capabilities", None) or {}) if agent is not None else None,
             "agent_primary_runtime": copy.deepcopy(
                 getattr(agent, "_primary_runtime", None)
             ) if agent is not None else None}
