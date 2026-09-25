@@ -1562,7 +1562,9 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
-    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+    argv = kbd._resolve_hermes_argv()
+    assert "/tmp/planted/hermes" not in argv
+    assert argv == kbd._module_hermes_argv()
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
@@ -1570,16 +1572,15 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
 
 
 
-def test_resolve_hermes_argv_module_actually_runs():
-    """The fallback module name must be importable + runnable.
-
-    A unit test that pins the literal string is necessary but not
-    sufficient — if `hermes_cli.main` ever loses `if __name__ == "__main__"`
-    handling or its argparse setup, `python -m hermes_cli.main --version`
-    would fail and so would every dispatcher spawn that hits the fallback.
-    Run it as a real subprocess to catch that regression.
+def test_resolve_hermes_argv_module_actually_runs(tmp_path):
+    """The resolved argv must start THIS checkout's CLI on its own: the dispatcher runs under the
+    install launcher (``python -I`` + a ``sys.path`` entry it added itself), so a child that relies
+    on inheriting that path — ``python -m hermes_cli.main`` — either finds no ``hermes_cli`` at all
+    (store Python) or silently runs another install (a venv with an editable install elsewhere).
+    Run it as a real subprocess from an unrelated cwd with no PYTHONPATH and check which tree answered.
     """
     import subprocess
+    from pathlib import Path
     from hermes_cli import kanban_db_dispatch as kbd
     import shutil
     import unittest.mock as mock
@@ -1588,11 +1589,15 @@ def test_resolve_hermes_argv_module_actually_runs():
         os.environ.pop("HERMES_BIN", None)
         with mock.patch.object(shutil, "which", return_value=None):
             argv = kbd._resolve_hermes_argv()
-    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30)
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}
+    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=60,
+                       cwd=tmp_path, env=env)
     assert r.returncode == 0, (
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
     )
+    this_tree = Path(kbd.__file__).resolve().parents[1]
+    assert f"Install directory: {this_tree}" in r.stdout
 
 
 # ---------------------------------------------------------------------------

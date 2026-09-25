@@ -2459,9 +2459,13 @@ def _rotate_worker_log(
 
 
 def _module_hermes_argv() -> list[str]:
-    """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
-    return [sys.executable, "-m", "hermes_cli.main"]
+    """This checkout's Hermes CLI, self-contained (``hermes_cli.main`` is the console-script target —
+    there is no top-level ``hermes`` package). The running process may be under the install launcher
+    (``python -I`` + a ``sys.path`` entry it added itself): a bare ``sys.executable -m hermes_cli.main``
+    inherits neither, so the child finds no ``hermes_cli`` or another install's. ``runtime_command``
+    carries the tree explicitly, exactly as the launcher does."""
+    from hermes_cli._launchers import runtime_command
+    return runtime_command(Path(__file__).resolve().parents[1])
 
 
 def _absolute_hermes_path(path: str) -> str:
