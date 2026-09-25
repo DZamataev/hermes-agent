@@ -870,6 +870,44 @@ def test_archived_card_delivered_before_the_tick_still_carries_the_announcement(
         conn.close()
 
 
+def test_held_archived_rows_the_announcement_skipped_are_released_by_the_next_gateway_poll(tmp_path, monkeypatch):
+    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-held.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        cards = [kb.create_task(conn, title=f"card {i}", assignee="worker",
+                                session_id="agent:main:telegram:dm:chat-1") for i in (1, 2)]
+        for tid in cards:
+            kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm")
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+        for tid in cards:
+            kb.complete_task(conn, tid, summary="ok")
+            kb.archive_task(conn, tid)
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(RecordingAdapter())))
+    conn = kbc.connect()
+    try:
+        assert all(len(kbn.list_notify_subs(conn, tid)) == 1 for tid in cards)  # held for the decision
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert sum("no work left" in m["text"] for m in adapter.sent) == 1
+    conn = kbc.connect()
+    try:
+        assert [kbn.list_notify_subs(conn, tid) for tid in cards] == [[], []]
+    finally:
+        conn.close()
+
+
 def test_board_quiescent_addressed_to_another_destination_is_not_delivered(tmp_path, monkeypatch):
     """Announcements are addressed: a second follower of the target card is not pinged about someone else's."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-addressed.db"))

@@ -228,7 +228,8 @@ def test_an_archived_participant_is_told_even_after_its_archival_was_delivered(c
     kb.complete_task(conn, a, summary="ok")
     kb.block_task(conn, b, reason="needs a human", kind="needs_input")
     kb.archive_task(conn, a)
-    assert any("ok" in t for t in poll({"session_key": "K"}))
+    assert any(a in t and "done" in t for t in poll({"session_key": "K"}))
+    assert len(kbn.list_notify_subs(conn, a)) == 1
     _tick(conn)
 
     assert _addressed(conn) == {("tui", "K"): [a]}
@@ -250,8 +251,9 @@ def test_an_archived_card_outside_the_decided_work_is_unsubscribed_on_delivery(c
     assert kbn.list_notify_subs(conn, a) == []
 
 
-def test_held_rows_that_carry_nothing_are_dropped_by_the_decision(conn):
-    """Two archived cards of one orchestrator: one carries the announcement, the other's held row goes at once."""
+def test_held_rows_that_carry_nothing_are_released_by_the_next_poll(conn):
+    """Two archived cards of one orchestrator: one carries the announcement; the other's held row is released by the
+    owner's next poll (not by the decision, which cannot tell whether a delivery for it is still in flight)."""
     from tui_gateway.server import _collect_kanban_notifications as poll
 
     a1 = _card(conn, "a1", sub=("tui", "K"))
@@ -265,8 +267,95 @@ def test_held_rows_that_carry_nothing_are_dropped_by_the_decision(conn):
 
     ((carrier,),) = _addressed(conn).values()
     other = a2 if carrier == a1 else a1
-    assert kbn.list_notify_subs(conn, other) == []
-    assert len(kbn.list_notify_subs(conn, carrier)) == 1
+    assert len(kbn.list_notify_subs(conn, other)) == 1  # the decision deletes nothing
+    shown = poll({"session_key": "K"})
+    assert sum("no work left" in t for t in shown) == 1
+    assert kbn.list_notify_subs(conn, other) == [] and kbn.list_notify_subs(conn, carrier) == []
+
+
+def test_an_archived_card_not_yet_polled_at_the_decision_keeps_its_row(conn):
+    """The decision must not drop a row whose completion and archival were never delivered."""
+    from tui_gateway.server import _collect_kanban_notifications as poll
+
+    a = _card(conn, "a", sub=("tui", "K"))
+    c = _card(conn, "c", sub=("tui", "K"))
+    _tick(conn)
+    kb.complete_task(conn, c, summary="carrier")
+    kb.complete_task(conn, a, summary="THE RESULT")
+    kb.archive_task(conn, a)
+    kbn.advance_notify_cursor(conn, task_id=c, platform="tui", chat_id="K", thread_id="",
+                              new_cursor=conn.execute("SELECT MAX(id) FROM task_events").fetchone()[0] + 10)
+    _tick(conn)
+
+    assert len(kbn.list_notify_subs(conn, a)) == 1
+    assert any("THE RESULT" in t for t in poll({"session_key": "K"}))
+
+
+def test_release_racing_the_decision_keeps_the_row_for_its_announcement(conn):
+    """Notifier claims the archival, the dispatcher decides while the send is in flight and puts the announcement on
+    this row, then the notifier advances and releases: the row must survive until the announcement is delivered."""
+    a = _card(conn, "a", sub=("tui", "K"))
+    b = _card(conn, "b")
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    kb.block_task(conn, b, reason="needs a human", kind="needs_input")
+    kb.archive_task(conn, a)
+    ident = dict(task_id=a, platform="tui", chat_id="K", thread_id="")
+    _old, claimed, events = kbn.claim_unseen_events_for_sub(conn, **ident)
+    assert events
+    _tick(conn)
+    assert _addressed(conn) == {("tui", "K"): [a]}
+    kbn.advance_notify_cursor(conn, new_cursor=claimed, **ident)
+
+    assert kbn.release_archived_notify_sub(conn, **ident) is False
+    _old, _new, pending = kbn.claim_unseen_events_for_sub(conn, **ident)
+    assert [e.kind for e in pending] == ["board_quiescent"]
+
+
+def test_a_failed_send_during_the_decision_can_still_be_retried(conn):
+    """The claim advances the cursor before sending; a decision landing mid-send must leave the row so the
+    failed send can rewind it."""
+    a = _card(conn, "a", sub=("tui", "K"))
+    c = _card(conn, "c", sub=("tui", "K"))
+    kbn.add_notify_sub(conn, task_id=c, platform="tui", chat_id="K", delivery_mode="notify+wake")
+    _tick(conn)
+    kb.complete_task(conn, c, summary="carrier")
+    kb.complete_task(conn, a, summary="THE RESULT")
+    kb.archive_task(conn, a)
+    ident = dict(task_id=a, platform="tui", chat_id="K", thread_id="")
+    old, claimed, events = kbn.claim_unseen_events_for_sub(conn, **ident)
+    assert {e.kind for e in events} >= {"completed", "archived"}
+    _tick(conn)
+    assert _addressed(conn) == {("tui", "K"): [c]}
+
+    assert kbn.rewind_notify_cursor(conn, claimed_cursor=claimed, old_cursor=old, **ident)
+    _old, _new, again = kbn.claim_unseen_events_for_sub(conn, **ident)
+    assert "completed" in {e.kind for e in again}
+
+
+def test_two_dispatchers_deciding_one_drain_announce_it_once(conn):
+    """The fast path runs outside the writer lock: a second dispatcher that saw the drain must re-check under it."""
+    a = _card(conn, "a", sub=("tui", "K"))
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    real = kbn._newest_uncovered_claim
+    seen = []
+
+    def stale_fast_path(c, active):
+        found = real(c, active)
+        if not seen:  # the first (lock-free) look of dispatcher 2, taken before dispatcher 1 decides
+            seen.append(found)
+            kbn.announce_board_quiescent(kbc.connect())
+        return found
+
+    kbn._newest_uncovered_claim = stale_fast_path
+    try:
+        kbn.announce_board_quiescent(conn)
+    finally:
+        kbn._newest_uncovered_claim = real
+
+    assert seen and seen[0] is not None
+    assert len(_quiescent(conn)) == 1
 
 
 def test_a_waking_card_carries_the_announcement_over_a_notify_only_one(conn):
@@ -293,6 +382,25 @@ def test_two_profiles_in_one_group_are_told_separately(conn):
     _tick(conn)
 
     assert _addressed(conn) == {("telegram", "G"): [a, b]}
+
+
+def test_another_bots_row_in_the_same_chat_never_carries_the_announcement(conn):
+    """Profile B's waking row in group G must not carry the drain profile A did: B's gateway would wake B's
+    orchestrator and A would hear nothing."""
+    z = _card(conn, "z")
+    kbn.add_notify_sub(conn, task_id=z, platform="telegram", chat_id="G", notifier_profile="profB",
+                       delivery_mode="notify+wake")
+    _tick(conn)
+    kb.complete_task(conn, z, summary="earlier drain")
+    _tick(conn)
+    first = len(_quiescent(conn))
+    a = _card(conn, "a")
+    kbn.add_notify_sub(conn, task_id=a, platform="telegram", chat_id="G", notifier_profile="profA")
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    _tick(conn)
+
+    assert [t for t, _ in _quiescent(conn)[first:]] == [a]
 
 
 def test_a_legacy_unstamped_row_and_a_stamped_one_are_one_destination(conn):
@@ -473,3 +581,26 @@ def test_review_cards_wait_on_a_human_when_review_dispatch_is_off(conn, monkeypa
     _tick(conn)
 
     assert [p["counts"] for _, p in _quiescent(conn)] == [{"review": 1}]
+
+
+def test_release_never_drops_a_live_card_or_an_undelivered_archival(conn):
+    """Release is called on every empty claim: it must only ever drop a row whose card is archived and whose
+    archival that row has already been told about."""
+    live = _card(conn, "live", sub=("tui", "K"))
+    gone = _card(conn, "gone", sub=("tui", "K"))
+    _tick(conn)
+    _tick(conn)  # decide the drain so the claim mark does not hold the rows on its own
+    for tid in (live, gone):
+        kb.complete_task(conn, tid, summary="ok")
+    kb.archive_task(conn, gone)
+    kbn.announce_board_quiescent(conn)
+    ident = dict(platform="tui", chat_id="K", thread_id="")
+
+    assert kbn.release_archived_notify_sub(conn, task_id=live, **ident) is False
+    assert kbn.release_archived_notify_sub(conn, task_id=gone, **ident) is False
+    assert len(kbn.list_notify_subs(conn, live)) == 1 and len(kbn.list_notify_subs(conn, gone)) == 1
+
+    for tid in (live, gone):
+        kbn.claim_unseen_events_for_sub(conn, task_id=tid, **ident)
+    assert kbn.release_archived_notify_sub(conn, task_id=live, **ident) is False
+    assert kbn.release_archived_notify_sub(conn, task_id=gone, **ident) is True

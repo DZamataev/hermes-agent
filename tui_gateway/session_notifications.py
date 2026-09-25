@@ -420,6 +420,8 @@ def _kb_poll_board(_kb, slug: str, session: dict, sub_keys: tuple) -> list:
                              thread_id=sub.get("thread_id") or "")
             _old, _new, events = _kbn.claim_unseen_events_for_sub(conn, kinds=_KANBAN_NOTIFY_KINDS, **sub_ident)
             if not events:
+                with contextlib.suppress(Exception):  # a held archived row whose decision passed it by
+                    _kbn.release_archived_notify_sub(conn, **sub_ident)
                 continue
             task = _kb.get_task(conn, sub["task_id"])
             from gateway.kanban_watchers_notifier import diagnostic_event

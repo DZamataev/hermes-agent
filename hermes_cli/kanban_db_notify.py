@@ -283,20 +283,36 @@ def release_archived_notify_sub(
     chat_id: str,
     thread_id: Optional[str] = None,
 ) -> bool:
-    """Drop a subscription whose card was archived and delivered, unless the card took part in work the dispatcher
-    has not yet ruled on: then the idle-board announcement may still ride on it (an orchestrator often archives its
-    last card before the next tick), and ``announce_board_quiescent`` drops the row once it has decided. Returns
-    True when removed."""
+    """Drop a subscription once its card is archived and the archival delivered, unless the idle-board announcement
+    may still ride on it: the card took part in work the dispatcher has not yet ruled on (an orchestrator often
+    archives its last card before the next tick), or an announcement landed on it after this delivery was claimed.
+
+    The owning notifier calls it after delivering to an archived card and on every claim that found nothing new, so a
+    held row is released by the first poll after the decision, carrier or not. Only the owner calls it, and only with
+    none of its own deliveries for the row in flight, so a failed send can still rewind the cursor. Anything else is a
+    cheap no-op (read-only check first). Returns True when removed."""
+    key = _sub_key(task_id, platform, chat_id, thread_id)
+    settled = ("SELECT 1 FROM kanban_notify_subs s JOIN tasks t ON t.id = s.task_id "
+               "WHERE s.task_id = ? AND s.platform = ? AND s.chat_id = ? AND s.thread_id = ? AND t.status = 'archived'"
+               " AND EXISTS (SELECT 1 FROM task_events a WHERE a.task_id = s.task_id AND a.kind = 'archived'"
+               "             AND a.id <= s.last_event_id)")
+    if not conn.execute(settled, key).fetchone():
+        return False
     with _kb.write_txn(conn):
+        if not conn.execute(settled, key).fetchone():
+            return False
         if conn.execute(
             "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'claimed' AND id > ? LIMIT 1",
             (task_id, _quiescent_claim_mark(conn)),
         ).fetchone():
             return False
-        cur = conn.execute(
-            "DELETE FROM kanban_notify_subs " + _SUB_KEY_WHERE,
-            _sub_key(task_id, platform, chat_id, thread_id),
-        )
+        if conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'board_quiescent' AND id > "
+            "(SELECT last_event_id FROM kanban_notify_subs " + _SUB_KEY_WHERE + ") LIMIT 1",
+            (task_id, *key),
+        ).fetchone():
+            return False
+        cur = conn.execute("DELETE FROM kanban_notify_subs " + _SUB_KEY_WHERE, key)
     return cur.rowcount > 0
 
 
@@ -550,11 +566,14 @@ def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
     group each run their own orchestrator). Each gets one event on a card it follows, addressed by an opaque tag
     (``payload["to"]``): a card whose subscription wakes the agent if any (so being woken never depends on which card
     finished last), then a live one over an archived one, then the most recently active. A card holds one row per
-    chat/topic, so the tag picks exactly one follower of the carrier. Notifiers hold an archived card's row past its
-    archival while it took part in undecided work (``release_archived_notify_sub``), so an orchestrator that archived
-    its last card is still told; this decision then drops held rows it put nothing on. The gateway notifier and the
-    desktop poller carry the event with no new subscription type; other followers of the carrier skip it. Returns
-    the carrier task ids.
+    chat/topic, so the tag picks exactly one follower of the carrier; a destination that is not split is carried only
+    by an unstamped row or one of a participating profile (another bot's row would wake the wrong orchestrator).
+    Notifiers hold an archived card's row past its archival while it took part in undecided work
+    (``release_archived_notify_sub``), so an orchestrator that archived its last card is still told. The decision
+    deletes nothing: a held row it put nothing on may still be mid-delivery (the claim advances the cursor before the
+    send, and a failed send rewinds it), so the owning notifier releases it on its next empty claim. The gateway
+    notifier and the desktop poller carry the event with no new subscription type; other followers of the carrier
+    skip it. Returns the carrier task ids.
     """
     active = _board_active_statuses()
     if _newest_uncovered_claim(conn, active) is None:  # read-only fast path outside the writer lock
@@ -585,6 +604,8 @@ def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
             dest, prof = _destination(s), _profile(s)
             if dest in split:
                 recipient = (dest, prof)  # an unstamped row cannot say which of the bots it belongs to
+            elif prof and prof not in profiles.get(dest, ()):
+                continue  # another bot's row in the same chat: its gateway would wake the wrong orchestrator
             else:
                 recipient = next((r for r in recipients if r[0] == dest), None)
             if recipient not in recipients:
@@ -594,15 +615,6 @@ def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
                 best[recipient] = (rank, s)
         if best:
             _append_board_quiescent(conn, best, active, newest)
-        # Rows held for this decision (see release_archived_notify_sub): their archival is delivered and no
-        # announcement is pending for them, so nothing more will ride on them. A carrier keeps its row until the
-        # notifier delivers the announcement and releases it.
-        conn.execute(
-            "DELETE FROM kanban_notify_subs WHERE task_id IN (SELECT id FROM tasks WHERE status = 'archived')"
-            " AND EXISTS (SELECT 1 FROM task_events a WHERE a.task_id = kanban_notify_subs.task_id"
-            "             AND a.kind = 'archived' AND a.id <= kanban_notify_subs.last_event_id)"
-            " AND NOT EXISTS (SELECT 1 FROM task_events q WHERE q.task_id = kanban_notify_subs.task_id"
-            "                 AND q.kind = 'board_quiescent' AND q.id > kanban_notify_subs.last_event_id)")
     return sorted({s["task_id"] for _rank, s in best.values()})
 
 

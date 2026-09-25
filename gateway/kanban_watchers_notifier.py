@@ -304,6 +304,11 @@ class _Collector:
         # An idle-board announcement addressed to another follower of this card: the cursor moved past it, skip.
         events = [ev for ev in events if _kbn().quiescent_addressed_to(conn, ev, sub)]
         if not events:
+            # Nothing of ours in flight for this row (collect runs after the previous tick's deliveries): release a
+            # held archived row the idle-board decision passed by.
+            with contextlib.suppress(Exception):
+                _kbn().release_archived_notify_sub(conn, task_id=sub["task_id"], platform=sub["platform"],
+                                                   chat_id=sub["chat_id"], thread_id=sub.get("thread_id") or "")
             return None
         task = self.kb.get_task(conn, sub["task_id"])
         logger.debug("kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
