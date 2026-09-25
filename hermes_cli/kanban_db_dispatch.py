@@ -402,14 +402,20 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
         return False
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
+    from gateway.status import get_process_start_time, start_time_fingerprints_match
     if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
-    from gateway.status import _start_times_agree, get_process_start_time
+        # The epoch (boot identity) must match exactly, the start time only within the shared drift
+        # tolerance: the dispatcher that recorded it and the one reading it now are often different
+        # processes, and on macOS each derives the start time from its own ``kern.boottime`` snapshot.
+        from gateway.drain_control import current_instantiation_epoch
+        epoch, _, started_at = started_at.partition("|")
+        if epoch != current_instantiation_epoch():
+            return True
     current = get_process_start_time(int(pid))
     if current is None:
         return True
     try:
-        return not _start_times_agree(current, started_at)
+        return not start_time_fingerprints_match(started_at, current)
     except (TypeError, ValueError):
         return True
 
@@ -1139,9 +1145,11 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "
-            "FROM tasks "
-            "WHERE status = 'running' AND worker_pid IS NOT NULL"
+            "SELECT t.id, t.worker_pid, t.worker_started_at, t.claim_lock, t.assignee, "
+            # Grace is per attempt: ``tasks.started_at`` keeps the card's FIRST start.
+            "       COALESCE(r.started_at, t.started_at) AS started_at "
+            "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.status = 'running' AND t.worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = _kb._host_prefix()
         for row in rows:
