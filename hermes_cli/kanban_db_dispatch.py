@@ -260,6 +260,21 @@ def _exit_code_kind(code: int) -> "tuple[str, int]":
 _EXIT_TRAILER_RE = re.compile(
     r"^" + re.escape(KANBAN_WORKER_EXIT_TRAILER) + r"(\d+)\s*$", re.MULTILINE,
 )
+# Written by the dispatcher at the top of every run's section of the append-mode per-task log, so a
+# reader judging the current run never takes the previous run's words or exit trailer for its own.
+_RUN_START_MARKER = "[kanban-run-start] run="
+
+
+def _current_run_log_tail(task_id: str, board: Optional[str]) -> str:
+    """The tail of the task log written since the latest run marker ("" when unreadable)."""
+    try:
+        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board) or ""
+    except Exception:
+        return ""
+    cut = raw.rfind(_RUN_START_MARKER)
+    if cut != -1:
+        raw = raw[cut:].split("\n", 1)[1] if "\n" in raw[cut:] else ""
+    return raw
 
 
 def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional[int]:
@@ -267,14 +282,11 @@ def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional
 
     The durable twin of ``_recent_worker_exits``: written by the worker itself
     (``hermes_cli.quiet_single_query.exit_single_query``), so it is there whether
-    or not the process running this sweep ever reaped the worker. Last trailer
-    wins — the log is append-mode across re-runs.
+    or not the process running this sweep ever reaped the worker. Only the current
+    run's section counts: the log is append-mode across re-runs, and an earlier
+    run's ``rc=0`` would otherwise book a silent crash as a protocol violation.
     """
-    try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
-    except Exception:
-        return None
-    matches = _EXIT_TRAILER_RE.findall(raw or "")
+    matches = _EXIT_TRAILER_RE.findall(_current_run_log_tail(task_id, board))
     return int(matches[-1]) if matches else None
 
 
@@ -1001,10 +1013,7 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     is wrong for every board but the one the dispatcher thread happens to call
     "current", so the log would silently not be found.
     """
-    try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
-    except Exception:
-        return ""
+    raw = _current_run_log_tail(task_id, board)
     if not raw:
         return ""
     raw = _EXIT_TRAILER_RE.sub("", raw)
@@ -2740,7 +2749,10 @@ def _open_worker_log(task: Task, board: Optional[str]):
     log_path = log_dir / f"{task.id}.log"
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
-    return open(log_path, "ab")
+    log_f = open(log_path, "ab")
+    log_f.write(f"\n{_RUN_START_MARKER}{task.current_run_id}\n".encode("utf-8"))
+    log_f.flush()
+    return log_f
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:

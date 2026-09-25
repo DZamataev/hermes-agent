@@ -132,6 +132,34 @@ def test_plain_budget_trip_still_auto_recovers(kanban_home):
         assert kb.get_task(conn, tids[1]).status == "ready"
 
 
+def test_a_run_is_judged_by_its_own_log_lines_only(kanban_home):
+    """The per-task log is append-mode across runs. A worker that died without printing anything
+    must not be booked with the PREVIOUS run's words, nor with its exit trailer (an ``rc=0`` from
+    the last run would turn this crash into a protocol violation)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="t", assignee="a")
+        _dead_worker_with_log(conn, tid, 72001, 0)
+        kbd.detect_crashed_workers(conn)
+
+        host = kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host}:w72002")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        kbd._open_worker_log(task, None).close()  # the spawn opens the log for THIS run; the worker then dies silent
+        conn.execute("UPDATE tasks SET worker_pid=?, worker_started_at=NULL, started_at=? WHERE id=?",
+                     (72002, int(time.time()) - 120, tid))
+        conn.commit()
+        kbd.detect_crashed_workers(conn)
+
+        ev = conn.execute("SELECT kind, payload FROM task_events WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                          (tid,)).fetchone()
+        assert ev["kind"] == "crashed"
+        assert "the model said something" not in (ev["payload"] or "")
+        run = conn.execute("SELECT metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                           (tid,)).fetchone()
+        assert not kb._json_dict(run["metadata"]).get("protocol_violation")
+
+
 def test_exit_single_query_writes_trailer_only_for_kanban_workers(monkeypatch, capsys):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     with pytest.raises(SystemExit) as exc:
