@@ -975,6 +975,33 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
+# Consecutive workers that died before their first heartbeat (the agent never ran) before the card
+# is parked for an operator. Counted apart from the card's ``max_retries``: a host that cannot start
+# a worker says nothing about the work, yet endless respawns would hide the broken host.
+_STARTUP_FAILURE_LIMIT = 3
+
+
+def _startup_failure_streak(conn: sqlite3.Connection, task_id: str) -> int:
+    """Count the task's trailing closed runs whose worker died before its first heartbeat
+    (including the one just closed). ``rate_limited`` and infrastructure ``spawn_failed`` runs are
+    neutral; any other closed run breaks the streak."""
+    streak = 0
+    rows = conn.execute(
+        "SELECT outcome, metadata FROM task_runs WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT ?",
+        (task_id, _PROTOCOL_VIOLATION_SCAN_LIMIT),
+    ).fetchall()
+    for row in rows:
+        meta = _kb._json_dict(row["metadata"])
+        if row["outcome"] == "rate_limited" or (row["outcome"] == "spawn_failed" and meta.get("infrastructure")):
+            continue
+        if row["outcome"] == "crashed" and meta.get("startup_failure"):
+            streak += 1
+            continue
+        break
+    return streak
+
+
 _PROTOCOL_VIOLATION_ERROR = (
     # Worker subprocess returned 0 but its task is still ``running`` in the DB — it exited without calling
     # ``kanban_complete`` / ``kanban_block`` / ``kanban_request_review``. Overwhelmingly the work itself succeeded and only the
@@ -1042,6 +1069,9 @@ class _DeadWorker:
     terminal_provider: bool = False
     """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
     credential/model — trips the breaker on this first occurrence."""
+    startup_failure: bool = False
+    """The worker died before its first heartbeat: the agent never ran, so the card's own
+    attempts are untouched and a separate bounded budget (``_STARTUP_FAILURE_LIMIT``) applies."""
 
     @property
     def run_outcome(self) -> str:
@@ -1156,7 +1186,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
         rows = conn.execute(
             "SELECT t.id, t.worker_pid, t.worker_started_at, t.claim_lock, t.assignee, "
             # Grace is per attempt: ``tasks.started_at`` keeps the card's FIRST start.
-            "       COALESCE(r.started_at, t.started_at) AS started_at "
+            "       COALESCE(r.started_at, t.started_at) AS started_at, "
+            "       r.id AS run_id, r.last_heartbeat_at AS run_heartbeat_at "
             "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
             "WHERE t.status = 'running' AND t.worker_pid IS NOT NULL"
         ).fetchall()
@@ -1175,6 +1206,11 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
 
             pid = int(row["worker_pid"])
             dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
+            if (dead.event_kind == "crashed" and not dead.terminal_provider
+                    and row["run_id"] is not None and row["run_heartbeat_at"] is None):
+                # The agent loop heartbeats on its first activity; none means it never ran.
+                dead.startup_failure = True
+                dead.event_payload["startup_failure"] = True
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
@@ -1280,6 +1316,24 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer, "terminal_provider": True},
+            )
+        elif dead.startup_failure:
+            # Infrastructure, not the card: the worker process died before the agent ran (import
+            # error, broken interpreter). The card's ``max_retries`` stays for its own work; a
+            # separate streak bounds the retries so a host that cannot start workers parks the card
+            # for an operator (sticky) instead of looping.
+            streak = _startup_failure_streak(conn, tid)
+            extra = {"pid": pid, "claimer": claimer, "startup_failure": True,
+                     "startup_failures": streak, "startup_failure_limit": _STARTUP_FAILURE_LIMIT}
+            tripped = _record_task_failure(
+                conn, tid,
+                error=error_text,
+                outcome="crashed",
+                force_trip=streak >= _STARTUP_FAILURE_LIMIT,
+                release_claim=False,
+                end_run=False,
+                event_payload_extra=extra,
+                infrastructure=streak < _STARTUP_FAILURE_LIMIT,
             )
         else:
             is_systemic = fp_counts.get(_error_fingerprint(error_text), 0) >= 3

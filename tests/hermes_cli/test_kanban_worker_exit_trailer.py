@@ -160,6 +160,44 @@ def test_a_run_is_judged_by_its_own_log_lines_only(kanban_home):
         assert not kb._json_dict(run["metadata"]).get("protocol_violation")
 
 
+def test_a_worker_that_never_ran_does_not_spend_the_cards_retries(kanban_home):
+    """A worker that died before its first heartbeat (import error, broken interpreter) is the
+    host's failure, not the card's: ``max_retries: 1`` must not give up on the first one. A
+    separate streak parks the card for an operator once the host keeps failing; a crash after the
+    agent ran is still charged."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="t", assignee="a", max_retries=1)
+        host = kb._claimer_id().split(":", 1)[0]
+
+        def silent_death(pid: int, *, heartbeat: bool = False) -> None:
+            kb.claim_task(conn, tid, claimer=f"{host}:w{pid}")
+            conn.execute("UPDATE tasks SET worker_pid=?, worker_started_at=NULL WHERE id=?", (pid, tid))
+            conn.execute("UPDATE task_runs SET started_at=? WHERE id=(SELECT current_run_id FROM tasks WHERE id=?)",
+                         (int(time.time()) - 120, tid))
+            conn.commit()
+            if heartbeat:
+                kbd.heartbeat_worker(conn, tid, note=None)
+            kbd.detect_crashed_workers(conn)
+
+        for i in range(kbd._STARTUP_FAILURE_LIMIT - 1):
+            silent_death(73000 + i)
+            task = kb.get_task(conn, tid)
+            assert (task.status, task.consecutive_failures) == ("ready", 0)
+        ev = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND kind='crashed' ORDER BY id DESC LIMIT 1",
+                          (tid,)).fetchone()
+        assert '"startup_failure": true' in ev["payload"]
+
+        silent_death(73100)  # the host still cannot start a worker: hold for an operator
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        gave_up = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND kind='gave_up'", (tid,)).fetchone()
+        assert '"sticky": true' in gave_up["payload"]
+
+        kb.unblock_task(conn, tid)
+        silent_death(73200, heartbeat=True)  # the agent ran, then crashed: the card's own budget
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
 def test_exit_single_query_writes_trailer_only_for_kanban_workers(monkeypatch, capsys):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     with pytest.raises(SystemExit) as exc:
