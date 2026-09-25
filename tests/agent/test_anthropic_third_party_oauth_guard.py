@@ -123,6 +123,29 @@ class TestOAuthFlagOnRefresh:
         assert result is True
         assert agent._anthropic_api_key == new
 
+    def test_declared_oauth_proxy_relay_keeps_its_own_key(self, agent):
+        """``capabilities.anthropic_oauth_proxy`` sets ``_is_anthropic_oauth`` with the relay's OWN key.
+        That flag is not proof the endpoint holds an Anthropic credential, so a refresh must not swap
+        the relay key for ANTHROPIC_API_KEY / the stored OAuth token (#17829 through the proxy door)."""
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
+        agent.capabilities = {"anthropic_oauth_proxy": True}
+        agent._anthropic_api_key = "opaque-relay-key"
+        agent._anthropic_base_url = "https://relay.example.com"
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = True
+
+        with (
+            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=_OAUTH_LIKE_TOKEN),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            result = agent._try_refresh_anthropic_client_credentials()
+
+        assert result is False
+        assert agent._anthropic_api_key == "opaque-relay-key"
+
+
+
 class TestOAuthFlagOnCredentialSwap:
     """Site 4 — _swap_credential (credential pool rotation)."""
 

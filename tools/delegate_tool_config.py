@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode, urlsplit
 from utils import base_url_hostname, is_truthy_value
 from hermes_cli.fallback_config import scoped_fallback_chain
 
@@ -263,21 +262,12 @@ def _inherit_parent_endpoint(parent_agent, surface_base_url: Optional[str], surf
     for index, (raw_url, live_key) in enumerate(live_candidates):
         url = _normalized_runtime_url(raw_url)
         if url and url.startswith(("http://", "https://")):
-            if index == 0:
-                url = _with_default_query(url, (client_kwargs or {}).get("default_query"))
+            from hermes_cli.route_identity import url_with_query
+            query = (client_kwargs or {}).get("default_query") if index == 0 else getattr(client, "_custom_query", None)
+            url = url_with_query(url, query)
             return url, (live_key or surface_api_key)
     return (surface_base_url or None), surface_api_key
 
-
-def _with_default_query(url: str, default_query: Any) -> str:
-    """*url* with the live client's ``default_query`` put back into it.
-
-    The parent's OpenAI-wire client carries a query-bearing base URL (``…/t?team=a``) as a clean
-    ``base_url`` plus ``default_query``; the child rebuilds its client from a URL alone, so without
-    this it would call the tenant-less endpoint."""
-    if not isinstance(default_query, dict) or not default_query or urlsplit(url).query:
-        return url
-    return f"{url}?{urlencode({str(k): str(v) for k, v in default_query.items()})}"
 
 def _loaded_pool(key: Any):
     """``load_pool(key)`` when it holds credentials, else None."""

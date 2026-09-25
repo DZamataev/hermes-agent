@@ -924,7 +924,12 @@ class ClientLifecycleMixin:
         official_host = not anthropic_base_url or any(
             base_url_host_matches(anthropic_base_url, host) for host in ("anthropic.com", "claude.com"))
         current_key = str(self._anthropic_api_key or "")
-        if not official_host and not (current_key.startswith("sk-ant-") or getattr(self, "_is_anthropic_oauth", False)):
+        # ``_is_anthropic_oauth`` proves an Anthropic credential only when the key shape set it: a
+        # relay declaring ``capabilities.anthropic_oauth_proxy`` is OAuth with its OWN key, which a
+        # refresh must never swap for the vendor token.
+        vendor_oauth = getattr(self, "_is_anthropic_oauth", False) and not (
+            getattr(self, "capabilities", None) or {}).get("anthropic_oauth_proxy", False)
+        if not official_host and not (current_key.startswith("sk-ant-") or vendor_oauth):
             return False
         try:
             from agent.anthropic_credentials import resolve_anthropic_token

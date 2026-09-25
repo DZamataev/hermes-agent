@@ -524,6 +524,12 @@ def _extract_url_query_params(url: str):
     return url, None
 
 
+def _client_route_url(client: Any, base_url: Any) -> str:
+    """``auxiliary_oauth.client_route_url``: *base_url* plus the query the SDK split off."""
+    from agent.auxiliary_oauth import client_route_url
+    return client_route_url(client, base_url)
+
+
 # Warn only once per process about stale OPENAI_BASE_URL.
 _stale_base_url_warned = False
 
@@ -3753,6 +3759,7 @@ def _prepare_same_provider_retry(
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=effective_timeout,
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
         base_url=retry_base or resolved_base_url, task=task,
+        route_url=_client_route_url(retry_client, retry_base) if retry_base else resolved_base_url,
     )
     # Preserve per-request attribution headers (e.g. Copilot ``x-initiator``) so the retry keeps capability gating.
     if extra_headers:
@@ -3935,10 +3942,14 @@ class _FallbackDestination(NamedTuple):
     base_url: str
     api_mode: Optional[str]
     model: Optional[str]
+    # base_url plus the query the SDK split off (``_client_route_url``): the OAuth-proxy decision
+    # compares the whole route, tenant query included.
+    route_url: Optional[str] = None
 
 
 def _complete_fallback_destination(
-    provider: str, base_url: str, api_mode: Optional[str], model: Optional[str]
+    provider: str, base_url: str, api_mode: Optional[str], model: Optional[str],
+    route_url: Optional[str] = None,
 ) -> _FallbackDestination:
     if not api_mode:
         if _endpoint_speaks_anthropic_messages(base_url):
@@ -3950,7 +3961,7 @@ def _complete_fallback_destination(
                     requested=provider, explicit_base_url=base_url or None, target_model=model or ""
                 )
                 api_mode = str(runtime.get("api_mode") or "").strip() or None
-    return _FallbackDestination(provider, base_url, api_mode, model)
+    return _FallbackDestination(provider, base_url, api_mode, model, route_url or base_url)
 
 
 def _fallback_destination_from_entry(
@@ -3960,7 +3971,8 @@ def _fallback_destination_from_entry(
     base_url = str(entry.get("base_url") or getattr(fb_client, "base_url", "") or "").strip()
     api_mode = str(entry.get("api_mode") or entry.get("transport") or "").strip() or None
     model = fb_model or str(entry.get("model") or "").strip() or None
-    return _complete_fallback_destination(provider, base_url, api_mode, model)
+    route_url = str(entry.get("base_url") or "").strip() or _client_route_url(fb_client, base_url)
+    return _complete_fallback_destination(provider, base_url, api_mode, model, route_url)
 
 
 def _fallback_destination(
@@ -3973,8 +3985,9 @@ def _fallback_destination(
     entry = _fallback_chain_entry(task, fb_label)
     if entry is not None:
         return _fallback_destination_from_entry(entry, fb_client, fb_model)
+    base_url = str(getattr(fb_client, "base_url", "") or "")
     return _complete_fallback_destination(
-        _fallback_provider_from_label(fb_label), str(getattr(fb_client, "base_url", "") or ""), None, fb_model,
+        _fallback_provider_from_label(fb_label), base_url, None, fb_model, _client_route_url(fb_client, base_url),
     )
 
 
@@ -4010,7 +4023,8 @@ def _fallback_request_kwargs(
     fb_kwargs = _build_call_kwargs(
         destination.provider, destination.model, fallback_messages,
         temperature=temperature, max_tokens=fallback_max_tokens, tools=fallback_tools, timeout=effective_timeout,
-        extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url, task=task)
+        extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url, task=task,
+        route_url=destination.route_url)
     return fb_kwargs
 
 
@@ -4041,9 +4055,10 @@ def _plan_fallback_candidate(
     )
 
     def _rebuild(provider: str, client: Any, model: Optional[str]) -> Tuple[_FallbackDestination, Dict[str, Any]]:
+        retry_base = destination.base_url or str(getattr(client, "base_url", "") or "")
         retry_destination = _FallbackDestination(
-            provider, destination.base_url or str(getattr(client, "base_url", "") or ""),
-            destination.api_mode, model or destination.model,
+            provider, retry_base, destination.api_mode, model or destination.model,
+            destination.route_url or _client_route_url(client, retry_base),
         )
         return retry_destination, _fallback_request_kwargs(retry_destination, **common)
 
@@ -5118,7 +5133,7 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
             # wrapping decisions only need base_url + api_mode.
             _raw_ckey = getattr(client, "api_key", "")
             _ckey = "" if (callable(_raw_ckey) and not isinstance(_raw_ckey, str)) else str(_raw_ckey or "")
-            client = _wrap_transport(req, client, final_model, str(getattr(client, "base_url", "") or ""), _ckey)
+            client = _wrap_transport(req, client, final_model, _client_route_url(client, getattr(client, "base_url", "")), _ckey)
             return _route_client(req, client, final_model)
     logger.warning("resolve_provider_client: custom/main requested but no endpoint credentials found")
     return None, None
@@ -6090,32 +6105,6 @@ def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
         }
 
 
-def _named_route_identity(prov: Optional[str], base_url: Optional[str]) -> Optional[str]:
-    """The named provider *prov* (normalized) when *base_url* is its own endpoint, else None.
-
-    MoA slots, pinned routes and ``auxiliary.<task>`` blocks arrive with the endpoint their
-    provider resolved to. That call IS the provider, not an anonymous ``custom`` endpoint: its
-    per-provider and per-model declarations (``capabilities.anthropic_oauth_proxy``) are looked up
-    by name, so flattening it strips the wire policy. Another endpoint under the same name
-    (``same_provider_endpoint``) is a different route and stays ``custom``. A spaced display name
-    is dashed like the entry lookup (``My Relay`` → ``my-relay``) — unless the dashed form is a
-    built-in id or alias (``Claude Code`` → ``claude-code`` is the ``anthropic`` alias): the
-    downstream resolver would then route it to the built-in. Such a name keeps its spaced
-    spelling, so it can occupy a second client-cache slot beside the entry key; that costs a
-    client, not correctness.
-    """
-    name = str(prov or "").strip().lower()
-    if not name or name in {"auto", "custom"} or not base_url:
-        return None
-    dashed = name.replace(" ", "-")
-    if dashed != name:
-        from hermes_cli.auth import known_provider_id
-        if known_provider_id(dashed) is None:
-            name = dashed
-    from hermes_cli.route_identity import named_provider_owns_endpoint
-    return name if named_provider_owns_endpoint(name, base_url) else None
-
-
 def _resolve_task_provider_model(
     task: str = None, provider: str = None, model: str = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -6176,11 +6165,12 @@ def _resolve_task_provider_model(
         base_url = cfg_base_url
         if not api_key:
             api_key = cfg_api_key
+    from agent.auxiliary_oauth import named_route_identity
     if base_url:
         if _preserve_provider_with_base_url(provider):
             kept = provider
         else:
-            kept = _named_route_identity(provider, base_url) or "custom"
+            kept = named_route_identity(provider, base_url) or "custom"
         return kept, resolved_model, base_url, api_key, resolved_api_mode
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode
@@ -6189,7 +6179,7 @@ def _resolve_task_provider_model(
         if str(cfg_provider or "").strip().lower() in _LOCAL_SERVER_ALIASES:
             kept = cfg_provider
         else:
-            kept = _named_route_identity(cfg_provider, cfg_base_url) or "custom"
+            kept = named_route_identity(cfg_provider, cfg_base_url) or "custom"
         return kept, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
     if cfg_base_url and cfg_provider and cfg_provider != "auto":
         # base_url without api_key: keep the provider so it can resolve credentials from env
@@ -6686,9 +6676,12 @@ def _build_call_kwargs(
     max_tokens: Optional[int] = None, tools: Optional[list] = None, timeout: float = 30.0,
     extra_body: Optional[dict] = None, reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None, task: Optional[str] = None,
-    no_progress_timeout: Optional[float] = None,
+    no_progress_timeout: Optional[float] = None, route_url: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments.
+    ``route_url`` is *base_url* with the query the SDK split into ``default_query``
+    (``_client_route_url``); only the OAuth-proxy decision reads it, since the tenant choice is part
+    of that route's identity. Everything else keys on the clean *base_url*.
     ``no_progress_timeout`` is a Codex-Responses-only extra (consumed by
     ``_CodexCompletionsAdapter.create``'s ``**kwargs`` catch-all); callers must only pass it
     when the resolved client is a ``CodexAuxiliaryClient`` — real SDK clients don't accept it."""
@@ -6754,13 +6747,9 @@ def _build_call_kwargs(
     # backend, and so an OAuth relay recognises them as that conversation instead of pinning a
     # second account. The proxy header is scoped by runtime_oauth_proxy: same provider, endpoint
     # and model, so a model declaring itself off this relay's OAuth policy sends no such header.
-    from agent.auxiliary_oauth import runtime_oauth_proxy
+    from agent.auxiliary_oauth import affinity_capabilities
     from agent.opencode_affinity import merge_session_affinity_headers
-    aux_capabilities = (
-        {"anthropic_oauth_proxy": True}
-        if runtime_oauth_proxy(_normalize_main_runtime(None), provider, str(base_url or ""), model)
-        else None
-    )
+    aux_capabilities = affinity_capabilities(_normalize_main_runtime(None), provider, route_url or base_url, model)
     return merge_session_affinity_headers(
         kwargs, provider, base_url, _runtime_main_value("session_id") or None, aux_capabilities,
     )
@@ -7422,7 +7411,8 @@ def _prepare_aux_request(
         request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task,
-        no_progress_timeout=no_progress_timeout)
+        no_progress_timeout=no_progress_timeout,
+        route_url=_client_route_url(client, base_info) if base_info else resolved_base_url)
     if extra_headers:
         # Merged, not assigned: _build_call_kwargs already put the conversation's affinity
         # headers there (OpenCode / OAuth-proxy session id); a caller-supplied header wins.

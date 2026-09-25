@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 MODEL = "claude-sonnet-4-6"
 URL = "https://relay.example.com"

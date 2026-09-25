@@ -15,7 +15,7 @@ B's map rather than the parent model's.
 from types import SimpleNamespace
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from tools.delegate_tool import _child_route_capabilities
 from tools.delegate_tool_config import _resolve_child_runtime, _runtime_provider_credentials
