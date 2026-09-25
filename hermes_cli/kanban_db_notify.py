@@ -542,11 +542,45 @@ def _quiescent_salt(conn: sqlite3.Connection, *, create: bool = False) -> bytes:
     return str(int(row[0])).encode()
 
 
-def _destination(sub: Mapping[str, Any]) -> tuple[str, str, str]:
-    """The chat/topic a subscription reports to. The notifier profile is not part of it: legacy rows carry NULL and
-    get stamped on re-subscribe, and a NULL row is delivered by the dispatch owner, so it is not a recipient of its
-    own. Profiles split a destination only when several are stamped on it (see ``announce_board_quiescent``)."""
-    return (str(sub.get("platform") or "").lower(), str(sub.get("chat_id") or ""), str(sub.get("thread_id") or ""))
+def _session_scoping() -> tuple[bool, bool]:
+    """``(group_sessions_per_user, thread_sessions_per_user)`` as the gateway reads them (defaults True, False)."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+    except Exception:
+        cfg = {}
+    return bool(cfg.get("group_sessions_per_user", True)), bool(cfg.get("thread_sessions_per_user", False))
+
+
+def _participant(sub: Mapping[str, Any], scoping: tuple[bool, bool]) -> str:
+    """The user whose own session a subscription wakes, when the gateway keys group sessions per user (mirrors
+    ``gateway.session.build_session_key``; the chat type is resolved the way the notifier rebuilds the source:
+    column, else ``delivery_metadata``, else group). Empty for a DM or a shared (per-chat or per-thread) session."""
+    chat_type = str(sub.get("chat_type") or "").strip()
+    if not chat_type:
+        meta = sub.get("delivery_metadata")
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except (TypeError, ValueError):
+                meta = None
+        chat_type = str((meta or {}).get("chat_type") or "").strip() if isinstance(meta, Mapping) else ""
+    if (chat_type or "group") == "dm":
+        return ""
+    per_group, per_thread = scoping
+    if not per_group or (str(sub.get("thread_id") or "") and not per_thread):
+        return ""
+    return str(sub.get("user_id_alt") or sub.get("user_id") or "")
+
+
+def _destination(sub: Mapping[str, Any], scoping: tuple[bool, bool] = (False, False)) -> tuple[str, str, str, str]:
+    """The session a subscription reports to: its chat/topic, plus the user when that is a per-user group session
+    (two people orchestrating one board from one group each have their own session, so each must be told). The
+    notifier profile is not part of it: legacy rows carry NULL and get stamped on re-subscribe, and a NULL row is
+    delivered by the dispatch owner, so it is not a recipient of its own. Profiles split a destination only when
+    several are stamped on it (see ``announce_board_quiescent``)."""
+    return (str(sub.get("platform") or "").lower(), str(sub.get("chat_id") or ""), str(sub.get("thread_id") or ""),
+            _participant(sub, scoping))
 
 
 def _profile(sub: Mapping[str, Any]) -> str:
@@ -554,11 +588,14 @@ def _profile(sub: Mapping[str, Any]) -> str:
 
 
 def quiescent_destination_tag(conn: sqlite3.Connection, sub: Mapping[str, Any]) -> str:
-    """Opaque tag of a subscription's chat/topic on this board. Events are exported and shown to workers, so the
-    announcement carries this instead of a chat id or session key."""
+    """Opaque tag of one subscription row on this board. Events are exported and shown to workers, so the
+    announcement carries this instead of a chat id or session key. It always includes the row's user, whatever the
+    session scoping: a card holds one row per chat/topic, so it still names exactly the carrier row, and matching
+    stays independent of config that the dispatcher and the notifier (other processes, maybe other profiles) could
+    read differently."""
     import hashlib
     import hmac
-    msg = "\x1f".join(_destination(sub)).encode()
+    msg = "\x1f".join(_destination(sub, (True, True))).encode()
     return hmac.new(_quiescent_salt(conn), msg, hashlib.sha256).hexdigest()[:24]
 
 
@@ -570,12 +607,13 @@ def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
     (``kanban_board_state``, out of reach of event GC); every decision advances the mark, so a board that never ran
     anything stays silent and new work re-arms it.
 
-    Recipients are the destinations (chat/topic, see ``_destination``) with a subscription on a card claimed since
-    the mark; one on which several stamped notifier profiles took part is told once per profile (two bots in one
-    group each run their own orchestrator). Each gets one event on a card it follows, addressed by an opaque tag
-    (``payload["to"]``): a card whose subscription wakes the agent if any (so being woken never depends on which card
-    finished last), then a live one over an archived one, then the most recently active. A card holds one row per
-    chat/topic, so the tag picks exactly one follower of the carrier; a destination that is not split is carried only
+    Recipients are the destinations (chat/topic, and the user in a per-user group session; see ``_destination``)
+    with a subscription on a card claimed since the mark; one on which several stamped notifier profiles took part
+    is told once per profile (two bots in one group each run their own orchestrator). Each gets one event on a card
+    it follows, addressed by an opaque tag (``payload["to"]``): a card whose subscription wakes the agent if any (so
+    being woken never depends on which card finished last), then one that took part in the work, then a live one
+    over an archived one, then the most recently active. A card holds one row per chat/topic, so the tag picks
+    exactly one follower of the carrier; a destination that is not split is carried only
     by an unstamped row or one of a participating profile (another bot's row would wake the wrong orchestrator).
     Notifiers hold an archived card's row past its archival while it took part in undecided work
     (``release_archived_notify_sub``), so an orchestrator that archived its last card is still told; the decision
@@ -597,21 +635,23 @@ def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
                      (_QUIESCENT_MARK_KEY, newest))
         subs = [dict(r) for r in conn.execute(
             "SELECT s.platform, s.chat_id, s.thread_id, s.notifier_profile, s.delivery_mode, s.task_id,"
+            " s.chat_type, s.user_id, s.user_id_alt, s.delivery_metadata,"
             " t.status = 'archived' AS archived,"
             " (SELECT COALESCE(MAX(e.id), 0) FROM task_events e WHERE e.task_id = s.task_id) AS latest,"
             " EXISTS (SELECT 1 FROM task_events c WHERE c.task_id = s.task_id AND c.kind = 'claimed'"
             "         AND c.id > ? AND c.id <= ?) AS took_part"
             " FROM kanban_notify_subs s JOIN tasks t ON t.id = s.task_id", (mark, newest))]
+        scoping = _session_scoping()
         profiles: dict = {}
         for s in subs:
             if s["took_part"]:
-                profiles.setdefault(_destination(s), set()).add(_profile(s))
+                profiles.setdefault(_destination(s, scoping), set()).add(_profile(s))
         recipients = {(dest, prof) for dest, profs in profiles.items()
                       for prof in (sorted(profs - {""}) or [""])}
         split = {dest for dest, profs in profiles.items() if len(profs - {""}) > 1}
         best: dict = {}
         for s in subs:
-            dest, prof = _destination(s), _profile(s)
+            dest, prof = _destination(s, scoping), _profile(s)
             if dest in split:
                 recipient = (dest, prof)  # an unstamped row cannot say which of the bots it belongs to
             elif prof and prof not in profiles.get(dest, ()):
@@ -622,7 +662,8 @@ def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
                 recipient = next((r for r in recipients if r[0] == dest), None)
             if recipient not in recipients:
                 continue
-            rank = ((s["delivery_mode"] or "notify") in _WAKING_MODES, not s["archived"], s["latest"])
+            rank = ((s["delivery_mode"] or "notify") in _WAKING_MODES, bool(s["took_part"]), not s["archived"],
+                    s["latest"])
             if recipient not in best or rank > best[recipient][0]:
                 best[recipient] = (rank, s)
         if best:

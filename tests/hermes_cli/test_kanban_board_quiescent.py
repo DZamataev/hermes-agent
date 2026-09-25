@@ -704,3 +704,97 @@ def test_the_decision_keeps_a_row_whose_archival_is_not_delivered_yet(conn):
 
     assert [t for t, _ in _quiescent(conn)] == [c]
     assert len(kbn.list_notify_subs(conn, a)) == 1
+
+
+def _group_card(conn, title, user, **kw):
+    tid = kb.create_task(conn, title=title, assignee="worker", **kw)
+    kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="-100G", chat_type="group", user_id=user,
+                       notifier_profile="default", delivery_mode="notify+wake")
+    return tid
+
+
+def _carried_for(conn, user_by_card):
+    """{user whose row carries an announcement: carrier card} (each card has one row in the group)."""
+    return {user_by_card[t]: t for t, _p in _quiescent(conn)}
+
+
+def test_each_user_orchestrating_from_one_group_is_told(conn):
+    """Group sessions are per user by default: one announcement per chat would wake only one of them."""
+    c1 = _group_card(conn, "U1 work", "U1")
+    c2 = _group_card(conn, "U2 work", "U2")
+    _tick(conn)
+    kb.complete_task(conn, c1, summary="ok1")
+    kb.complete_task(conn, c2, summary="ok2")
+    _tick(conn)
+
+    assert _carried_for(conn, {c1: "U1", c2: "U2"}) == {"U1": c1, "U2": c2}
+
+
+def test_a_user_who_took_no_part_is_not_woken_for_someone_elses_work(conn):
+    c1 = _group_card(conn, "U1 work", "U1")
+    _tick(conn)
+    kb.complete_task(conn, c1, summary="ok1")
+    gate = kb.create_task(conn, title="U2 gate", assignee="worker", triage=True)
+    c2 = _group_card(conn, "U2 later", "U2", parents=[gate])
+    _tick(conn)
+
+    assert _carried_for(conn, {c1: "U1", c2: "U2"}) == {"U1": c1}
+
+
+def test_a_participating_row_outranks_an_idle_one_of_the_same_session(conn):
+    """Within one destination the carrier is a card that took part, not a newer one that never ran."""
+    ran = _card(conn, "ran", sub=("tui", "K"))
+    _tick(conn)
+    kb.complete_task(conn, ran, summary="ok")
+    gate = kb.create_task(conn, title="gate", assignee="worker", triage=True)
+    _card(conn, "waits", sub=("tui", "K"), parents=[gate])
+    _tick(conn)
+
+    assert [t for t, _p in _quiescent(conn)] == [ran]
+
+
+def test_with_per_user_group_sessions_off_one_group_is_one_destination(conn, monkeypatch):
+    import hermes_cli.config as cfg
+
+    real = cfg.load_config
+    monkeypatch.setattr(cfg, "load_config", lambda *a, **k: {**(real(*a, **k) or {}), "group_sessions_per_user": False})
+    c1 = _group_card(conn, "U1 work", "U1")
+    c2 = _group_card(conn, "U2 work", "U2")
+    _tick(conn)
+    kb.complete_task(conn, c1, summary="ok1")
+    kb.complete_task(conn, c2, summary="ok2")
+    _tick(conn)
+
+    assert len(_quiescent(conn)) == 1
+
+
+def test_a_dm_is_one_destination_whatever_its_rows_say_about_the_user(conn):
+    """A DM is one session: a legacy row without ``user_id`` next to a stamped one must not get a second copy."""
+    a = kb.create_task(conn, title="a", assignee="worker")
+    b = kb.create_task(conn, title="b", assignee="worker")
+    kbn.add_notify_sub(conn, task_id=a, platform="telegram", chat_id="dm-1", chat_type="dm", user_id="U1",
+                       delivery_mode="notify+wake")
+    kbn.add_notify_sub(conn, task_id=b, platform="telegram", chat_id="dm-1", chat_type="dm",
+                       delivery_mode="notify+wake")
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    kb.complete_task(conn, b, summary="ok")
+    _tick(conn)
+
+    assert len(_quiescent(conn)) == 1
+
+
+def test_a_group_thread_is_shared_by_default(conn):
+    """``thread_sessions_per_user`` is off by default: users of one thread share its session, so it is told once."""
+    cards = []
+    for user in ("U1", "U2"):
+        tid = kb.create_task(conn, title=user, assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="-100G", thread_id="77",
+                           chat_type="group", user_id=user, delivery_mode="notify+wake")
+        cards.append(tid)
+    _tick(conn)
+    for tid in cards:
+        kb.complete_task(conn, tid, summary="ok")
+    _tick(conn)
+
+    assert len(_quiescent(conn)) == 1

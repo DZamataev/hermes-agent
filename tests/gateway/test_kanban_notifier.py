@@ -997,3 +997,40 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+def test_a_second_gateway_with_nothing_new_leaves_a_row_the_first_is_still_sending(tmp_path, monkeypatch):
+    """Two gateways on one board: the first has claimed the archived card's completion and archival and is still
+    sending. The second gateway's tick claims nothing for that row, so it must neither mark it delivered nor
+    release it, or the first gateway's failed send has no row to rewind onto."""
+    from gateway.kanban_watchers_notifier import TERMINAL_KINDS
+    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-inflight.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="in flight", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm")
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)  # decide nothing: keep the claim mark out of it
+        kb.complete_task(conn, tid, summary="THE RESULT")
+        kb.archive_task(conn, tid)
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+        ident = dict(task_id=tid, platform="telegram", chat_id="chat-1", thread_id="")
+        old, claimed, events = kbn.claim_unseen_events_for_sub(conn, kinds=TERMINAL_KINDS, **ident)  # gateway 1
+        assert "archived" in {e.kind for e in events}
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))  # gateway 2
+    assert adapter.sent == []
+
+    conn = kbc.connect()
+    try:
+        assert kbn.rewind_notify_cursor(conn, claimed_cursor=claimed, old_cursor=old, **ident)  # gateway 1 failed
+    finally:
+        conn.close()
