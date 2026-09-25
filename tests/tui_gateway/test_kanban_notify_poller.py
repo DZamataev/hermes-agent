@@ -56,6 +56,31 @@ def _sub_rows(tid: str) -> list:
 
 
 class TestCollectKanbanNotifications:
+    def test_a_failure_that_trips_the_breaker_is_reported_once(self):
+        """The breaker writes ``crashed`` and ``gave_up`` for one failure; the session is told once, by the
+        ``gave_up`` that carries the error. A crash that did not trip it still reports."""
+        from hermes_cli import kanban_db_dispatch as kbd
+
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            with kb.write_txn(conn):
+                kb._append_event(conn, tid, "crashed", {"pid": 1})
+            kbd._record_task_failure(conn, tid, error="pid 1 not alive", outcome="crashed", force_trip=True)
+        finally:
+            conn.close()
+        texts = _collect_kanban_notifications(_session())
+        assert len(texts) == 1 and "gave up" in texts[0] and "pid 1 not alive" in texts[0]
+
+        conn = kbc.connect()
+        try:
+            with kb.write_txn(conn):
+                kb._append_event(conn, tid, "crashed", {"pid": 2})
+        finally:
+            conn.close()
+        texts = _collect_kanban_notifications(_session())
+        assert len(texts) == 1 and "worker crashed" in texts[0]
+
     def test_zero_sub_board_is_never_opened_writable(self):
         conn = kbc.connect()
         conn.close()

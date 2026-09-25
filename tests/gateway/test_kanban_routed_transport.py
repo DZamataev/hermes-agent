@@ -266,3 +266,24 @@ def test_pinned_profile_without_this_platform_delivers_via_primary(tmp_path, mon
     assert len(warnings) == 1 and warnings[0].levelno == logging.WARNING
     assert "--notifier-profile yuki" in warnings[0].getMessage()
     assert unseen(stamped)
+
+
+def test_a_failure_that_trips_the_breaker_reaches_the_chat_once(tmp_path, monkeypatch):
+    """``crashed`` and the ``gave_up`` it tripped are one failure: the chat gets one message, the
+    ``gave_up`` that carries the error, and the cursor still moves past both."""
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    runner = setup_runner(tmp_path, monkeypatch)
+    primary = runner.adapters[Platform.DISCORD]
+    with kbc.connect() as conn:
+        task = kb.create_task(conn, title="flaky host", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=task, platform="discord", chat_id="post", thread_id="post",
+                           chat_type="thread", user_id="creator", notifier_profile="yuki", delivery_mode="notify",
+                           delivery_metadata={"guild_id": "guild", "scope_id": "guild", "parent_chat_id": "parent"})
+        with kb.write_txn(conn):
+            kb._append_event(conn, task, "crashed", {"pid": 1})
+        kbd._record_task_failure(conn, task, error="pid 1 not alive", outcome="crashed", force_trip=True)
+    asyncio.run(deliver(runner, collect(runner)))
+    assert len(primary.sent) == 1
+    assert "is now blocked" in primary.sent[0][1] and "pid 1 not alive" in primary.sent[0][1]
+    assert not collect(runner)

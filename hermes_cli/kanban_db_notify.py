@@ -525,6 +525,8 @@ def _newest_uncovered_claim(conn: sqlite3.Connection, active: tuple[str, ...]) -
 
 
 _QUIESCENT_SALT_KEY = "quiescent_tag_salt"
+# ``kanban_board_state`` key prefix (+ destination tag): hash of the last announcement that destination was given.
+_QUIESCENT_TOLD_PREFIX = "quiescent_told:"
 _WAKING_MODES = ("notify+wake", "wake")
 
 
@@ -673,18 +675,28 @@ def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
 
 
 def _append_board_quiescent(conn: sqlite3.Connection, best: Mapping, active: tuple[str, ...], newest: int) -> None:
-    """Write one announcement per recipient (``best``: recipient → (rank, carrier sub)). Caller holds write_txn."""
+    """Write one announcement per recipient (``best``: recipient → (rank, carrier sub)), unless that recipient was
+    last told exactly this (same counts and leftovers): a card the breaker parks again after every retry would
+    otherwise repeat the same "needs attention" on each drain. Caller holds write_txn."""
     waiting = ("blocked", "triage", "scheduled") + (() if "review" in active else ("review",))
     counts = {r[0]: r[1] for r in conn.execute(
         "SELECT status, COUNT(*) FROM tasks WHERE status != 'archived' GROUP BY status ORDER BY status")}
     attention = [r[0] for r in conn.execute(
         f"SELECT id FROM tasks WHERE status IN ({','.join('?' * len(waiting))})"
         " ORDER BY priority DESC, created_at LIMIT ?", (*waiting, _QUIESCENT_ATTENTION_LIMIT))]
+    import hashlib
+    import json
+    said = int(hashlib.sha256(json.dumps([counts, attention], sort_keys=True).encode()).hexdigest()[:15], 16)
     _quiescent_salt(conn, create=True)
-    for _recipient, (_rank, s) in sorted(best.items()):
+    for recipient, (_rank, s) in sorted(best.items()):
+        to = quiescent_destination_tag(conn, s)
+        key = f"{_QUIESCENT_TOLD_PREFIX}{to}:{recipient[1]}"  # two bots in one chat are told separately
+        told = conn.execute("SELECT value FROM kanban_board_state WHERE key = ?", (key,)).fetchone()
+        if told is not None and int(told[0]) == said:
+            continue
+        conn.execute("INSERT OR REPLACE INTO kanban_board_state (key, value) VALUES (?, ?)", (key, said))
         _kb._append_event(conn, s["task_id"], "board_quiescent", {
-            "counts": counts, "attention": attention, "mark": newest,
-            "to": quiescent_destination_tag(conn, s),
+            "counts": counts, "attention": attention, "mark": newest, "to": to,
         })
 
 
@@ -698,6 +710,15 @@ def quiescent_addressed_to(conn: sqlite3.Connection, ev: Any, sub: Mapping[str, 
         return True
     import hmac
     return hmac.compare_digest(to, quiescent_destination_tag(conn, sub))
+
+
+def collapse_superseded_failures(events: list) -> list:
+    """Drop a ``crashed``/``timed_out`` directly followed by the ``gave_up`` it tripped: the breaker writes both for
+    one failure and ``gave_up`` carries the same error, so a subscriber would read the failure twice. Shared by every
+    notifier; the claimed cursor is unaffected."""
+    return [ev for i, ev in enumerate(events)
+            if not (getattr(ev, "kind", "") in ("crashed", "timed_out") and i + 1 < len(events)
+                    and getattr(events[i + 1], "kind", "") == "gave_up")]
 
 
 def describe_board_quiescent(payload: Mapping[str, Any]) -> str:

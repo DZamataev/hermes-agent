@@ -303,6 +303,7 @@ class _Collector:
         )
         # An idle-board announcement addressed to another follower of this card: the cursor moved past it, skip.
         events = [ev for ev in events if _kbn().quiescent_addressed_to(conn, ev, sub)]
+        events = _kbn().collapse_superseded_failures(events)
         if not events:
             if cursor != old_cursor:  # claimed only announcements for another follower: nothing left to deliver
                 ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],

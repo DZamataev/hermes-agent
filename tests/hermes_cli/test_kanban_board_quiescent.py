@@ -119,6 +119,39 @@ def test_new_work_after_an_announcement_rearms_it(conn):
     assert len(_quiescent(conn)) == 2
 
 
+def test_a_retry_that_leaves_the_board_as_it_was_is_not_announced_again(conn):
+    """unblock -> the card runs -> the breaker parks it again: the board is idle with the same
+    leftovers the destination was already told about, so a card that fails on every retry must not
+    re-announce the same "needs attention" each time. Any change in the counts or the leftovers is
+    news again."""
+    done = _card(conn, "done", sub=("tui", "orchestrator"))
+    flaky = _card(conn, "flaky", sub=("tui", "orchestrator"))
+
+    def run_and_give_up():
+        _tick(conn)
+        kbd._record_task_failure(conn, flaky, error="worker died", outcome="spawn_failed",
+                                 force_trip=True, release_claim=True, end_run=True)
+        _tick(conn)
+
+    _tick(conn)
+    kb.complete_task(conn, done, summary="ok")
+    run_and_give_up()
+    assert len(_quiescent(conn)) == 1
+
+    for _ in range(2):
+        kb.unblock_task(conn, flaky)
+        run_and_give_up()
+    assert len(_quiescent(conn)) == 1
+
+    kb.unblock_task(conn, flaky)
+    _tick(conn)
+    kb.complete_task(conn, flaky, summary="finally")
+    _tick(conn)
+    events = _quiescent(conn)
+    assert len(events) == 2
+    assert events[-1][1]["counts"] == {"done": 2}
+
+
 def test_a_board_that_never_ran_anything_is_not_announced(conn):
     tid = kb.create_task(conn, title="waits on a human", assignee="worker", triage=True)
     kbn.add_notify_sub(conn, task_id=tid, platform="tui", chat_id="orchestrator")
