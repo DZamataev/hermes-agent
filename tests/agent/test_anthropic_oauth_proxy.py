@@ -417,3 +417,114 @@ def test_resume_resolves_same_provider_model_capabilities(relay):
             requested="custom:relay", target_model=MODEL)["api_key"])
     finally:
         agent._anthropic_client.close()
+
+
+@pytest.mark.parametrize("transport", ["anthropic_messages", "chat_completions"])
+def test_runtime_fallback_takes_the_routes_declared_capabilities(relay, tmp_path, transport):
+    """A runtime fallback onto a declared route carries that route's whole map, as construction
+    and the init-time fallback do — not only the OAuth bit the Anthropic wrapper happens to hold.
+    On a chat-wire relay the routed client holds nothing, so the map, and with it the session
+    header, used to be lost."""
+    from agent.chat_completion_helpers import build_api_kwargs
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from run_agent import AIAgent
+
+    declared = {"anthropic_oauth_proxy": True, "vision": True}
+    path = tmp_path / "config.yaml"
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    config["providers"]["other"] = {
+        "api": "https://other.example.com", "key_env": "TEST_RELAY_KEY", "transport": "anthropic_messages",
+    }
+    config["providers"]["relay2"] = {
+        "api": "https://relay2.example.com/v1", "key_env": "TEST_RELAY_KEY", "transport": transport,
+        "capabilities": declared,
+    }
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    runtime = resolve_runtime_provider(requested="custom:other", target_model=MODEL)
+    agent = AIAgent(
+        model=MODEL, provider=runtime["provider"], api_key=runtime["api_key"],
+        base_url=runtime["base_url"], api_mode=runtime["api_mode"],
+        capabilities=runtime.get("capabilities"), enabled_toolsets=[], quiet_mode=True,
+        skip_context_files=True, skip_memory=True, session_id="sess-fallback",
+        fallback_model=[{"provider": "custom:relay2", "model": MODEL}],
+    )
+    try:
+        assert agent.capabilities.get("anthropic_oauth_proxy", False) is False
+        assert agent._try_activate_fallback()
+        assert agent.capabilities == declared
+        kwargs = build_api_kwargs(agent, [{"role": "user", "content": "hello"}])
+        assert kwargs["extra_headers"]["x-claude-code-session-id"] == "sess-fallback"
+    finally:
+        if getattr(agent, "_anthropic_client", None) is not None:
+            agent._anthropic_client.close()
+
+
+def _decline_primary_restore(agent):
+    """A real gate: the primary slug was rejected as unentitled (#106475). The state
+    ``_mark_entitlement_rejected_model`` records, which ``restore_primary_runtime`` reads."""
+    rt = agent._primary_runtime
+    agent._entitlement_rejected_models = {(rt["provider"], rt["model"])}
+
+
+@pytest.mark.parametrize("surface", ["cli", "tui"])
+def test_one_turn_restore_keeps_the_sessions_capabilities(relay, tmp_path, surface):
+    """`/model X --once` then a restore the primary-runtime gate declines: the fall-through
+    ``switch_model`` must put back the map the session had, not clear it, so the relay keeps
+    getting Bearer auth and the Claude Code transforms."""
+    from agent.anthropic_adapter import build_anthropic_kwargs
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from run_agent import AIAgent
+
+    path = tmp_path / "config.yaml"
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    config["providers"]["other"] = {
+        "api": "https://other.example.com", "key_env": "TEST_RELAY_KEY", "transport": "anthropic_messages",
+    }
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    runtime = resolve_runtime_provider(requested="custom:relay", target_model=MODEL)
+    agent = AIAgent(
+        model=MODEL, provider=runtime["provider"], api_key=runtime["api_key"],
+        base_url=runtime["base_url"], api_mode=runtime["api_mode"],
+        capabilities=runtime.get("capabilities"), enabled_toolsets=[], quiet_mode=True,
+        skip_context_files=True, skip_memory=True,
+    )
+    try:
+        assert agent.capabilities == {"anthropic_oauth_proxy": True}
+        if surface == "cli":
+            from cli import HermesCLI
+            cli = object.__new__(HermesCLI)
+            cli.model, cli.provider, cli.requested_provider = MODEL, runtime["provider"], "custom:relay"
+            cli._explicit_api_key, cli._explicit_base_url = runtime["api_key"], runtime["base_url"]
+            cli.api_key, cli.base_url, cli.api_mode = runtime["api_key"], runtime["base_url"], runtime["api_mode"]
+            cli.reasoning_config = None
+            cli.agent = agent
+            snapshot = cli._snapshot_model_runtime()
+        else:
+            from tui_gateway.model_switch import _snapshot_agent_model_runtime
+            snapshot = _snapshot_agent_model_runtime(agent)
+
+        other = resolve_runtime_provider(requested="custom:other", target_model=MODEL)
+        agent.switch_model(
+            new_model=MODEL, new_provider=other["provider"], api_key=other["api_key"],
+            base_url=other["base_url"], api_mode=other["api_mode"], capabilities=other.get("capabilities"))
+        assert agent.capabilities.get("anthropic_oauth_proxy", False) is False
+        _decline_primary_restore(agent)
+
+        if surface == "cli":
+            cli._restore_model_runtime_snapshot(snapshot)
+        else:
+            from tui_gateway.model_switch import _restore_agent_model_runtime
+            _restore_agent_model_runtime(agent, snapshot)
+
+        assert agent.base_url.rstrip("/") == URL
+        assert agent.capabilities == {"anthropic_oauth_proxy": True}
+        assert agent._is_anthropic_oauth is True
+        kwargs = build_anthropic_kwargs(
+            model=MODEL, messages=[{"role": "user", "content": "hello"}], tools=TOOLS,
+            max_tokens=32, reasoning_config=None, is_oauth=agent._is_anthropic_oauth,
+            base_url=agent.base_url,
+        )
+        agent._anthropic_client.messages.create(**kwargs)
+        assert_wire(relay[-1], True, TOOLS)
+    finally:
+        agent._anthropic_client.close()

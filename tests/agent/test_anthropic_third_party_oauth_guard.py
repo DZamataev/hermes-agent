@@ -144,8 +144,6 @@ class TestOAuthFlagOnRefresh:
         assert result is False
         assert agent._anthropic_api_key == "opaque-relay-key"
 
-
-
 class TestOAuthFlagOnCredentialSwap:
     """Site 4 — _swap_credential (credential pool rotation)."""
 
