@@ -222,8 +222,7 @@ export function attachmentDisplayText(attachment: ComposerAttachment): string | 
  * URL renders inline with zero network, while an `@image:<localpath>` ref would
  * route through `/api/media` and can 403 in remote mode. Full-resolution bytes
  * are loaded separately for the model and on-demand lightbox, not retained in
- * the optimistic message. `blob:` previews from OS drops bypass the data-URL
- * extract path and render as a markdown image instead (#63682).
+ * the optimistic message. `blob:` chip previews (#63682) are never emitted.
  *
  * Everything else (files, folders, terminals, post-sync `@file:` refs) falls
  * through to `attachmentDisplayText`.
@@ -234,15 +233,12 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
   }
 
   if (attachment.kind === 'image') {
-    // Object-URL previews from OS drops take precedence over the path ref:
-    // markdown image keeps them out of the data-URL extract path while still
-    // rendering inline in the optimistic bubble (#63682).
-    if (attachment.previewUrl?.startsWith('blob:')) {
-      const alt = attachment.label || 'image'
-
-      return `![${alt}](${attachment.previewUrl})`
-    }
-
+    // A `blob:` chip preview (paste / OS drop, #63682) is never used here: the
+    // bubble's attachment row renders refs through DirectiveContent, which has
+    // no markdown, so a `![alt](blob:…)` ref painted as raw text instead of the
+    // image. Pasted and dropped images always carry a path, so they take the
+    // path ref below like every other image.
+    //
     // Prefer a filesystem-backed `@image:<path>` ref so the in-flight bubble
     // renders through the same DirectiveImage path as a reloaded turn. That
     // component shows a bounded thumbnail inline (no full-resolution paint, so
