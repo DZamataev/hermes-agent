@@ -14,7 +14,7 @@ import json
 
 import httpx
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 URL = "https://relay.example.com"
 KEY = "opaque-relay-key"

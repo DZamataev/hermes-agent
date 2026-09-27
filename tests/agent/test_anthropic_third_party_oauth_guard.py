@@ -24,10 +24,8 @@ import pytest
 
 from run_agent import AIAgent
 
-
 # A plausible-looking OAuth token (``sk-ant-`` without the ``-api`` suffix).
 _OAUTH_LIKE_TOKEN = "sk-ant-oauth-example-1234567890abcdef"
-
 
 @pytest.fixture
 def agent():
@@ -46,7 +44,6 @@ def agent():
         )
         a.client = MagicMock()
         return a
-
 
 class TestOAuthFlagOnRefresh:
     """Site 3 — _try_refresh_anthropic_client_credentials."""
@@ -147,8 +144,6 @@ class TestOAuthFlagOnRefresh:
         assert result is False
         assert agent._anthropic_api_key == "opaque-relay-key"
 
-
-
 class TestOAuthFlagOnCredentialSwap:
     """Site 4 — _swap_credential (credential pool rotation)."""
 
@@ -169,7 +164,6 @@ class TestOAuthFlagOnCredentialSwap:
             agent._swap_credential(entry)
 
         assert agent._is_anthropic_oauth is False
-
 
 class TestOAuthFlagOnConstruction:
     """Site 1 — AIAgent.__init__ on a third-party anthropic_messages provider."""
@@ -200,8 +194,3 @@ class TestOAuthFlagOnConstruction:
         # stale Anthropic OAuth token, and the OAuth flag must be False.
         assert agent._anthropic_api_key == "minimax-key-1234"
         assert agent._is_anthropic_oauth is False
-
-
-
-
-

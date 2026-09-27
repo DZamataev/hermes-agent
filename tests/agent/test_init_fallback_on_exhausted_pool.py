@@ -170,7 +170,7 @@ def test_init_fallback_takes_the_routes_declared_capabilities(tmp_path, monkeypa
     """Real config, real ``resolve_provider_client`` for the fallback: the session takes the map the
     entry declares (not only the OAuth bit the Anthropic wrapper happens to carry), and a
     query-bearing endpoint keeps its tenant query on the client the session goes on with."""
-    import yaml
+    import hermes_yaml as yaml
 
     import agent.auxiliary_client as aux
 
