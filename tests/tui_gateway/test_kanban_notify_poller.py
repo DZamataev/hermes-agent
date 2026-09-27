@@ -523,6 +523,58 @@ class TestFormatKanbanEventText:
         ev = SimpleNamespace(kind="completed", payload={"summary": "shipped"})
         assert "fallback" not in _format_kanban_event_text(self.SUB, self.TASK, ev, "")
 
+    def test_full_summary_is_cut_exactly_past_the_limit(self):
+        from tui_gateway.session_notifications import _TUI_SUMMARY_LIMIT
+        ev = SimpleNamespace(kind="completed", payload={"summary": "first"})
+        at_limit = _format_kanban_event_text(self.SUB, self.TASK, ev, "", full_summary="z" * _TUI_SUMMARY_LIMIT)
+        over = _format_kanban_event_text(self.SUB, self.TASK, ev, "", full_summary="z" * (_TUI_SUMMARY_LIMIT + 1))
+        assert "truncated" not in at_limit
+        assert over.endswith("z" * _TUI_SUMMARY_LIMIT + "\n… (truncated; hermes kanban show t_abc123)")
+
+
+class TestCompletionCarriesTheWholeSummary:
+    """The session gets the closing run's full summary, not its first line."""
+
+    def _complete_claimed(self, summary: str) -> str:
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            kb.claim_task(conn, tid)
+            run_id = kb._current_run_id(conn, tid)
+            assert kb.complete_task(conn, tid, summary=summary, expected_run_id=run_id)
+        finally:
+            conn.close()
+        return tid
+
+    def test_every_summary_line_reaches_the_session(self):
+        lines = [f"line {i}: evidence" for i in range(1, 6)]
+        self._complete_claimed("\n".join(lines))
+        texts = _collect_kanban_notifications(_session())
+        assert len(texts) == 1
+        for line in lines:
+            assert line in texts[0]
+
+    def test_a_long_summary_is_cut_at_the_limit_with_a_pointer(self):
+        from tui_gateway.session_notifications import _TUI_SUMMARY_LIMIT
+        summary = "x" * 50 + "\n" + "y" * (_TUI_SUMMARY_LIMIT + 500)
+        tid = self._complete_claimed(summary)
+        text = _collect_kanban_notifications(_session())[0]
+        head, handoff = text.split("\n", 1)
+        assert handoff == summary[:_TUI_SUMMARY_LIMIT] + f"\n… (truncated; hermes kanban show {tid})"
+
+    def test_a_completion_without_a_run_reads_as_before(self):
+        tid = _create_subscribed_task()
+        _complete(tid, summary="first line\nsecond line")
+        conn = kbc.connect()
+        try:
+            ev = [e for e in kb.list_events(conn, tid) if e.kind == "completed"][-1]
+            with kb.write_txn(conn):
+                conn.execute("UPDATE task_events SET run_id = NULL WHERE id = ?", (ev.id,))
+        finally:
+            conn.close()
+        text = _collect_kanban_notifications(_session())[0]
+        assert text.endswith("\nfirst line")
+
 
 class TestNotificationPollerLoopKanbanWiring:
     """Drive a real TUI subscription through ``_notification_poller_loop``.

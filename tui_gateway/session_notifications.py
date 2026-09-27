@@ -301,15 +301,29 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
             mgr.abandon_tick()
 
 
+_TUI_SUMMARY_LIMIT = 4000
+
+
 def _kb_first_line(value: Any, limit: int) -> str:
     lines = str(value).strip().splitlines()
     return f"\n{lines[0][:limit]}" if lines else ""
 
 
-def _kb_completed(task, payload: dict, title: str) -> str:
-    """A worker that finished on a fallback model says so in the title line."""
-    handoff = (_kb_first_line(payload["summary"], 200) if payload.get("summary")
-               else _kb_first_line(task.result, 160) if getattr(task, "result", None) else "")
+def _kb_full_summary(value: str, task_id: str) -> str:
+    text = str(value).strip()
+    if len(text) <= _TUI_SUMMARY_LIMIT:
+        return f"\n{text}" if text else ""
+    return f"\n{text[:_TUI_SUMMARY_LIMIT]}\n… (truncated; hermes kanban show {task_id})"
+
+
+def _kb_completed(task, payload: dict, title: str, *, full_summary: Optional[str] = None, task_id: str = "") -> str:
+    """The closing run's whole summary when the poller found it (the event payload keeps only the first line);
+    otherwise the first line, as before. A worker that finished on a fallback model says so in the title line."""
+    if full_summary:
+        handoff = _kb_full_summary(full_summary, task_id)
+    else:
+        handoff = (_kb_first_line(payload["summary"], 200) if payload.get("summary")
+                   else _kb_first_line(task.result, 160) if getattr(task, "result", None) else "")
     fallback = payload.get("fallback") if isinstance(payload.get("fallback"), dict) else None
     switched = f" · fallback {fallback.get('from_model') or '?'} → {fallback.get('to_model') or '?'}" if fallback else ""
     return f" done — {title}{switched}{handoff}"
@@ -339,9 +353,10 @@ def _kanban_describe_quiescent(payload: dict) -> str:
     return describe_board_quiescent(payload)
 
 
-def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[str]:
-    """Single-line notification text for one kanban event; wording mirrors gateway/kanban_watchers.py (reads the same
-    as on Telegram). None for silent kinds."""
+def _format_kanban_event_text(sub: dict, task, ev, board_slug: str, *, full_summary: Optional[str] = None) -> Optional[str]:
+    """Notification text for one kanban event; wording mirrors gateway/kanban_watchers.py (reads the same as on
+    Telegram). None for silent kinds. ``full_summary`` (the closing run's summary) replaces a completion's first
+    line with the whole text, capped at ``_TUI_SUMMARY_LIMIT``."""
     if (entry := _KANBAN_EVENT_FORMATTERS.get(getattr(ev, "kind", ""))) is None:
         return None
     glyph, fmt = entry
@@ -352,7 +367,19 @@ def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[
     title = (getattr(task, "title", None) or task_id)[:120]
     who = getattr(task, "assignee", None) or ""
     prefix = f"{glyph} " + (f"[{board_slug}] " if board_slug else "") + (f"@{who} " if who else "")
-    return f"{prefix}Kanban {task_id}{fmt(task, getattr(ev, 'payload', None) or {}, title)}"
+    payload = getattr(ev, "payload", None) or {}
+    body = (_kb_completed(task, payload, title, full_summary=full_summary, task_id=task_id)
+            if getattr(ev, "kind", "") == "completed" else fmt(task, payload, title))
+    return f"{prefix}Kanban {task_id}{body}"
+
+
+def _kb_run_summary(_kb, conn, ev) -> Optional[str]:
+    """The closing run's full summary for a ``completed`` event; None for a legacy row without a run id."""
+    if getattr(ev, "kind", "") != "completed" or not getattr(ev, "run_id", None):
+        return None
+    with contextlib.suppress(Exception):
+        return getattr(_kb.get_run(conn, ev.run_id), "summary", None) or None
+    return None
 
 
 def _kb_board_key(_kb, board_meta) -> tuple[str, str]:
@@ -433,7 +460,7 @@ def _kb_poll_board(_kb, slug: str, session: dict, sub_keys: tuple) -> list:
                 if seen_as in shown or not _kbn.quiescent_addressed_to(conn, ev, sub):
                     continue
                 shown.add(seen_as)
-                text = _format_kanban_event_text(sub, task, ev, slug)
+                text = _format_kanban_event_text(sub, task, ev, slug, full_summary=_kb_run_summary(_kb, conn, ev))
                 if text:
                     texts.append(DiagnosticText(text) if diagnostic_event(ev) else text)
             # Unsubscribe only on archive: ``done`` is reversible in review/controller flows, so keeping the sub lets a
