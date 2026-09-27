@@ -1322,3 +1322,41 @@ def test_fallback_refusal_is_recorded_on_the_workers_run(worker_env):
     assert len(events) == 1
     assert str(events[0].run_id) == os.environ["HERMES_KANBAN_RUN_ID"]
     assert events[0].payload == {"model": "opus", "provider": "teamclaude", "reason": "billing"}
+
+
+def test_local_commit_refusal_reaches_the_worker_and_a_retry_after_a_commit_succeeds(worker_env, tmp_path):
+    """The gate's refusal is the tool result the worker reads; the card stays in flight, so committing and
+    calling kanban_complete again is all it takes."""
+    import subprocess
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (repo / "a.txt").write_text("a\n")
+    git("add", "a.txt")
+    git("commit", "-qm", "base")
+    run_id = int(os.environ["HERMES_KANBAN_RUN_ID"])
+    with kbc.connect_closing() as conn, kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET completion_contract='local-commit', workspace_path=? WHERE id=?",
+                     (str(repo), worker_env))
+        kb._append_event(conn, worker_env, "workspace_head", {"head": git("rev-parse", "HEAD")}, run_id=run_id)
+    (repo / "b.txt").write_text("b\n")
+
+    refused = json.loads(kt._handle_complete({"summary": "done, trust me"}))
+    assert "git status --porcelain" in refused["error"]
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, worker_env)
+        assert (task.status, task.current_run_id) == ("running", run_id)
+
+    git("add", "b.txt")
+    git("commit", "-qm", "work")
+    ok = json.loads(kt._handle_complete({"summary": "committed"}))
+    assert ok.get("ok") is True
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, worker_env).status == "done"

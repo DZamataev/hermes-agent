@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from hermes_cli.kanban_db_connect import write_txn
-from hermes_cli.kanban_pr_acceptance import _PR, collect_acceptance
+from hermes_cli.kanban_pr_acceptance import _PR, collect_acceptance, collect_commit_acceptance
 
 
 def _snapshot(conn, task_id):
@@ -19,6 +19,8 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
         return None
     if status not in {"running", "ready", "blocked", "review"} or (expected_run_id is not None and run_id != expected_run_id):
         return False
+    if contract == "local-commit":
+        return snapshot, collect_commit_acceptance(conn, task_id, run_id)
     published_pr = metadata.get("published_pr") if isinstance(metadata, dict) else None
     match = _PR.fullmatch(published_pr) if isinstance(published_pr, str) else None
     # Publication binds once. Retrying cannot replace the task's PR with a green sibling.
@@ -38,8 +40,10 @@ def record_acceptance(conn, task_id, acceptance):
     snapshot, receipt = acceptance
     if _snapshot(conn, task_id) != snapshot:
         return False
-    _append_event(conn, task_id, "pr_acceptance", receipt, run_id=snapshot[0])
+    kind = receipt.get("event_kind", "pr_acceptance")
+    _append_event(conn, task_id, kind, receipt, run_id=snapshot[0])
     if not receipt["ok"]:
-        detail = f"PR acceptance {receipt['classification']}: {receipt.get('detail', '')} {receipt['recovery']}"
+        label = "Commit acceptance" if kind == "commit_acceptance" else "PR acceptance"
+        detail = f"{label} {receipt['classification']}: {receipt.get('detail', '')} {receipt['recovery']}"
         conn.execute("UPDATE tasks SET last_failure_error=? WHERE id=?", (detail, task_id))
     return receipt["ok"]

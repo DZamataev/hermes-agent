@@ -17,9 +17,45 @@ _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([
 def validate_contract(value: str | None) -> str:
     if value is None or value == "local-only":
         return "local-only"
+    if value == "local-commit":
+        return value
     if not isinstance(value, str) or not (_REPO.fullmatch(value) or _PR.fullmatch(value)):
-        raise ValueError("completion_contract must be local-only, OWNER/REPO, or an exact GitHub PR URL")
+        raise ValueError("completion_contract must be local-only, local-commit, OWNER/REPO, or an exact GitHub PR URL")
     return value
+
+
+def collect_commit_acceptance(conn, task_id: str, run_id: int | None) -> dict:
+    """``local-commit``: accept ``done`` only on a clean workspace whose HEAD moved since the run started
+    (``workspace_head`` event, recorded by the dispatcher at claim). Anything unknown fails closed."""
+    from hermes_cli.kanban_db import _json_dict, _latest_event, _row_get
+    from hermes_cli.worktree_ops import _git_out, _worktree_is_dirty
+    receipt = {"ok": False, "classification": "missing", "head_sha": None, "event_kind": "commit_acceptance",
+               "recovery": "This run has no recorded start commit (claimed before local-commit existed, or git "
+                           "failed at claim). Use kanban_block and ask the operator to requeue the card."}
+    row = conn.execute("SELECT workspace_path FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    path = row[0] if row else None
+    start = _json_dict(_row_get(_latest_event(conn, task_id, "workspace_head", run_id), "payload")).get("head") \
+        if run_id is not None else None
+    if not path or not start:
+        return receipt
+    if _worktree_is_dirty(path):
+        receipt.update(classification="dirty", recovery=f"Commit or discard every change in {path} (git status "
+                       "--porcelain is not empty), then retry kanban_complete.")
+        return receipt
+    try:
+        head = _git_out(["rev-parse", "HEAD"], path)
+    except Exception:
+        head = None
+    receipt["head_sha"] = head
+    if not head:
+        return receipt
+    if head == start:
+        receipt.update(classification="no_commit", recovery=f"No commit since the run started ({start}). Commit "
+                       "your work, then retry kanban_complete; if this card intentionally changes nothing, say so "
+                       "with kanban_block.")
+        return receipt
+    receipt.update(ok=True, classification="success", start_sha=start, recovery="")
+    return receipt
 
 
 def _api(endpoint: str, *, query: str | None = None, paginate: bool = False):

@@ -2092,6 +2092,19 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _record_workspace_head(conn: sqlite3.Connection, claimed, workspace) -> None:
+    """``local-commit``: remember the workspace HEAD this run starts from, so completion can prove a commit was
+    made. A git failure records ``None``, which the completion gate treats as missing (fail closed)."""
+    from hermes_cli.worktree_ops import _git_out
+    try:
+        head = _git_out(["rev-parse", "HEAD"], str(workspace))
+    except Exception:
+        head = None
+    with _kb.write_txn(conn):
+        _kb._append_event(conn, claimed.id, "workspace_head", {"head": head or None},
+                          run_id=claimed.current_run_id)
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2170,6 +2183,8 @@ def _dispatch_lane_task(
             result.auto_blocked.append(claimed.id)
         return False
     _kbw.set_workspace_path(conn, claimed.id, str(workspace))
+    if claimed.completion_contract == "local-commit":
+        _record_workspace_head(conn, claimed, workspace)
     if claimed.workspace_kind == "worktree":
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
