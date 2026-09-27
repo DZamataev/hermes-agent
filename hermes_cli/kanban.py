@@ -205,7 +205,7 @@ def _profile_author() -> str:
 
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
-    "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
+    "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink", "replace",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
@@ -729,6 +729,18 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
         ok = kb.unlink_tasks(conn, args.parent_id, args.child_id)
     return _ok_or_err(ok, f"No such link: {args.parent_id} -> {args.child_id}",
                       f"Unlinked {args.parent_id} -> {args.child_id}")
+
+
+def _cmd_replace(args: argparse.Namespace) -> int:
+    with kbc.connect_closing() as conn:
+        out = kb.replace_task(conn, args.old_id, args.new_id)
+    if getattr(args, "json", False):
+        print(json.dumps(out))
+        return 0
+    moved = ", ".join(out["moved_children"]) or "none"
+    print(f"Replaced {out['old']} with {out['new']} (children moved: {moved}; "
+          f"subscriptions: {out['subscriptions']}); {out['old']} archived")
+    return 0
 
 
 def _cmd_claim(args: argparse.Namespace) -> int:
@@ -1322,7 +1334,7 @@ _HANDLERS = {
     "assign": _cmd_assign, "set-model": _cmd_set_model,
     "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
     "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
-    "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
+    "link": _cmd_link, "unlink": _cmd_unlink, "replace": _cmd_replace, "claim": _cmd_claim,
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
     "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,

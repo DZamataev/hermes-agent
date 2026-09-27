@@ -274,6 +274,13 @@ _SPECS = [
     ], aliases=["diag"], help="List active diagnostics on the current board"),
     _cmd("link", [_arg("parent_id"), _arg("child_id")], help="Add a parent->child dependency"),
     _cmd("unlink", [_arg("parent_id"), _arg("child_id")], help="Remove a parent->child dependency"),
+    _cmd("replace", [
+        _arg("old_id"),
+        _arg("--with", dest="new_id", required=True, metavar="NEW",
+             help="Card that takes OLD's place (create it first, with its own parents)"),
+        _json_flag(),
+    ], help="Swap a card in a chain: OLD's children and session subscriptions move to NEW, OLD is "
+            "archived. OLD's parents are not copied. Refused while OLD is running or in review."),
     _cmd("claim", [
         _TASK_ID,
         _arg("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS, help="Claim TTL in seconds (default: 900)"),

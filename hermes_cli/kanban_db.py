@@ -1731,6 +1731,41 @@ def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
     return removed
 
 
+def replace_task(conn: sqlite3.Connection, old_id: str, new_id: str) -> dict:
+    """Swap ``old_id`` for ``new_id`` in the graph: OLD's children depend on NEW instead, OLD's notify
+    subscriptions move to NEW (cursor caught up, no replay), then OLD is archived.
+
+    OLD's *parents* are not copied: NEW was created with its own. A live OLD (``running``/``review``) is
+    refused, and a cycle through any moved child aborts the whole swap before an edge moves.
+    """
+    if old_id == new_id:
+        raise ValueError("a task cannot replace itself")
+    with write_txn(conn):
+        missing = _missing_task_ids(conn, [old_id, new_id])
+        if missing:
+            raise ValueError(f"unknown task(s): {', '.join(missing)}")
+        if _task_status(conn, old_id) in ("running", "review"):
+            raise ValueError(f"block or complete {old_id} first — a live worker is not replaced")
+        if _task_status(conn, new_id) == "archived":
+            raise ValueError(f"cannot replace {old_id} with archived {new_id}")
+        children = child_ids(conn, old_id)
+        for c in children:
+            if c == new_id or _would_cycle(conn, new_id, c):
+                raise ValueError(f"replacing {old_id} with {new_id} would create a cycle through {c}")
+        for c in children:
+            _link(conn, new_id, c)
+            conn.execute("DELETE FROM task_links WHERE parent_id = ? AND child_id = ?", (old_id, c))
+            _append_event(conn, c, "linked", {"parent": new_id, "child": c})
+            _append_event(conn, c, "unlinked", {"parent": old_id, "child": c})
+        subs = conn.execute("SELECT COUNT(*) FROM kanban_notify_subs WHERE task_id = ?", (old_id,)).fetchone()[0]
+        _inherit_notify_subs(conn, new_id, (old_id,))
+        _append_event(conn, old_id, "replaced", {"by": new_id})
+        _append_event(conn, new_id, "replaces", {"old": old_id})
+    recompute_ready(conn)
+    archive_task(conn, old_id)
+    return {"old": old_id, "new": new_id, "moved_children": children, "subscriptions": int(subs)}
+
+
 def _linked_ids(conn: sqlite3.Connection, want: str, where: str, task_id: str) -> list[str]:
     rows = conn.execute(
         f"SELECT {want} FROM task_links WHERE {where} = ? ORDER BY {want}", (task_id,)
