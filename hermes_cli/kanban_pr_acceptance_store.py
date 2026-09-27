@@ -44,6 +44,7 @@ def record_acceptance(conn, task_id, acceptance):
     _append_event(conn, task_id, kind, receipt, run_id=snapshot[0])
     if not receipt["ok"]:
         label = "Commit acceptance" if kind == "commit_acceptance" else "PR acceptance"
-        detail = f"{label} {receipt['classification']}: {receipt.get('detail', '')} {receipt['recovery']}"
+        parts = (receipt.get("detail") or "", receipt.get("recovery") or "")
+        detail = f"{label} {receipt['classification']}: " + " ".join(p for p in parts if p)
         conn.execute("UPDATE tasks SET last_failure_error=? WHERE id=?", (detail, task_id))
     return receipt["ok"]

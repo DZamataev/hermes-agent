@@ -1349,7 +1349,7 @@ def test_local_commit_refusal_reaches_the_worker_and_a_retry_after_a_commit_succ
     (repo / "b.txt").write_text("b\n")
 
     refused = json.loads(kt._handle_complete({"summary": "done, trust me"}))
-    assert "git status --porcelain" in refused["error"]
+    assert "?? b.txt" in refused["error"] and "retry kanban_complete" in refused["error"]
     with kbc.connect_closing() as conn:
         task = kb.get_task(conn, worker_env)
         assert (task.status, task.current_run_id) == ("running", run_id)

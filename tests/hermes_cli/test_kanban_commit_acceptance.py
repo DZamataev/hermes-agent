@@ -93,8 +93,24 @@ def test_an_uncommitted_file_is_refused_and_the_card_stays_running(repo):
     assert _complete(tid, run_id) is False
     task, receipts = _state(tid)
     assert task.status == "running"
-    assert "git status --porcelain" in task.last_failure_error
+    assert "?? dirty.txt" in task.last_failure_error
     assert receipts[-1]["classification"] == "dirty"
+
+
+def test_the_dirty_refusal_names_the_files_and_the_action_within_a_block_reason(repo):
+    """A worker often forwards the refusal as its block reason, which the session sees cut at ~160 chars:
+    the changed paths and "retry kanban_complete" must both fit there, however many files are dirty."""
+    tid, run_id = _dispatched(repo)
+    _commit(repo)
+    for i in range(12):
+        (repo / f"file_{i:02d}_with_a_long_enough_name.txt").write_text("x\n")
+
+    assert _complete(tid, run_id) is False
+    task, _ = _state(tid)
+    head = task.last_failure_error[:160]
+    assert head.startswith("Commit acceptance dirty: ?? file_00_")
+    assert "retry kanban_complete" in head
+    assert "  " not in head
 
 
 def test_a_clean_tree_without_a_new_commit_is_refused(repo):
@@ -104,7 +120,7 @@ def test_a_clean_tree_without_a_new_commit_is_refused(repo):
     task, receipts = _state(tid)
     assert task.status == "running"
     assert receipts[-1]["classification"] == "no_commit"
-    assert "No commit since the run started" in task.last_failure_error
+    assert task.last_failure_error.startswith("Commit acceptance no_commit: No commit since the run started")
 
 
 def test_a_run_without_a_recorded_start_head_is_refused_as_missing(repo):

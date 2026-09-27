@@ -24,6 +24,23 @@ def validate_contract(value: str | None) -> str:
     return value
 
 
+def _dirty_paths(path: str, limit: int = 3, width: int = 60) -> str:
+    """The first ``git status --porcelain`` lines, short enough that the refusal's action still fits in a
+    ~160-char block reason (what the session sees when the worker forwards it)."""
+    from hermes_cli.worktree_ops import _git_out
+    try:
+        lines = (_git_out(["status", "--porcelain", "--untracked-files=all"], path) or "").splitlines()
+    except Exception:
+        lines = []
+    if not lines:
+        return "git status --porcelain is not empty;"
+    shown = "; ".join(lines[:limit])
+    if len(shown) > width:
+        shown = shown[:width - 1] + "…"
+    more = f" (+{len(lines) - limit} more)" if len(lines) > limit else ""
+    return f"{shown}{more} —"
+
+
 def collect_commit_acceptance(conn, task_id: str, run_id: int | None) -> dict:
     """``local-commit``: accept ``done`` only on a clean workspace whose HEAD moved since the run started
     (``workspace_head`` event, recorded by the dispatcher at claim). Anything unknown fails closed."""
@@ -39,8 +56,8 @@ def collect_commit_acceptance(conn, task_id: str, run_id: int | None) -> dict:
     if not path or not start:
         return receipt
     if _worktree_is_dirty(path):
-        receipt.update(classification="dirty", recovery=f"Commit or discard every change in {path} (git status "
-                       "--porcelain is not empty), then retry kanban_complete.")
+        receipt.update(classification="dirty", detail=_dirty_paths(path),
+                       recovery="commit or discard, then retry kanban_complete.")
         return receipt
     try:
         head = _git_out(["rev-parse", "HEAD"], path)
