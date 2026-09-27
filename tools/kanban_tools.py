@@ -581,6 +581,40 @@ def heartbeat_current_worker_from_env() -> bool:
         return False
 
 
+def _record_worker_run_event(kind: str, payload: dict) -> bool:
+    """Append ``kind`` to the dispatcher-owned worker's current run; True iff written.
+    Same bridge contract as the heartbeat: no-op outside that worker, never raises."""
+    tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not tid or not _is_dispatcher_owned_worker():
+        return False
+    try:
+        with _board(None, quiet_close=True) as (kb, conn):
+            with kb.write_txn(conn):
+                kb._append_event(conn, tid, kind, payload, run_id=_worker_run_id(tid))
+        return True
+    except Exception:
+        logger.debug("kanban %s bridge for %s failed", kind, tid, exc_info=True)
+        return False
+
+
+def _reason_text(reason: Any) -> str:
+    return str(getattr(reason, "value", reason) or "")
+
+
+def record_model_fallback_from_env(reason, old_model, old_provider, fb_model, fb_provider) -> bool:
+    """A worker that switched model mid-run says so on the board: otherwise a card finished
+    by a weaker fallback looks exactly like one finished by the profile's model."""
+    return _record_worker_run_event("model_fallback", {
+        "from_model": old_model, "from_provider": old_provider,
+        "to_model": fb_model, "to_provider": fb_provider, "reason": _reason_text(reason)})
+
+
+def record_fallback_refused_from_env(reason, model, provider) -> bool:
+    """``kanban.worker_fallback: wait`` refused a switch; the run ends on the primary's error."""
+    return _record_worker_run_event("model_fallback_refused", {
+        "model": model, "provider": provider, "reason": _reason_text(reason)})
+
+
 # Live operator-note injection: poll the task for new comments and steer them in
 # OUT-OF-BAND, so a user can talk to a running task without block → comment → unblock.
 # Watermarked per task (seeded on first poll: that history is already in the context).

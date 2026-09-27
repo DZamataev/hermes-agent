@@ -9,6 +9,7 @@ Verifies:
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -1250,3 +1251,74 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Model-fallback bridge: a worker's model switch lands on its own run
+# ---------------------------------------------------------------------------
+
+def _events_of(tid: str, kind: str):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        return [e for e in kb.list_events(conn, tid) if e.kind == kind]
+    finally:
+        conn.close()
+
+
+def test_model_fallback_is_recorded_on_the_workers_run(worker_env):
+    from agent.error_classifier import FailoverReason
+    from tools import kanban_tools as kt
+
+    assert kt.record_model_fallback_from_env(
+        FailoverReason.rate_limit, "opus", "teamclaude", "sonnet", "openrouter") is True
+
+    events = _events_of(worker_env, "model_fallback")
+    assert len(events) == 1
+    ev = events[0]
+    assert str(ev.run_id) == os.environ["HERMES_KANBAN_RUN_ID"]
+    assert ev.payload == {"from_model": "opus", "from_provider": "teamclaude",
+                          "to_model": "sonnet", "to_provider": "openrouter",
+                          "reason": "rate_limit"}
+
+
+def test_model_fallback_outside_a_worker_writes_nothing(worker_env, monkeypatch):
+    from tools import kanban_tools as kt
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+
+    assert kt.record_model_fallback_from_env(None, "a", "p", "b", "q") is False
+    assert _events_of(worker_env, "model_fallback") == []
+
+
+def test_model_fallback_in_a_delegated_child_writes_nothing(worker_env):
+    from agent.delegation_context import delegated_child_context
+    from tools import kanban_tools as kt
+
+    with delegated_child_context():
+        assert kt.record_model_fallback_from_env(None, "a", "p", "b", "q") is False
+        assert kt.record_fallback_refused_from_env(None, "a", "p") is False
+    assert _events_of(worker_env, "model_fallback") == []
+    assert _events_of(worker_env, "model_fallback_refused") == []
+
+
+def test_model_fallback_in_an_in_process_cron_job_writes_nothing(worker_env):
+    """A cron job fired inside the worker inherits HERMES_KANBAN_TASK but is not the worker;
+    the board has no fence for it, so only the ownership check keeps its switch off the run."""
+    from agent.delegation_context import non_dispatcher_owned_context
+    from tools import kanban_tools as kt
+
+    with non_dispatcher_owned_context():
+        assert kt.record_model_fallback_from_env(None, "a", "p", "b", "q") is False
+    assert _events_of(worker_env, "model_fallback") == []
+
+
+def test_fallback_refusal_is_recorded_on_the_workers_run(worker_env):
+    from agent.error_classifier import FailoverReason
+    from tools import kanban_tools as kt
+
+    assert kt.record_fallback_refused_from_env(FailoverReason.billing, "opus", "teamclaude") is True
+    events = _events_of(worker_env, "model_fallback_refused")
+    assert len(events) == 1
+    assert str(events[0].run_id) == os.environ["HERMES_KANBAN_RUN_ID"]
+    assert events[0].payload == {"model": "opus", "provider": "teamclaude", "reason": "billing"}

@@ -1920,7 +1920,12 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
 def _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider) -> None:
     """A billing switch is a WARNING naming the profile, both models and the remedy: the gateway
     persists the turn as a transient failure otherwise, and nothing in the log says the paid
-    model was refused for credits or how to fix it (#115702). Other reasons stay INFO."""
+    model was refused for credits or how to fix it (#115702). Other reasons stay INFO. A Kanban
+    worker's switch also lands on its run, so the completion can say which model finished."""
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        with contextlib.suppress(Exception):
+            from tools.kanban_tools import record_model_fallback_from_env
+            record_model_fallback_from_env(reason, old_model, old_provider, fb_model, fb_provider)
     if reason != FailoverReason.billing:
         logger.info("Fallback activated: %s → %s (%s)", old_model, fb_model, fb_provider)
         return
@@ -2077,9 +2082,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
-    from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
+    from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset, worker_fallback_refused
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
+    if worker_fallback_refused(agent, reason):
+        return _fallback_chain_exhausted(agent, reason)
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):

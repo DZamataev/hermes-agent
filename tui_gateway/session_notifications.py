@@ -307,9 +307,12 @@ def _kb_first_line(value: Any, limit: int) -> str:
 
 
 def _kb_completed(task, payload: dict, title: str) -> str:
+    """A worker that finished on a fallback model says so in the title line."""
     handoff = (_kb_first_line(payload["summary"], 200) if payload.get("summary")
                else _kb_first_line(task.result, 160) if getattr(task, "result", None) else "")
-    return f" done — {title}{handoff}"
+    fallback = payload.get("fallback") if isinstance(payload.get("fallback"), dict) else None
+    switched = f" · fallback {fallback.get('from_model') or '?'} → {fallback.get('to_model') or '?'}" if fallback else ""
+    return f" done — {title}{switched}{handoff}"
 
 
 def _kb_timed_out(task, payload: dict, title: str) -> str:

@@ -85,6 +85,25 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_kanban_show_lists_model_fallback_events(kanban_home):
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="t", assignee="w")
+        kb.claim_task(conn, tid)
+        run_id = kb._current_run_id(conn, tid)
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, "model_fallback", {"to_model": "sonnet"}, run_id=run_id)
+            kb._append_event(conn, tid, "model_fallback_refused", {"model": "opus"}, run_id=run_id)
+
+    text = kc.run_slash(f"show {tid}")
+    shown = json.loads(kc.run_slash(f"show {tid} --json"))
+
+    assert f"[run {run_id}] model_fallback" in text
+    assert f"[run {run_id}] model_fallback_refused" in text
+    kinds = {e["kind"]: e for e in shown["events"]}
+    assert kinds["model_fallback"]["payload"] == {"to_model": "sonnet"}
+    assert kinds["model_fallback_refused"]["run_id"] == run_id
+
+
 def test_kanban_edit_updates_documented_task_fields(kanban_home):
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(conn, title="old title", body="old body", priority=2)

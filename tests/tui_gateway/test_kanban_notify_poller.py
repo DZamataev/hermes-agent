@@ -512,6 +512,17 @@ class TestFormatKanbanEventText:
         text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
         assert "timed out" in text
 
+    def test_completion_names_the_fallback_model(self):
+        ev = SimpleNamespace(kind="completed", payload={
+            "summary": "shipped", "fallback": {"from_model": "opus", "to_model": "sonnet"}})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert text.splitlines()[0].endswith("done — build the thing · fallback opus → sonnet")
+        assert text.splitlines()[1] == "shipped"
+
+    def test_completion_without_fallback_names_none(self):
+        ev = SimpleNamespace(kind="completed", payload={"summary": "shipped"})
+        assert "fallback" not in _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+
 
 class TestNotificationPollerLoopKanbanWiring:
     """Drive a real TUI subscription through ``_notification_poller_loop``.

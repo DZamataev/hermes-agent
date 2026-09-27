@@ -2831,7 +2831,8 @@ def complete_task(
             event_summary = _REVIEW_APPROVED_NOTE
         _append_event(
             conn, task_id, "completed",
-            _completed_event_payload(result, event_summary, verified_cards, metadata),
+            _completed_event_payload(result, event_summary, verified_cards, metadata,
+                                     fallback=_run_fallback(conn, task_id, run_id)),
             run_id=run_id,
         )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
@@ -2936,13 +2937,26 @@ def _cleaned_artifact_paths(metadata: Any) -> list[str]:
     return [str(p).strip() for p in raw if isinstance(p, str) and str(p).strip()]
 
 
+def _run_fallback(conn: sqlite3.Connection, task_id: str, run_id: Optional[int]) -> Optional[dict]:
+    """The closing run's last ``model_fallback``: which model actually finished the card.
+    A switch in an earlier run of the same card says nothing about this completion."""
+    if run_id is None:
+        return None
+    payload = _json_dict(_row_get(_latest_event(conn, task_id, "model_fallback", run_id), "payload"))
+    if not payload:
+        return None
+    return {k: payload.get(k) for k in ("from_model", "to_model", "to_provider")}
+
+
 def _completed_event_payload(
     result: Optional[str], event_summary: Optional[str], verified_cards: list[str], metadata: Any,
+    *, fallback: Optional[dict] = None,
 ) -> dict:
     """``completed`` event payload: first summary line (400 chars) so gateway
     notifiers / dashboard WS render without a second round-trip; verified
-    cards; and ``metadata["artifacts"]`` promoted so the notifier can upload
-    them as native attachments without fetching the run row."""
+    cards; ``metadata["artifacts"]`` promoted so the notifier can upload
+    them as native attachments without fetching the run row; and the run's
+    model ``fallback`` when the worker did not finish on its own model."""
     # Mirror CLI's _show_voice_status: include STT/TTS provider availability so the user can tell at a
     # glance *why* voice mode isn't working ("STT provider: MISSING ..." is the common case). ``record_key``
     # mirrors the configured ``voice.record_key`` so the TUI can both bind it (frontend
@@ -2958,6 +2972,8 @@ def _completed_event_payload(
         cleaned = _cleaned_artifact_paths(metadata)
         if cleaned:
             payload["artifacts"] = cleaned
+    if fallback:
+        payload["fallback"] = fallback
     return payload
 
 

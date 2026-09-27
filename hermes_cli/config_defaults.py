@@ -1877,6 +1877,13 @@ DEFAULT_CONFIG = {
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,
         # crashed) for the same task/profile. Reassignment resets the streak.
         "failure_limit": 2,
+        # What a dispatcher-spawned worker does when its model fails over (quota wall, outage):
+        # "allow" switches down the fallback chain as any session does (the switch is recorded on
+        # the run and shown in the completion); "wait" refuses the switch, so a quota wall ends the
+        # run as rate_limited and the card is requeued for the same model without counting a
+        # failure. Under "wait" a non-quota failover (5xx, empty replies) also ends the run, as an
+        # ordinary failure. Interactive sessions are never affected. Set it per worker profile.
+        "worker_fallback": "allow",
         # Worker stdout/stderr log rotation at spawn time (2 MiB + one backup). Raise to keep more
         # early failure evidence from long-running workers.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,

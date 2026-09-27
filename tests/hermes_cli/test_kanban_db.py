@@ -2066,3 +2066,44 @@ def test_an_upgraded_board_gains_delivered_event_id_and_delivers(kanban_home):
         assert tuple(row) == (9, 9)
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Completion carries the run's model fallback
+# ---------------------------------------------------------------------------
+
+def _fallback_event(conn, tid, run_id, to_model):
+    with kb.write_txn(conn):
+        kb._append_event(conn, tid, "model_fallback", {
+            "from_model": "opus", "from_provider": "teamclaude",
+            "to_model": to_model, "to_provider": "openrouter", "reason": "rate_limit"}, run_id=run_id)
+
+
+def _completed_payload(conn, tid):
+    return [e for e in kb.list_events(conn, tid) if e.kind == "completed"][-1].payload
+
+
+def test_completion_carries_the_closing_runs_fallback(kanban_home):
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="t", assignee="w")
+        kb.claim_task(conn, tid)
+        run_id = kb._current_run_id(conn, tid)
+        _fallback_event(conn, tid, run_id, "sonnet")
+        _fallback_event(conn, tid, run_id, "haiku")
+        assert kb.complete_task(conn, tid, summary="done", expected_run_id=run_id)
+        assert _completed_payload(conn, tid)["fallback"] == {
+            "from_model": "opus", "to_model": "haiku", "to_provider": "openrouter"}
+
+
+def test_completion_ignores_a_fallback_from_an_earlier_run(kanban_home):
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="t", assignee="w")
+        kb.claim_task(conn, tid)
+        first = kb._current_run_id(conn, tid)
+        _fallback_event(conn, tid, first, "sonnet")
+        assert kb.reclaim_task(conn, tid)
+        kb.claim_task(conn, tid)
+        second = kb._current_run_id(conn, tid)
+        assert second != first
+        assert kb.complete_task(conn, tid, summary="done", expected_run_id=second)
+        assert "fallback" not in _completed_payload(conn, tid)
