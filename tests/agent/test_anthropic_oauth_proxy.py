@@ -627,3 +627,42 @@ def test_pool_restore_onto_a_sibling_endpoint_drops_the_relays_oauth_identity(re
     finally:
         agent._anthropic_client.close()
 
+
+@pytest.mark.parametrize("api,query", [
+    ("https://relay.example.com/anthropic?tenant=a", {"tenant": "a"}),
+    ("https://relay.example.com/anthropic/v1?tenant=a&region=eu", {"tenant": "a", "region": "eu"}),
+])
+def test_query_selected_relay_keeps_its_path_and_query_on_the_wire(relay, tmp_path, api, query):
+    """Review 7, finding 4: the SDK joins ``/v1/messages`` onto ``base_url`` as text, so a query in
+    the relay URL used to swallow the request path (``?tenant=a/v1/messages``). A real ``AIAgent``
+    on a query-selected relay must hit ``/anthropic/v1/messages`` with the tenant as a query
+    parameter, and still carry the relay's declared OAuth identity."""
+    from agent.anthropic_adapter import build_anthropic_kwargs
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from run_agent import AIAgent
+
+    path = tmp_path / "config.yaml"
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    config["providers"]["relay"]["api"] = api
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    runtime = resolve_runtime_provider(requested="custom:relay", target_model=MODEL)
+    assert runtime["capabilities"] == {"anthropic_oauth_proxy": True}
+    agent = AIAgent(
+        model=MODEL, provider=runtime["provider"], api_key=runtime["api_key"],
+        base_url=runtime["base_url"], api_mode=runtime["api_mode"],
+        capabilities=runtime.get("capabilities"), enabled_toolsets=[], quiet_mode=True,
+        skip_context_files=True, skip_memory=True,
+    )
+    try:
+        kwargs = build_anthropic_kwargs(
+            model=MODEL, messages=[{"role": "user", "content": "hello"}], tools=TOOLS,
+            max_tokens=32, reasoning_config=None, is_oauth=agent._is_anthropic_oauth,
+            base_url=agent.base_url,
+        )
+        agent._anthropic_client.messages.create(**kwargs)
+        sent = relay[-1]
+        assert sent.url.path == "/anthropic/v1/messages"
+        assert dict(sent.url.params) == query
+        assert_wire(sent, True, TOOLS)
+    finally:
+        agent._anthropic_client.close()

@@ -359,14 +359,25 @@ def _base_client_kwargs(base_url, timeout) -> tuple[str, Dict[str, Any]]:
     """Shared SDK constructor kwargs -> ``(normalized_base_url, kwargs)``. Retry is delegated to
     hermes's outer loop (``max_retries=0``): the SDK default of 2 uses its own backoff that ignores
     Retry-After and double-retries inside our loop. Any trailing ``/v1`` is stripped because the
-    SDK appends ``/v1/messages``. Azure's ``api-version`` goes through ``default_query`` so the
-    base_url is not corrupted into ``/anthropic?api-version=.../v1/messages``."""
+    SDK appends ``/v1/messages``. A URL query goes through ``default_query``: the SDK joins the
+    request path onto ``base_url`` as text, so ``/anthropic?tenant=a`` would become
+    ``/anthropic?tenant=a/v1/messages`` — the path lost inside the query value. Azure's
+    ``api-version`` is added the same way when the URL does not carry one."""
     kwargs: Dict[str, Any] = {"timeout": _client_timeout(timeout), "max_retries": 0}
-    normalized = re.sub(r"/v1/?$", "", _normalize_base_url_text(base_url).rstrip("/"))
+    text = _normalize_base_url_text(base_url)
+    query: Dict[str, Any] = {}
+    if "?" in text:
+        from urllib.parse import parse_qs, urlsplit, urlunsplit
+        parts = urlsplit(text)
+        query = {k: v[0] if len(v) == 1 else v for k, v in parse_qs(parts.query, keep_blank_values=True).items()}
+        text = urlunsplit(parts._replace(query="", fragment=""))
+    normalized = re.sub(r"/v1/?$", "", text.rstrip("/"))
     if normalized:
         kwargs["base_url"] = normalized
-        if _is_azure_anthropic_endpoint(normalized) and "api-version" not in normalized:
-            kwargs["default_query"] = {"api-version": "2025-04-15"}
+        if _is_azure_anthropic_endpoint(normalized) and "api-version" not in query:
+            query["api-version"] = "2025-04-15"
+    if query:
+        kwargs["default_query"] = query
     return normalized, kwargs
 
 
