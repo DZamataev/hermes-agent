@@ -51,7 +51,10 @@ def _block_from_chat(monkeypatch, *, process_env: dict, source=None, sub_user: s
         task = kb.get_task(conn, tid)
         event = [e for e in kb.list_events(conn, tid) if e.kind == "blocked"][-1]
         sub = kbn.list_notify_subs(conn, tid)[0]
-        told = kbn.relevant_to(kb, conn, event, task, sub=sub) is not None
+        sub_session = runner._session_key_for_source(SessionSource(
+            platform=Platform.TELEGRAM, chat_id=sub["chat_id"], chat_type=sub.get("chat_type") or "group",
+            thread_id=sub.get("thread_id") or None, user_id=sub.get("user_id")))
+        told = kbn.relevant_to(kb, conn, event, task, sub=sub, sub_session=sub_session) is not None
     return event.payload, told
 
 
@@ -79,4 +82,10 @@ def test_another_users_block_in_a_shared_group_still_reaches_your_session(board,
 def test_your_own_block_in_a_shared_group_is_not_reported_back(board, monkeypatch):
     x = SessionSource(platform=Platform.TELEGRAM, user_id="uX", chat_id="-100G", user_name="x", chat_type="group")
     _, told = _block_from_chat(monkeypatch, process_env={}, source=x, sub_user="uX")
+    assert told is False
+
+
+def test_another_users_block_in_a_shared_forum_topic_is_the_shared_sessions_own(board, monkeypatch):
+    """A forum topic keeps one session for everyone in it: X's block there is that session's own action."""
+    _, told = _block_from_chat(monkeypatch, process_env={}, sub_user="uY")
     assert told is False

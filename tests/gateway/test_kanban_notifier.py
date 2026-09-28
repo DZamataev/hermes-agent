@@ -1159,23 +1159,73 @@ def test_a_block_made_from_the_subscribed_chat_is_not_reported_back_to_it(tmp_pa
     assert adapter.sent == [] and adapter.handled == []
 
 
-def test_another_users_block_in_a_shared_chat_is_delivered(tmp_path, monkeypatch):
-    """A group with a session per user: user X's block in the chat is news for user Y, who subscribed from it."""
+def _shared_chat_block(monkeypatch, tmp_path, *, thread: str, per_user: bool, sub_user: str, actor_user: str,
+                       with_session: bool = True, quiescent: bool = False):
+    """A group chat subscription (created by sub_user's turn) and a block made from the same chat by actor_user's
+    turn, as the gateway records it: the actor's session key under this gateway's session config."""
+    from types import SimpleNamespace
+    from gateway.session import SessionSource, build_session_key
+
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "shared-block.db"))
     kb.init_db()
+    actor = SessionSource(platform=Platform.TELEGRAM, chat_id="chat-1", chat_type="group", thread_id=thread or None,
+                          user_id=actor_user)
+    actor_session = build_session_key(actor, group_sessions_per_user=per_user)
     conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="shared", assignee="worker")
         kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="group",
-                           user_id="uY", delivery_mode="notify")
-        assert kb.block_task(conn, tid, reason="holding for X", actor_user="uX",
-                             actor_chat=kbn.chat_tag("telegram", "chat-1", ""))
+                           thread_id=thread, user_id=sub_user, delivery_mode="notify")
+        held = kb.create_task(conn, title="held", assignee="worker") if quiescent else tid
+        assert kb.block_task(conn, held, reason="holding it", actor_chat=kbn.chat_tag("telegram", "chat-1", thread),
+                             **({"actor_session": actor_session} if with_session else {}))
+        if quiescent:
+            kb._append_event(conn, tid, "board_quiescent", {"counts": {"blocked": 1}, "attention": [held]})
     finally:
         conn.close()
-
     adapter = RecordingAdapter()
-    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
-    assert any("holding for X" in m["text"] for m in adapter.sent)
+    runner = _make_runner(adapter)
+    runner.config = SimpleNamespace(group_sessions_per_user=per_user, thread_sessions_per_user=False,
+                                    multiplex_profiles=False)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    return [m["text"] for m in adapter.sent]
+
+
+def test_another_users_block_in_a_per_user_group_is_delivered(tmp_path, monkeypatch):
+    """A group with a session per user: user X's block is news for user Y's session."""
+    sent = _shared_chat_block(monkeypatch, tmp_path, thread="", per_user=True, sub_user="uY", actor_user="uX")
+    assert any("holding it" in t for t in sent)
+
+
+def test_your_own_block_in_a_per_user_group_is_not_reported_back(tmp_path, monkeypatch):
+    assert _shared_chat_block(monkeypatch, tmp_path, thread="", per_user=True, sub_user="uX", actor_user="uX") == []
+
+
+def test_a_block_from_a_shared_forum_topic_session_is_not_reported_back(tmp_path, monkeypatch):
+    """A forum topic keeps one session for everyone: X's block there is the subscriber's own session acting."""
+    assert _shared_chat_block(monkeypatch, tmp_path, thread="7", per_user=True, sub_user="uY", actor_user="uX") == []
+
+
+def test_a_block_from_a_shared_group_session_is_not_reported_back(tmp_path, monkeypatch):
+    """group_sessions_per_user=False: one session for the whole group, whoever typed."""
+    assert _shared_chat_block(monkeypatch, tmp_path, thread="", per_user=False, sub_user="uY", actor_user="uX") == []
+
+
+def test_an_older_block_without_a_session_still_matches_by_chat(tmp_path, monkeypatch):
+    """Blocks recorded before the actor session was stored name only the chat: they stay the chat's own."""
+    assert _shared_chat_block(monkeypatch, tmp_path, thread="", per_user=True, sub_user="uY", actor_user="uX",
+                              with_session=False) == []
+
+
+def test_an_idle_board_line_keeps_another_users_hold(tmp_path, monkeypatch):
+    sent = _shared_chat_block(monkeypatch, tmp_path, thread="", per_user=True, sub_user="uY", actor_user="uX",
+                              quiescent=True)
+    assert any("no work left" in t for t in sent)
+
+
+def test_an_idle_board_line_of_only_your_own_hold_says_nothing(tmp_path, monkeypatch):
+    assert _shared_chat_block(monkeypatch, tmp_path, thread="7", per_user=True, sub_user="uY", actor_user="uX",
+                              quiescent=True) == []
 
 
 def test_a_block_of_a_card_archived_before_delivery_is_not_reported(tmp_path, monkeypatch):

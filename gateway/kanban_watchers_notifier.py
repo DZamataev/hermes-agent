@@ -78,6 +78,26 @@ def _safe_review_reason(value: Any, limit: int = 160) -> str:
     return reason
 
 
+def _subscriber_session_key(runner: Any, sub: dict, platform: str) -> str:
+    """The session a chat subscription belongs to, under this gateway's session config (one session per chat or
+    per user), so a block made from that very session is recognised as its own. "" when it cannot be derived:
+    the caller then falls back to matching the chat."""
+    try:
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+        delivery_meta = sub.get("delivery_metadata") or {}
+        chat_type = str(sub.get("chat_type") or delivery_meta.get("chat_type") or "").strip() or "group"
+        source = SessionSource(platform=Platform(platform), chat_id=sub["chat_id"], chat_type=chat_type,
+                               thread_id=sub.get("thread_id") or None, user_id=sub.get("user_id"),
+                               user_id_alt=sub.get("user_id_alt"), profile=sub.get("notifier_profile") or None,
+                               scope_id=(delivery_meta.get("scope_id") or None) if isinstance(delivery_meta, dict)
+                               else None)
+        return str(runner._session_key_for_source(source) or "")
+    except Exception:
+        logger.debug("kanban notifier: cannot derive the subscriber's session key", exc_info=True)
+        return ""
+
+
 def _wake_scope_id(adapter: Any, sub: dict) -> Optional[str]:
     """Return the tenant scope (Slack workspace) a subscription's wake keys to.
 
@@ -308,7 +328,9 @@ class _Collector:
         # The subscriber's own block, a block of a card archived before delivery, and an idle-board line of only
         # such cards tell the chat nothing (same rule as the desktop poller).
         _task = self.kb.get_task(conn, sub["task_id"])
-        events = [ev for ev in (_kbn().relevant_to(self.kb, conn, ev, _task, sub=sub) for ev in events) if ev]
+        _session = _subscriber_session_key(self.runner, sub, platform)
+        events = [ev for ev in (_kbn().relevant_to(self.kb, conn, ev, _task, sub=sub, sub_session=_session)
+                                for ev in events) if ev]
         if not events:
             if cursor != old_cursor:  # claimed only announcements for another follower: nothing left to deliver
                 ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],

@@ -659,8 +659,8 @@ def inject_new_comments_from_env(agent: Any) -> bool:
     # past its reply — never move it back.
     if tid in _awaiting_reply or (_comment_watermark.get(tid) or 0) > seen:
         return False
-    # Advance past everything read (including our own notes) so nothing is re-injected; never backwards.
-    _comment_watermark[tid] = max(_comment_watermark.get(tid) or 0, max(c.id for c in rows))
+    # Advance past everything read (including our own notes) so nothing is re-injected.
+    _comment_watermark[tid] = max(c.id for c in rows)
     # Same resolution the write side used, so a worker skips its OWN comments even
     # when the dispatcher did not pin HERMES_PROFILE (echoed notes would otherwise
     # re-enter the live turn as fake operator steering).

@@ -3285,7 +3285,7 @@ def edit_task(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None, actor_session: Optional[str] = None,
-    actor_chat: Optional[str] = None, actor_user: Optional[str] = None,
+    actor_chat: Optional[str] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
@@ -3354,8 +3354,6 @@ def block_task(
         if actor_chat:
             # Same for a messenger chat (kanban_db_notify.chat_tag): the gateway keys its subscriptions by chat.
             payload["actor_chat"] = actor_chat
-        if actor_user:
-            payload["actor_user"] = actor_user
         sql = f"""
                 UPDATE tasks
                    SET status        = '{new_status}',

@@ -801,9 +801,6 @@ def block_actor(*, bound_only: bool = False) -> dict:
     platform, chat = var("HERMES_SESSION_PLATFORM"), var("HERMES_SESSION_CHAT_ID")
     if platform and chat:
         actor["actor_chat"] = chat_tag(platform, chat, var("HERMES_SESSION_THREAD_ID"))
-        # A group chat may keep a session per user: whose block it was decides whose subscription it silences.
-        if user := var("HERMES_SESSION_USER_ID"):
-            actor["actor_user"] = user
     return actor
 
 
@@ -811,20 +808,24 @@ def sub_chat_tag(sub: Mapping[str, Any]) -> str:
     return chat_tag(str(sub.get("platform") or ""), str(sub.get("chat_id") or ""), str(sub.get("thread_id") or ""))
 
 
-def _made_by(payload: Mapping[str, Any], sub_keys: tuple, chat: str, chat_user: str = "") -> bool:
-    """The subscriber did this itself: its session key, or its chat — and, when both the chat subscription and the
-    block name a user (a group with a session per user), the same user. Another user's block in a shared group is
-    news for this subscriber's session."""
-    if payload.get("actor_session") and payload.get("actor_session") in sub_keys:
+def _made_by(payload: Mapping[str, Any], sub_keys: tuple, chat: str, sub_session: str = "") -> bool:
+    """The subscriber did this itself: the block's session is one of its sessions (``sub_keys``), or — for a chat
+    subscription — the block came from the subscriber's chat session. A chat may keep one session for everyone (a
+    forum topic, ``group_sessions_per_user: false``) or one per user, so the session decides, not the chat or the
+    user: the caller passes the subscriber's own key under this gateway's config (``sub_session``). A block that
+    recorded no session (older events) falls back to the chat."""
+    actor_session = payload.get("actor_session")
+    if actor_session and actor_session in sub_keys:
         return True
     if not chat or payload.get("actor_chat") != chat:
         return False
-    actor_user = str(payload.get("actor_user") or "")
-    return not (chat_user and actor_user and chat_user != actor_user)
+    if actor_session and sub_session:
+        return actor_session == sub_session
+    return True
 
 
 def _own_hold_or_gone(kb, conn: sqlite3.Connection, task_id: str, sub_keys: tuple, chat: str,
-                      chat_user: str = "") -> bool:
+                      sub_session: str = "") -> bool:
     task = kb.get_task(conn, task_id)
     if task is None:
         return False  # another board's id or a purged card: not ours to judge, keep it listed
@@ -836,30 +837,30 @@ def _own_hold_or_gone(kb, conn: sqlite3.Connection, task_id: str, sub_keys: tupl
     row = conn.execute("SELECT payload FROM task_events WHERE task_id = ? AND kind = 'blocked' ORDER BY id DESC"
                        " LIMIT 1", (task_id,)).fetchone()
     try:
-        return bool(row and _made_by(json.loads(row[0] or "{}"), sub_keys, chat, chat_user))
+        return bool(row and _made_by(json.loads(row[0] or "{}"), sub_keys, chat, sub_session))
     except (TypeError, ValueError):
         return False
 
 
 def relevant_to(kb, conn: sqlite3.Connection, ev, task, *, sub_keys: tuple = (), chat: str = "",
-                sub: Optional[Mapping[str, Any]] = None):
+                sub: Optional[Mapping[str, Any]] = None, sub_session: str = ""):
     """The event as the subscriber should see it, or None. A block the subscriber made itself (its session key in
-    ``sub_keys``, or the chat subscription ``sub`` — its chat and user), a block of a card archived before delivery,
-    and an idle-board line whose every leftover card is such a hold say nothing it does not already know. Shared by
-    the gateway notifier and the TUI/desktop poller so both surfaces filter alike."""
+    ``sub_keys``, or from the chat subscription ``sub`` whose session is ``sub_session`` — see ``_made_by``), a block
+    of a card archived before delivery, and an idle-board line whose every leftover card is such a hold say nothing
+    it does not already know. Shared by the gateway notifier and the TUI/desktop poller so both surfaces filter
+    alike."""
     import dataclasses
-    chat_user = ""
     if sub is not None:
-        chat, chat_user = sub_chat_tag(sub), str(sub.get("user_id") or "")
+        chat = sub_chat_tag(sub)
     kind = getattr(ev, "kind", "")
     payload = getattr(ev, "payload", None) or {}
     if kind == "blocked":
-        if _made_by(payload, sub_keys, chat, chat_user) or getattr(task, "status", "") == "archived":
+        if _made_by(payload, sub_keys, chat, sub_session) or getattr(task, "status", "") == "archived":
             return None
         return ev
     if kind == "board_quiescent" and payload.get("attention"):
         attention = [t for t in payload["attention"]
-                     if not _own_hold_or_gone(kb, conn, str(t), sub_keys, chat, chat_user)]
+                     if not _own_hold_or_gone(kb, conn, str(t), sub_keys, chat, sub_session)]
         if not attention:
             return None
         if attention != payload["attention"]:
