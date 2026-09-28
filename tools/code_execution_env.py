@@ -135,6 +135,13 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     if _tz_name and not _IS_WINDOWS:
         child_env["TZ"] = _tz_name
     child_env.pop("HERMES_TIMEZONE", None)
+    # The calling session's key is a routing handle, not a secret: scripts that subscribe the
+    # session to Kanban cards read it, as they do from a terminal child. Bound context wins over
+    # the process mirror (one serve process hosts many sessions); unbound → absent.
+    from gateway.session_context import get_session_env
+    child_env.pop("HERMES_SESSION_KEY", None)
+    if _session_key := get_session_env("HERMES_SESSION_KEY", ""):
+        child_env["HERMES_SESSION_KEY"] = _session_key
     apply_subprocess_home_env(child_env)
     # Multiplexed gateway/Desktop (#110303): the server process env carries the machine-default
     # HERMES_HOME, but this turn runs under a per-profile override (ContextVar bound per turn).
