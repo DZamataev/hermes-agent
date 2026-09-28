@@ -81,7 +81,6 @@ describe('canFastAppendShape', () => {
     expect(canFastAppendShape('hello', 5, '\t', COLS, 5)).toBe(false)
     expect(canFastAppendShape('hello', 5, '\x7f', COLS, 5)).toBe(false)
   })
-
 })
 
 describe('canFastBackspaceShape', () => {
@@ -137,7 +136,6 @@ describe('canFastBackspaceShape', () => {
     expect(canFastBackspaceShape('hello world', 'hello world'.length, 20)).toBe(true)
     expect(canFastBackspaceShape('abcdefghi', 9, 6)).toBe(true) // visual line 1, col 3 → ok
   })
-
 })
 
 describe('colorizeEcho', () => {
@@ -194,7 +192,6 @@ describe('colorizeHint / hintCursorCell', () => {
       colorize(colorize('T', '#ffffff', 'foreground'), '#8a8094', 'background')
     )
   })
-
 })
 
 describe('supportsFastEchoTerminal', () => {
@@ -213,7 +210,7 @@ describe('supportsFastEchoTerminal', () => {
         TMUX: '/tmp/tmux-1000/default,1234,0',
         HERMES_TUI_TERMUX_FAST_ECHO: '1',
         TERMUX_VERSION: '0.118.0'
-      } as NodeJS.ProcessEnv)
+      })
     ).toBe(false)
   })
 
@@ -244,7 +241,7 @@ describe('supportsFastEchoTerminal', () => {
       supportsFastEchoTerminal({
         TERMUX_VERSION: '0.118.0',
         PREFIX: '/data/data/com.termux/files/usr'
-      } as NodeJS.ProcessEnv)
+      })
     ).toBe(false)
   })
 
@@ -253,8 +250,12 @@ describe('supportsFastEchoTerminal', () => {
       supportsFastEchoTerminal({
         HERMES_TUI_TERMUX_FAST_ECHO: '1',
         TERMUX_VERSION: '0.118.0'
-      } as NodeJS.ProcessEnv)
+      })
     ).toBe(true)
   })
 
+  it('keeps fast-echo enabled in VS Code and unknown terminals', () => {
+    expect(supportsFastEchoTerminal({ TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv)).toBe(true)
+    expect(supportsFastEchoTerminal({ TERM: 'xterm-256color' } as NodeJS.ProcessEnv)).toBe(true)
+  })
 })
