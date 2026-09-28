@@ -329,6 +329,17 @@ def _kb_completed(task, payload: dict, title: str, *, full_summary: Optional[str
     return f" done — {title}{switched}{handoff}"
 
 
+def _kb_blocked(payload: dict, task_id: str) -> str:
+    """The whole block reason (a worker explains what it needs there), capped like a completion summary: a
+    one-line reason stays on the title line, anything longer goes below it."""
+    reason = str(payload.get("reason") or "").strip()
+    if not reason:
+        return " blocked"
+    if "\n" not in reason and len(reason) <= _TUI_SUMMARY_LIMIT:
+        return f" blocked: {reason}"
+    return " blocked:" + _kb_full_summary(reason, task_id)
+
+
 def _kb_timed_out(task, payload: dict, title: str) -> str:
     with contextlib.suppress(TypeError, ValueError):
         return f" timed out (max_runtime={int(payload.get('limit_seconds') or 0)}s); will retry"
@@ -338,7 +349,7 @@ def _kb_timed_out(task, payload: dict, title: str) -> str:
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.
 _KANBAN_EVENT_FORMATTERS = {
     "completed": ("✔", _kb_completed),
-    "blocked": ("⏸", lambda t, p, title: " blocked" + (f": {str(p.get('reason'))[:160]}" if p.get("reason") else "")),
+    "blocked": ("⏸", lambda t, p, title: _kb_blocked(p, "")),
     "gave_up": ("✖", lambda t, p, title: " gave up after repeated spawn failures"
                 + (f"\n{str(p.get('error'))[:200]}" if p.get("error") else "")),
     "crashed": ("✖", lambda t, p, title: " worker crashed (pid gone); dispatcher will retry"),
@@ -369,7 +380,9 @@ def _format_kanban_event_text(sub: dict, task, ev, board_slug: str, *, full_summ
     prefix = f"{glyph} " + (f"[{board_slug}] " if board_slug else "") + (f"@{who} " if who else "")
     payload = getattr(ev, "payload", None) or {}
     body = (_kb_completed(task, payload, title, full_summary=full_summary, task_id=task_id)
-            if getattr(ev, "kind", "") == "completed" else fmt(task, payload, title))
+            if getattr(ev, "kind", "") == "completed"
+            else _kb_blocked(payload, task_id) if getattr(ev, "kind", "") == "blocked"
+            else fmt(task, payload, title))
     return f"{prefix}Kanban {task_id}{body}"
 
 

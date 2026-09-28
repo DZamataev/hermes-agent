@@ -531,6 +531,18 @@ class TestFormatKanbanEventText:
         assert "truncated" not in at_limit
         assert over.endswith("z" * _TUI_SUMMARY_LIMIT + "\n… (truncated; hermes kanban show t_abc123)")
 
+    def test_block_reason_arrives_whole(self):
+        reason = "No changes by design. " + "evidence " * 40 + "Please close this card as a no-op."
+        ev = SimpleNamespace(kind="blocked", payload={"reason": reason})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert text.endswith(reason)
+
+    def test_block_reason_is_cut_at_the_summary_limit_with_a_pointer(self):
+        from tui_gateway.session_notifications import _TUI_SUMMARY_LIMIT
+        ev = SimpleNamespace(kind="blocked", payload={"reason": "r" * (_TUI_SUMMARY_LIMIT + 1)})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert text.endswith("r" * _TUI_SUMMARY_LIMIT + "\n… (truncated; hermes kanban show t_abc123)")
+
 
 class TestCompletionCarriesTheWholeSummary:
     """The session gets the closing run's full summary, not its first line."""
