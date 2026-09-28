@@ -135,7 +135,7 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
 # Mirror gateway/kanban_watchers.py TERMINAL_KINDS: claim silent kinds (archived/unblocked) too so the cursor advances
 # past them and they can't wedge a later completed/blocked event behind an unclaimed row.
 _KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked",
-                        "board_quiescent")
+                        "board_quiescent", "question")
 # kanban, /loop + /heartbeat and the bot mailbox share one idle-poll cadence; probing the lease registry on
 # every 0.5s queue timeout cost ~a core at 11 sessions (#108005).
 _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = _BOT_DELIVERY_POLL_SECONDS = 5.0
@@ -356,7 +356,13 @@ _KANBAN_EVENT_FORMATTERS = {
     "timed_out": ("⏱", _kb_timed_out),
     "status": ("🔄", lambda t, p, title: f" → {p.get('status') or ''}"),
     "board_quiescent": ("🏁", lambda t, p, title: " — " + _kanban_describe_quiescent(p)),
+    "question": ("❓", None),  # needs the task id: rendered in _format_kanban_event_text
 }
+
+
+def _kb_question(payload: dict, title: str, task_id: str) -> str:
+    from hermes_cli.kanban_db_notify import describe_question
+    return f" asks — {title}\n" + describe_question(task_id, payload)
 
 
 def _kanban_describe_quiescent(payload: dict) -> str:
@@ -382,6 +388,7 @@ def _format_kanban_event_text(sub: dict, task, ev, board_slug: str, *, full_summ
     body = (_kb_completed(task, payload, title, full_summary=full_summary, task_id=task_id)
             if getattr(ev, "kind", "") == "completed"
             else _kb_blocked(payload, task_id) if getattr(ev, "kind", "") == "blocked"
+            else _kb_question(payload, title, task_id) if getattr(ev, "kind", "") == "question"
             else fmt(task, payload, title))
     return f"{prefix}Kanban {task_id}{body}"
 

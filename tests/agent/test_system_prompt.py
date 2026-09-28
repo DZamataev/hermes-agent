@@ -880,3 +880,12 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(agent)
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
+
+
+def test_kanban_guidance_tells_a_worker_it_can_ask_and_wait_for_an_answer():
+    """A worker with a question keeps its run: it asks with kanban_comment(await_reply_minutes=...) and waits; the
+    guidance must say so, and must not tell it that blocking is the only way to ask."""
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    assert "await_reply_minutes" in KANBAN_GUIDANCE
+    assert "kanban_comment` the context, then `kanban_block" not in KANBAN_GUIDANCE

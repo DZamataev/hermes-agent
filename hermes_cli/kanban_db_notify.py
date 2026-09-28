@@ -750,3 +750,21 @@ def describe_board_quiescent(payload: Mapping[str, Any]) -> str:
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
 from hermes_cli import kanban_db as _kb  # noqa: E402
+
+
+QUESTION_BODY_LIMIT = 4000
+
+
+def describe_question(task_id: str, payload: dict) -> str:
+    """A worker's waiting question as the notification shows it: the question (capped like a completion summary),
+    how long the worker waits, and the command whose comment is delivered to it as the answer."""
+    body = str(payload.get("body") or "").strip()
+    if len(body) > QUESTION_BODY_LIMIT:
+        body = body[:QUESTION_BODY_LIMIT].rstrip() + f"\n… (truncated; hermes kanban show {task_id})"
+    try:
+        minutes = int(payload.get("await_minutes") or 0)
+    except (TypeError, ValueError):
+        minutes = 0
+    wait = f"The worker waits up to {minutes} min" if minutes else "The worker waits"
+    return (f"{body}\n{wait} for the answer: hermes kanban comment {task_id} \"<answer>\" "
+            f"(no answer → it blocks or proceeds on a stated assumption).")

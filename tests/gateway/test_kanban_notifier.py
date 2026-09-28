@@ -743,6 +743,32 @@ def test_review_requested_wakes_the_origin_session(tmp_path, monkeypatch):
     )
 
 
+def test_a_worker_question_pings_and_wakes_the_origin(tmp_path, monkeypatch):
+    """A worker waiting in ``kanban_comment(await_reply_minutes=…)`` needs an answer within minutes: the question
+    is sent whole with the command to answer, and wakes the origin session."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "question.db"))
+    kb.init_db()
+    question = "Which API version: v1 or v2? " + "context " * 40
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="implement the thing", assignee="worker",
+                             session_id="agent:main:telegram:dm:chat-1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm",
+                           delivery_mode="notify+wake")
+        kb._append_event(conn, tid, "question", {"author": "pwaimpl", "body": question, "await_minutes": 10})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    (sent,) = adapter.sent
+    assert "❓" in sent["text"] and question.strip() in sent["text"]
+    assert f"hermes kanban comment {tid}" in sent["text"]
+    assert question.strip() in _wake_text(adapter)
+
+
 def test_block_loop_detected_wakes_the_origin_session(tmp_path, monkeypatch):
     """A triage escalation wakes the origin so a decision gets made."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "triage-wake.db"))

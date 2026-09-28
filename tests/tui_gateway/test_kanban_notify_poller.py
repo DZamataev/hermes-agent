@@ -391,6 +391,26 @@ class TestTheSessionIsNotToldAboutItsOwnActions:
         assert _collect_kanban_notifications(_session()) == []
 
 
+class TestAWorkerQuestionReachesTheSession:
+    """A worker that asks with ``kanban_comment(await_reply_minutes=…)`` is waiting on the orchestrator: the question
+    arrives whole, with the command to answer it, and wakes the session."""
+
+    def test_the_question_is_delivered_with_how_to_answer(self):
+        tid = _create_subscribed_task()
+        question = "Which API version should the client use: v1 or v2? " + "context " * 80
+        conn = kbc.connect()
+        try:
+            kb._append_event(conn, tid, "question", {"author": "pwaimpl", "body": question, "await_minutes": 10})
+        finally:
+            conn.close()
+
+        (text,) = _collect_kanban_notifications(_session())
+        assert "❓" in text and tid in text
+        assert question.strip() in text
+        assert f"hermes kanban comment {tid}" in text
+        assert "10 min" in text
+
+
 class TestBoardQuiescentReachesTheSession:
     def test_idle_board_announcement_is_delivered_with_leftovers(self):
         tid = _create_subscribed_task()

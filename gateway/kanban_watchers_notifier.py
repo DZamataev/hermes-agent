@@ -33,10 +33,11 @@ def _kbn():
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
-TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested", "board_quiescent")
+TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested", "board_quiescent", "question")
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
-_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected", "board_quiescent")
+# ``question``: a running worker asked with kanban_comment(await_reply_minutes=...) and holds its run for the reply.
+_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected", "board_quiescent", "question")
 
 
 def diagnostic_event(ev) -> bool:
@@ -424,6 +425,14 @@ def _fmt_changes_requested(ev, n) -> tuple:
     return msg, None, reason_text
 
 
+def _fmt_question(ev, n) -> tuple:
+    """A running worker waits for this answer (kanban_comment with await_reply_minutes): the question goes out whole
+    — it is what the reader must answer — with the one command that answers it."""
+    from hermes_cli.kanban_db_notify import describe_question
+    text = describe_question(n.task_id, ev.payload or {})
+    return f"❓ {n.head} — {n.title}\n{text}", text, None
+
+
 def _fmt_board_quiescent(ev, n) -> tuple:
     """The dispatcher found no running/ready/review card after work ran: the orchestrator decides what's next."""
     from hermes_cli.kanban_db_notify import describe_board_quiescent
@@ -489,6 +498,7 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "changes_requested": _fmt_changes_requested,
     "block_loop_detected": _fmt_block_loop_detected,
     "board_quiescent": _fmt_board_quiescent,
+    "question": _fmt_question,
 }
 
 

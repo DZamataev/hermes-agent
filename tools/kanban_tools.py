@@ -940,9 +940,66 @@ def _handle_comment(args: dict, **kw) -> str:
     # comment from an authoritative-looking name like ``hermes-system`` and poison the future-worker context
     # with what reads as a system directive. See #19713.
     author = _persisted_identity()
+    wait = args.get("await_reply_minutes")
+    if wait is not None:
+        return _ask_and_await(args.get("board"), tid, author, str(body), wait)
     with _board(args.get("board")) as (kb, conn):
         cid = kb.add_comment(conn, tid, author=author, body=str(body))
         return _ok(task_id=tid, comment_id=cid)
+
+
+# A worker's question to its orchestrator, answered inside the same run: the comment is posted with a
+# ``question`` event (which the orchestrator's session is notified of) and the tool call is held until someone
+# other than the worker comments on the card, the wait runs out, or the run is interrupted. The reply comes back
+# as the tool result, so the worker keeps its context instead of blocking and restarting cold.
+_AWAIT_MAX_MINUTES = 30
+_AWAIT_POLL_SECONDS = 5.0
+_AWAIT_MINUTE_SECONDS = 60.0
+
+
+def _await_interrupted() -> bool:
+    from tools.interrupt import is_interrupted
+    return is_interrupted()
+
+
+def _ask_and_await(board, tid: str, author: str, body: str, wait) -> str:
+    _check(os.environ.get("HERMES_KANBAN_TASK") == tid and _is_dispatcher_owned_worker(),
+           "await_reply_minutes: only a board worker waits, and only on its own task — post a plain comment here")
+    try:
+        minutes = max(1, min(int(wait), _AWAIT_MAX_MINUTES))
+    except (TypeError, ValueError):
+        raise ValueError("await_reply_minutes must be a whole number of minutes") from None
+    with _board(board) as (kb, conn):
+        from hermes_cli.kanban_db_connect import write_txn
+        with write_txn(conn):
+            cid = kb.add_comment(conn, tid, author=author, body=body)
+            kb._append_event(conn, tid, "question", {"author": author, "body": body, "await_minutes": minutes})
+    deadline = time.monotonic() + minutes * _AWAIT_MINUTE_SECONDS
+    replies: list = []
+    interrupted = False
+    while True:
+        with _board(board, quiet_close=True) as (kb, conn):
+            replies = [c for c in kb.list_comments_after(conn, tid, after_id=cid)
+                       if (c.author or "").strip() != author and (c.body or "").strip()]
+        # Whatever the wait read is delivered here; the live injector must not steer it in a second time.
+        if replies:
+            _comment_watermark[tid] = max(_comment_watermark.get(tid) or 0, max(c.id for c in replies))
+            break
+        if _await_interrupted():
+            interrupted = True
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(_AWAIT_POLL_SECONDS)
+    if replies:
+        nxt = "Answered: continue the work with this reply."
+    elif interrupted:
+        nxt = "The wait was interrupted; stop and let the run end."
+    else:
+        nxt = (f"No reply within {minutes} min. If you cannot go on without the answer, kanban_block with the "
+               "question as the reason; otherwise proceed on the safest assumption and state it in your summary.")
+    return _ok(task_id=tid, comment_id=cid, await_minutes=minutes, next=nxt,
+               replies=[{"author": c.author, "body": c.body} for c in replies])
 
 
 def _store_attachment(board, tid, filename, data, content_type) -> str:
