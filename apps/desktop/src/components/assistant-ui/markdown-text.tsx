@@ -8,7 +8,7 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
-import { type ComponentProps, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ComponentProps, isValidElement, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { defaultRehypePlugins, defaultRemarkPlugins } from 'streamdown'
 import type { Pluggable } from 'unified'
 
@@ -41,6 +41,7 @@ import {
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { FILE_PATH_ATTR, FILE_PATH_PROPERTY, remarkFilePathCandidates } from '@/lib/remark-file-path-candidates'
+import { remarkSoftBreaks } from '@/lib/remark-soft-breaks'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { isDirectiveInProgress } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
@@ -53,8 +54,9 @@ import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
 
 // Appended, never replacing: dropping streamdown's own defaults here would
-// silently take GFM (tables, strikethrough) out of every transcript.
-const transcriptRemarkPlugins = [...Object.values(defaultRemarkPlugins), remarkFilePathCandidates]
+// silently take GFM (tables, strikethrough) out of every transcript. Soft
+// breaks run first so a path candidate never spans a line break.
+const transcriptRemarkPlugins = [...Object.values(defaultRemarkPlugins), remarkSoftBreaks, remarkFilePathCandidates]
 
 // The sanitizer strips every attribute it does not know, `data-*` included, so
 // the candidate marker never reaches the DOM unless it is allowed by name. One
@@ -84,7 +86,6 @@ const transcriptRehypePlugins: Pluggable[] = Object.values({
     ] as Pluggable
   })()
 })
-
 
 const onboardingEnabled = isOnboardingEnabled()
 
@@ -287,13 +288,29 @@ function MediaPlaybackAttachment({ path }: { path: string }) {
   )
 }
 
+// Authored labels can be formatted markdown — an inline-code label like
+// [`v1.0.1`](url) arrives as a <code> element, not a plain string. Extract
+// the text so MarkdownLink can pass it as `fallbackLabel`; dropping it sent
+// the link down the title-fetch / URL-slug fallback path instead (#121321).
 function childrenToText(children: unknown): string {
-  if (typeof children === 'string' || typeof children === 'number') {
-    return String(children).trim()
+  return flattenChildrenToText(children).trim()
+}
+
+function flattenChildrenToText(node: unknown): string {
+  if (node === null || node === undefined || typeof node === 'boolean') {
+    return ''
   }
 
-  if (Array.isArray(children) && children.every(c => typeof c === 'string' || typeof c === 'number')) {
-    return children.join('').trim()
+  if (typeof node === 'string' || typeof node === 'number') {
+    return String(node)
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(flattenChildrenToText).join('')
+  }
+
+  if (isValidElement<{ children?: unknown }>(node)) {
+    return flattenChildrenToText(node.props.children)
   }
 
   return ''
