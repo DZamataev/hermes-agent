@@ -206,6 +206,8 @@ type KanbanMessages = {
     completedTitle: string
     blockedTitle: string
     blockLoopTitle: string
+    /** A worker asked with kanban_comment(await_reply_minutes) and holds its run for the answer. */
+    questionTitle: string
     gaveUpTitle: string
     /** Body for gave_up — the raw worker error rides in the toast `detail`. */
     gaveUpBody: string
@@ -421,6 +423,7 @@ export const en: KanbanMessages = {
     completedTitle: 'Task completed',
     blockedTitle: 'Task blocked — needs your input',
     blockLoopTitle: 'Task routed to triage — needs a decision',
+    questionTitle: 'Worker asks a question — it is waiting for your answer',
     gaveUpTitle: 'Task stopped',
     gaveUpBody: 'Hermes couldn’t finish this task. Open Kanban to see why and reassign it.',
     crashedTitle: 'Task hit a problem — Hermes will retry it automatically',
@@ -634,6 +637,7 @@ const ja: KanbanMessages = {
     completedTitle: 'タスク完了',
     blockedTitle: 'タスクがブロック中 — 入力が必要です',
     blockLoopTitle: 'タスクをトリアージへ移動 — 判断が必要です',
+    questionTitle: 'ワーカーからの質問 — 回答を待っています',
     gaveUpTitle: 'タスクが停止しました',
     gaveUpBody: 'Hermes はこのタスクを完了できませんでした。かんばんを開いて原因を確認し、再割り当てしてください。',
     crashedTitle: 'タスクで問題が発生 — Hermes が自動で再試行します',
@@ -844,6 +848,7 @@ const zh: KanbanMessages = {
     completedTitle: '任务已完成',
     blockedTitle: '任务受阻 — 需要你的输入',
     blockLoopTitle: '任务已转入分类 — 需要人工决定',
+    questionTitle: '工作者提出问题 — 正在等待你的回答',
     gaveUpTitle: '任务已停止',
     gaveUpBody: 'Hermes 无法完成这个任务。打开看板查看原因并重新分配。',
     crashedTitle: '任务遇到问题 — Hermes 将自动重试',
@@ -1054,6 +1059,7 @@ const zhHant: KanbanMessages = {
     completedTitle: '任務已完成',
     blockedTitle: '任務受阻 — 需要你的輸入',
     blockLoopTitle: '任務已轉入分類 — 需要人工決定',
+    questionTitle: '工作者提出問題 — 正在等待你的回答',
     gaveUpTitle: '任務已停止',
     gaveUpBody: 'Hermes 無法完成這個任務。開啟看板查看原因並重新指派。',
     crashedTitle: '任務遇到問題 — Hermes 將自動重試',
