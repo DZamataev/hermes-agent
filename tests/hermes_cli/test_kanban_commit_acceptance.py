@@ -143,6 +143,121 @@ def test_force_does_not_bypass_the_gate(repo):
         assert kb.get_task(conn, tid).status == "running"
 
 
+def _cli(*argv: str) -> tuple[int, str]:
+    import argparse
+    import contextlib
+    import io
+    from hermes_cli import kanban as kc
+    from hermes_cli.kanban_parser import build_parser
+    parser = argparse.ArgumentParser()
+    build_parser(parser.add_subparsers())
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+        rc = kc.kanban_command(parser.parse_args(["kanban", *argv]))
+    return rc, err.getvalue()
+
+
+def _blocked_card(repo: Path) -> str:
+    tid, run_id = _dispatched(repo)
+    with kbc.connect_closing() as conn:
+        assert kb.block_task(conn, tid, reason="no changes by design", expected_run_id=run_id)
+    return tid
+
+
+def test_the_cli_refusal_names_the_receipt_not_an_unknown_id(repo):
+    tid = _blocked_card(repo)
+
+    rc, err = _cli("complete", tid, "--summary", "closing")
+    assert rc != 0
+    assert "unknown id" not in err
+    assert "no_commit" in err and "no_change" in err
+
+
+def test_the_cli_force_overrides_a_failed_receipt_and_records_it(repo):
+    tid = _blocked_card(repo)
+
+    rc, _ = _cli("complete", tid, "--summary", "closing", "--force")
+    assert rc == 0
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "done"
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+    assert kinds.index("commit_acceptance") < kinds.index("acceptance_overridden") < kinds.index("completed")
+
+
+def _complete_no_change(tid: str, run_id, reason="review had no findings") -> bool:
+    with kbc.connect_closing() as conn:
+        return kb.complete_task(conn, tid, summary="nothing to fix", metadata={"no_change": reason},
+                                expected_run_id=run_id)
+
+
+def test_the_no_commit_refusal_points_at_no_change_not_at_a_block(repo):
+    tid, run_id = _dispatched(repo)
+    assert _complete(tid, run_id) is False
+    task, _ = _state(tid)
+    assert "no_change" in task.last_failure_error
+    assert "kanban_block" not in task.last_failure_error
+
+
+def test_a_declared_no_change_on_a_clean_tree_is_accepted_with_its_reason(repo):
+    tid, run_id = _dispatched(repo)
+
+    assert _complete_no_change(tid, run_id) is True
+    task, receipts = _state(tid)
+    assert task.status == "done"
+    assert receipts[-1]["ok"] is True
+    assert receipts[-1]["classification"] == "no_change"
+    assert receipts[-1]["detail"] == "review had no findings"
+
+
+def test_a_declared_no_change_does_not_excuse_a_dirty_tree(repo):
+    tid, run_id = _dispatched(repo)
+    (repo / "dirty.txt").write_text("x\n")
+
+    assert _complete_no_change(tid, run_id) is False
+    _, receipts = _state(tid)
+    assert receipts[-1]["classification"] == "dirty"
+
+
+@pytest.mark.parametrize("reason", ["", "   ", None, 7])
+def test_no_change_needs_a_reason(repo, reason):
+    tid, run_id = _dispatched(repo)
+
+    assert _complete_no_change(tid, run_id, reason=reason) is False
+    _, receipts = _state(tid)
+    assert receipts[-1]["classification"] == "no_commit"
+
+
+def test_a_commit_with_no_change_declared_is_an_ordinary_success(repo):
+    tid, run_id = _dispatched(repo)
+    _commit(repo)
+
+    assert _complete_no_change(tid, run_id) is True
+    _, receipts = _state(tid)
+    assert receipts[-1]["classification"] == "success"
+
+
+def test_the_orchestrator_closes_a_blocked_no_op_card_with_no_change(repo):
+    """The worker blocked (its run ended); the operator closes the card from outside any run."""
+    tid, run_id = _dispatched(repo)
+    with kbc.connect_closing() as conn:
+        assert kb.block_task(conn, tid, reason="no changes by design", expected_run_id=run_id)
+
+    assert _complete_no_change(tid, None) is True
+    task, receipts = _state(tid)
+    assert task.status == "done"
+    assert receipts[-1]["classification"] == "no_change"
+
+
+def test_a_blocked_card_without_no_change_still_needs_a_commit(repo):
+    tid, run_id = _dispatched(repo)
+    with kbc.connect_closing() as conn:
+        assert kb.block_task(conn, tid, reason="stuck", expected_run_id=run_id)
+
+    assert _complete(tid, None) is False
+    _commit(repo)
+    assert _complete(tid, None) is True
+
+
 def test_local_only_ignores_a_dirty_tree(repo):
     tid, run_id = _dispatched(repo, contract="local-only")
     (repo / "dirty.txt").write_text("x\n")

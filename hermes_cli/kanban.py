@@ -903,6 +903,17 @@ def _goal_gate_error(conn, tid: str, evidence: str, handoff: str, blocked_hint: 
     return None
 
 
+def _acceptance_refusal(conn, tid: str) -> Optional[str]:
+    """The failed completion-contract receipt that just refused ``tid`` ("<Label> <classification>: <detail>
+    <recovery>", as stored on the card), or None when the refusal was something else."""
+    row = conn.execute("SELECT kind, payload FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                       (tid,)).fetchone()
+    if not row or row[0] not in ("commit_acceptance", "pr_acceptance"):
+        return None
+    task = kb.get_task(conn, tid)
+    return (getattr(task, "last_failure_error", None) or "").strip() or None
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids, rc = _require_ids(args)
@@ -929,10 +940,11 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 fail_msg[tid] = gate_err
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
+            force = bool(getattr(args, "force", False))
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
-                                        expected_run_id=_worker_run_id_for(tid),
-                                        force=bool(getattr(args, "force", False)))
+                                        expected_run_id=_worker_run_id_for(tid), force=force,
+                                        override_acceptance=force)
             except kb.LiveClaimError:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
@@ -950,6 +962,8 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                     detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
                     fail_msg[tid] = (f"cannot complete {tid}: unsatisfied parent dependencies: {detail}; "
                                      f"complete the parents first, or `hermes kanban unlink <parent> {tid}`.")
+                elif refusal := _acceptance_refusal(conn, tid):
+                    fail_msg[tid] = f"cannot complete {tid}: {refusal} Or re-run with --force to override (audited)."
             return done
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
