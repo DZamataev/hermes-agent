@@ -631,6 +631,10 @@ def inject_new_comments_from_env(agent: Any) -> bool:
     # this process must neither receive them nor advance the shared watermark (#112817).
     tid = os.environ.get("HERMES_KANBAN_TASK") if _is_dispatcher_owned_worker() else None
     now = time.monotonic()
+    # A kanban_comment(await_reply_minutes=...) call owns the card's comments while it waits: the reply comes back
+    # as its tool result, so the heartbeat-driven injector must not steer it in as well.
+    if tid in _awaiting_reply:
+        return False
     if (not tid or agent is None or not hasattr(agent, "steer")
             or (now - _comment_poll_last_attempt) < _COMMENT_POLL_MIN_INTERVAL_SECONDS):
         return False
@@ -955,6 +959,17 @@ def _handle_comment(args: dict, **kw) -> str:
 _AWAIT_MAX_MINUTES = 30
 _AWAIT_POLL_SECONDS = 5.0
 _AWAIT_MINUTE_SECONDS = 60.0
+_awaiting_reply: set = set()
+
+
+def _still_owns_card(kb, conn, tid: str) -> bool:
+    """The waiting run still holds the card: running under this worker's run id. A block or reclaim hands it on,
+    and a comment written after that addresses the next worker, not this one."""
+    task = kb.get_task(conn, tid)
+    if task is None or task.status != "running":
+        return False
+    run_id = _worker_run_id(tid)
+    return run_id is None or task.current_run_id == run_id
 
 
 def _await_interrupted() -> bool:
@@ -976,22 +991,33 @@ def _ask_and_await(board, tid: str, author: str, body: str, wait) -> str:
             kb._append_event(conn, tid, "question", {"author": author, "body": body, "await_minutes": minutes})
     deadline = time.monotonic() + minutes * _AWAIT_MINUTE_SECONDS
     replies: list = []
-    interrupted = False
-    while True:
-        with _board(board, quiet_close=True) as (kb, conn):
-            replies = [c for c in kb.list_comments_after(conn, tid, after_id=cid)
-                       if (c.author or "").strip() != author and (c.body or "").strip()]
-        # Whatever the wait read is delivered here; the live injector must not steer it in a second time.
-        if replies:
-            _comment_watermark[tid] = max(_comment_watermark.get(tid) or 0, max(c.id for c in replies))
-            break
-        if _await_interrupted():
-            interrupted = True
-            break
-        if time.monotonic() >= deadline:
-            break
-        time.sleep(_AWAIT_POLL_SECONDS)
-    if replies:
+    interrupted = lost = False
+    _awaiting_reply.add(tid)
+    try:
+        while True:
+            with _board(board, quiet_close=True) as (kb, conn):
+                if not _still_owns_card(kb, conn, tid):
+                    lost = True
+                    break
+                # The worker cannot comment while this call holds it, so every comment after the question is the
+                # answer — whatever its author name (orchestrator and worker may share a profile).
+                replies = [c for c in kb.list_comments_after(conn, tid, after_id=cid) if (c.body or "").strip()]
+            if replies:
+                # Delivered here as the tool result; the live injector must not steer it in a second time.
+                _comment_watermark[tid] = max(_comment_watermark.get(tid) or 0, max(c.id for c in replies))
+                break
+            if _await_interrupted():
+                interrupted = True
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(_AWAIT_POLL_SECONDS)
+    finally:
+        _awaiting_reply.discard(tid)
+    if lost:
+        nxt = ("The card is no longer yours (blocked, reclaimed or closed while you waited). Stop working on it and "
+               "let the run end; do not call kanban_complete or kanban_block.")
+    elif replies:
         nxt = "Answered: continue the work with this reply."
     elif interrupted:
         nxt = "The wait was interrupted; stop and let the run end."

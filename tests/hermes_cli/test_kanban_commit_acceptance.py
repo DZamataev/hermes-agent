@@ -194,6 +194,28 @@ def test_the_cli_override_acceptance_closes_a_refused_card_and_records_it(repo):
     assert kinds.index("commit_acceptance") < kinds.index("acceptance_overridden") < kinds.index("completed")
 
 
+def test_a_worker_cannot_override_its_own_acceptance(repo, monkeypatch):
+    """The override is the operator's audited escape hatch; a worker holding the card must not wave its own
+    completion past the contract (the audit would name the operator)."""
+    tid, _run_id = _dispatched(repo)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    rc, err = _cli("complete", tid, "--summary", "closing", "--override-acceptance")
+    assert rc != 0 and "orchestrator" in err
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+        assert "acceptance_overridden" not in [e.kind for e in kb.list_events(conn, tid)]
+
+
+def test_a_worker_refusal_does_not_suggest_the_override(repo, monkeypatch):
+    tid, _run_id = _dispatched(repo)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    rc, err = _cli("complete", tid, "--summary", "closing")
+    assert rc != 0 and "no_commit" in err
+    assert "--override-acceptance" not in err
+
+
 NO_CHANGE_OK = "local-commit-or-none"
 
 

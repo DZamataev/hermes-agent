@@ -37,8 +37,8 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
 
 
 def record_acceptance(conn, task_id, acceptance, *, override: bool = False):
-    """Called under complete_task's write_txn, before its terminal UPDATE. ``override`` (an operator's
-    ``complete --force``) lets a failed receipt through, recorded as ``acceptance_overridden``; a card that changed
+    """Called under complete_task's write_txn, before its terminal UPDATE. ``override`` (the operator's
+    ``complete --override-acceptance``; the CLI refuses it to a worker) lets a failed receipt through, recorded as ``acceptance_overridden``; a card that changed
     under the check is refused either way."""
     from hermes_cli.kanban_db import _append_event
     snapshot, receipt = acceptance

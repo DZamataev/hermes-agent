@@ -1112,3 +1112,84 @@ def test_a_second_gateway_with_nothing_new_leaves_a_row_the_first_is_still_sendi
         assert kbn.rewind_notify_cursor(conn, claimed_cursor=claimed, old_cursor=old, **ident)  # gateway 1 failed
     finally:
         conn.close()
+
+
+def _telegram_card(title="blocked card"):
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title=title, assignee="worker", session_id="agent:main:telegram:dm:chat-1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm",
+                           delivery_mode="notify+wake")
+        return tid
+    finally:
+        conn.close()
+
+
+def test_a_long_block_reason_reaches_the_chat_whole(tmp_path, monkeypatch):
+    """A worker explains what it needs in the block reason; the chat gets all of it, as the desktop does."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "block-whole.db"))
+    kb.init_db()
+    tid = _telegram_card()
+    reason = "Run the migration on stage first: " + "details " * 60 + "END-OF-REASON"
+    conn = kbc.connect()
+    try:
+        assert kb.block_task(conn, tid, reason=reason)
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    (sent,) = adapter.sent
+    assert "END-OF-REASON" in sent["text"]
+
+
+def test_a_block_made_from_the_subscribed_chat_is_not_reported_back_to_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "own-block.db"))
+    kb.init_db()
+    tid = _telegram_card()
+    conn = kbc.connect()
+    try:
+        assert kb.block_task(conn, tid, reason="holding it while I close the chain",
+                             actor_chat=kbn.chat_tag("telegram", "chat-1", ""))
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert adapter.sent == [] and adapter.handled == []
+
+
+def test_a_block_of_a_card_archived_before_delivery_is_not_reported(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "archived-block.db"))
+    kb.init_db()
+    tid = _telegram_card()
+    conn = kbc.connect()
+    try:
+        assert kb.block_task(conn, tid, reason="obsolete")
+        assert kb.archive_task(conn, tid)
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert not any("obsolete" in s["text"] for s in adapter.sent)
+
+
+def test_the_idle_board_line_leaves_out_cards_the_chat_holds_itself(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-own.db"))
+    kb.init_db()
+    carrier = _telegram_card("carrier")
+    held, other = _telegram_card("held by the chat"), _telegram_card("blocked by a worker")
+    conn = kbc.connect()
+    try:
+        assert kb.block_task(conn, held, reason="hold", actor_chat=kbn.chat_tag("telegram", "chat-1", ""))
+        assert kb.block_task(conn, other, reason="needs creds")
+        conn.execute("UPDATE kanban_notify_subs SET last_event_id = (SELECT MAX(id) FROM task_events)")
+        kb._append_event(conn, carrier, "board_quiescent", {"counts": {"blocked": 2}, "attention": [held, other]})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    (sent,) = [s for s in adapter.sent if "🏁" in s["text"]]
+    assert other in sent["text"] and held not in sent["text"]

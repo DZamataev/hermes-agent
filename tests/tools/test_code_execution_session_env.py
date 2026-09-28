@@ -40,3 +40,16 @@ def test_bound_context_wins_over_a_stale_process_mirror(monkeypatch, bound_sessi
 def test_secrets_stay_scrubbed(monkeypatch, bound_session):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-leak")
     assert "OPENAI_API_KEY" not in _child_env()
+
+
+def test_an_unbound_thread_in_an_engaged_process_gets_no_key(monkeypatch, bound_session):
+    """Once any session is bound, the process mirror belongs to whichever turn wrote last; a context that bound
+    none must pass no key (as the terminal does), or a chain from it would subscribe another session."""
+    import threading
+
+    monkeypatch.setenv("HERMES_SESSION_KEY", "another_sessions_key")
+    seen = {}
+    t = threading.Thread(target=lambda: seen.update(key=_child_env().get("HERMES_SESSION_KEY")))
+    t.start()
+    t.join()
+    assert seen["key"] is None

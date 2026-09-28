@@ -768,3 +768,67 @@ def describe_question(task_id: str, payload: dict) -> str:
     wait = f"The worker waits up to {minutes} min" if minutes else "The worker waits"
     return (f"{body}\n{wait} for the answer: hermes kanban comment {task_id} \"<answer>\" "
             f"(no answer → it blocks or proceeds on a stated assumption).")
+
+
+def chat_tag(platform: str, chat_id: str, thread_id: str = "") -> str:
+    """One messenger chat/topic, as a block records its actor (``actor_chat``) and a subscription is matched."""
+    return f"{str(platform or '').lower()}:{chat_id or ''}:{thread_id or ''}"
+
+
+def sub_chat_tag(sub: Mapping[str, Any]) -> str:
+    return chat_tag(str(sub.get("platform") or ""), str(sub.get("chat_id") or ""), str(sub.get("thread_id") or ""))
+
+
+def _made_by(payload: Mapping[str, Any], sub_keys: tuple, chat: str) -> bool:
+    return bool((payload.get("actor_session") and payload.get("actor_session") in sub_keys)
+                or (chat and payload.get("actor_chat") == chat))
+
+
+def _own_hold_or_gone(kb, conn: sqlite3.Connection, task_id: str, sub_keys: tuple, chat: str) -> bool:
+    task = kb.get_task(conn, task_id)
+    if task is None:
+        return False  # another board's id or a purged card: not ours to judge, keep it listed
+    status = getattr(task, "status", "")
+    if status == "archived":
+        return True
+    if status != "blocked":
+        return False
+    row = conn.execute("SELECT payload FROM task_events WHERE task_id = ? AND kind = 'blocked' ORDER BY id DESC"
+                       " LIMIT 1", (task_id,)).fetchone()
+    try:
+        return bool(row and _made_by(json.loads(row[0] or "{}"), sub_keys, chat))
+    except (TypeError, ValueError):
+        return False
+
+
+def relevant_to(kb, conn: sqlite3.Connection, ev, task, *, sub_keys: tuple = (), chat: str = ""):
+    """The event as the subscriber should see it, or None. A block the subscriber made itself (its session key in
+    ``sub_keys`` or its chat ``chat``), a block of a card archived before delivery, and an idle-board line whose
+    every leftover card is such a hold say nothing it does not already know. Shared by the gateway notifier and the
+    TUI/desktop poller so both surfaces filter alike."""
+    import dataclasses
+    kind = getattr(ev, "kind", "")
+    payload = getattr(ev, "payload", None) or {}
+    if kind == "blocked":
+        if _made_by(payload, sub_keys, chat) or getattr(task, "status", "") == "archived":
+            return None
+        return ev
+    if kind == "board_quiescent" and payload.get("attention"):
+        attention = [t for t in payload["attention"] if not _own_hold_or_gone(kb, conn, str(t), sub_keys, chat)]
+        if not attention:
+            return None
+        if attention != payload["attention"]:
+            return dataclasses.replace(ev, payload={**payload, "attention": attention})
+    return ev
+
+
+BLOCK_REASON_LIMIT = 4000
+
+
+def describe_block_reason(task_id: str, reason: str) -> str:
+    """A block reason as notifications show it: whole (a worker explains there what it needs), capped like a
+    completion summary, with where to read the rest."""
+    reason = str(reason or "").strip()
+    if len(reason) > BLOCK_REASON_LIMIT:
+        reason = reason[:BLOCK_REASON_LIMIT].rstrip() + f"\n… (truncated; hermes kanban show {task_id})"
+    return reason

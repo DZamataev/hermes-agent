@@ -434,40 +434,11 @@ def _notif_subscription_keys(session: dict) -> tuple:
     return keys
 
 
-def _kb_own_hold_or_gone(_kb, conn, task_id: str, sub_keys: tuple) -> bool:
-    """A card this conversation needs no word about: archived, or blocked by the conversation itself."""
-    task = _kb.get_task(conn, task_id)
-    if task is None:
-        return False  # not ours to judge (another board's id, a purged card): keep it listed
-    if getattr(task, "status", "") == "archived":
-        return True
-    if getattr(task, "status", "") != "blocked":
-        return False
-    row = conn.execute("SELECT payload FROM task_events WHERE task_id = ? AND kind = 'blocked' ORDER BY id DESC"
-                       " LIMIT 1", (task_id,)).fetchone()
-    import json
-    with contextlib.suppress(TypeError, ValueError):
-        return bool(row and json.loads(row[0] or "{}").get("actor_session") in sub_keys)
-    return False
-
-
 def _kb_relevant(_kb, conn, ev, task, sub_keys: tuple):
-    """The event as this conversation should see it, or None: its own block, a block of a card archived before
-    delivery, and an idle-board line whose every leftover is such a card say nothing it does not know."""
-    kind = getattr(ev, "kind", "")
-    payload = getattr(ev, "payload", None) or {}
-    if kind == "blocked":
-        if payload.get("actor_session") in sub_keys or getattr(task, "status", "") == "archived":
-            return None
-        return ev
-    if kind == "board_quiescent" and payload.get("attention"):
-        attention = [t for t in payload["attention"] if not _kb_own_hold_or_gone(_kb, conn, str(t), sub_keys)]
-        if not attention:
-            return None
-        if attention != payload["attention"]:
-            import dataclasses
-            return dataclasses.replace(ev, payload={**payload, "attention": attention})
-    return ev
+    """The event as this conversation should see it, or None (its own block, a block of a card archived before
+    delivery, an idle-board line of only such cards); the rule is shared with the gateway notifier."""
+    from hermes_cli.kanban_db_notify import relevant_to
+    return relevant_to(_kb, conn, ev, task, sub_keys=sub_keys)
 
 
 def _kb_poll_board(_kb, slug: str, session: dict, sub_keys: tuple) -> list:

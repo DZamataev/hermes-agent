@@ -305,6 +305,11 @@ class _Collector:
         # An idle-board announcement addressed to another follower of this card: the cursor moved past it, skip.
         events = [ev for ev in events if _kbn().quiescent_addressed_to(conn, ev, sub)]
         events = _kbn().collapse_superseded_failures(events)
+        # The subscriber's own block, a block of a card archived before delivery, and an idle-board line of only
+        # such cards tell the chat nothing (same rule as the desktop poller).
+        _task = self.kb.get_task(conn, sub["task_id"])
+        _chat = _kbn().sub_chat_tag(sub)
+        events = [ev for ev in (_kbn().relevant_to(self.kb, conn, ev, _task, chat=_chat) for ev in events) if ev]
         if not events:
             if cursor != old_cursor:  # claimed only announcements for another follower: nothing left to deliver
                 ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
@@ -475,6 +480,16 @@ def _fmt_gave_up(ev, n) -> tuple:
     )
 
 
+def _fmt_blocked(ev, n) -> tuple:
+    """The whole block reason (capped like a completion summary): a one-line reason stays on the title line."""
+    from hermes_cli.kanban_db_notify import describe_block_reason
+    reason = describe_block_reason(n.task_id, _payload(ev, "reason") or "")
+    if not reason:
+        return f"⏸ {n.head} blocked", None, None
+    sep = ": " if "\n" not in reason and len(reason) <= 160 else ":\n"
+    return f"⏸ {n.head} blocked{sep}{reason}", None, None
+
+
 def _fmt_timed_out(ev, n) -> tuple:
     limit = int(_payload(ev, "limit_seconds") or 0)
     minutes = max(1, round(limit / 60)) if limit else 0
@@ -487,7 +502,7 @@ def _fmt_timed_out(ev, n) -> tuple:
 # never wake the creator.
 _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
-    "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
+    "blocked": lambda ev, n: _fmt_blocked(ev, n),
     "gave_up": _fmt_gave_up,
     "crashed": lambda ev, n: (
         f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None,
