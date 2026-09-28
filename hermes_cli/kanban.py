@@ -940,11 +940,11 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 fail_msg[tid] = gate_err
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
-            force = bool(getattr(args, "force", False))
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
-                                        expected_run_id=_worker_run_id_for(tid), force=force,
-                                        override_acceptance=force)
+                                        expected_run_id=_worker_run_id_for(tid),
+                                        force=bool(getattr(args, "force", False)),
+                                        override_acceptance=bool(getattr(args, "override_acceptance", False)))
             except kb.LiveClaimError:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
@@ -963,7 +963,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                     fail_msg[tid] = (f"cannot complete {tid}: unsatisfied parent dependencies: {detail}; "
                                      f"complete the parents first, or `hermes kanban unlink <parent> {tid}`.")
                 elif refusal := _acceptance_refusal(conn, tid):
-                    fail_msg[tid] = f"cannot complete {tid}: {refusal} Or re-run with --force to override (audited)."
+                    fail_msg[tid] = f"cannot complete {tid}: {refusal} Or re-run with --override-acceptance (audited)."
             return done
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)

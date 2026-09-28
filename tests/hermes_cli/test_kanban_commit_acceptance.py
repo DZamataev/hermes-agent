@@ -170,18 +170,31 @@ def test_the_cli_refusal_names_the_receipt_not_an_unknown_id(repo):
     rc, err = _cli("complete", tid, "--summary", "closing")
     assert rc != 0
     assert "unknown id" not in err
-    assert "no_commit" in err and "no_change" in err
+    assert "no_commit" in err and "--override-acceptance" in err
 
 
-def test_the_cli_force_overrides_a_failed_receipt_and_records_it(repo):
+def test_the_cli_force_alone_does_not_override_a_failed_receipt(repo):
     tid = _blocked_card(repo)
 
     rc, _ = _cli("complete", tid, "--summary", "closing", "--force")
+    assert rc != 0
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert "acceptance_overridden" not in [e.kind for e in kb.list_events(conn, tid)]
+
+
+def test_the_cli_override_acceptance_closes_a_refused_card_and_records_it(repo):
+    tid = _blocked_card(repo)
+
+    rc, _ = _cli("complete", tid, "--summary", "closing", "--override-acceptance")
     assert rc == 0
     with kbc.connect_closing() as conn:
         assert kb.get_task(conn, tid).status == "done"
         kinds = [e.kind for e in kb.list_events(conn, tid)]
     assert kinds.index("commit_acceptance") < kinds.index("acceptance_overridden") < kinds.index("completed")
+
+
+NO_CHANGE_OK = "local-commit-or-none"
 
 
 def _complete_no_change(tid: str, run_id, reason="review had no findings") -> bool:
@@ -190,16 +203,31 @@ def _complete_no_change(tid: str, run_id, reason="review had no findings") -> bo
                                 expected_run_id=run_id)
 
 
-def test_the_no_commit_refusal_points_at_no_change_not_at_a_block(repo):
-    tid, run_id = _dispatched(repo)
+def test_the_no_commit_refusal_points_at_no_change_where_the_contract_allows_it(repo):
+    tid, run_id = _dispatched(repo, contract=NO_CHANGE_OK)
     assert _complete(tid, run_id) is False
     task, _ = _state(tid)
     assert "no_change" in task.last_failure_error
     assert "kanban_block" not in task.last_failure_error
 
 
-def test_a_declared_no_change_on_a_clean_tree_is_accepted_with_its_reason(repo):
+def test_strict_local_commit_neither_accepts_nor_suggests_no_change(repo):
+    """An implementation card must leave a commit: declaring no_change is no way out, and the refusal does not
+    advertise one."""
     tid, run_id = _dispatched(repo)
+    assert _complete_no_change(tid, run_id) is False
+    task, receipts = _state(tid)
+    assert receipts[-1]["classification"] == "no_commit"
+    assert "no_change" not in task.last_failure_error
+
+
+def test_the_new_contract_is_accepted_by_create():
+    from hermes_cli.kanban_pr_acceptance import validate_contract
+    assert validate_contract(NO_CHANGE_OK) == NO_CHANGE_OK
+
+
+def test_a_declared_no_change_on_a_clean_tree_is_accepted_with_its_reason(repo):
+    tid, run_id = _dispatched(repo, contract=NO_CHANGE_OK)
 
     assert _complete_no_change(tid, run_id) is True
     task, receipts = _state(tid)
@@ -210,7 +238,7 @@ def test_a_declared_no_change_on_a_clean_tree_is_accepted_with_its_reason(repo):
 
 
 def test_a_declared_no_change_does_not_excuse_a_dirty_tree(repo):
-    tid, run_id = _dispatched(repo)
+    tid, run_id = _dispatched(repo, contract=NO_CHANGE_OK)
     (repo / "dirty.txt").write_text("x\n")
 
     assert _complete_no_change(tid, run_id) is False
@@ -220,7 +248,7 @@ def test_a_declared_no_change_does_not_excuse_a_dirty_tree(repo):
 
 @pytest.mark.parametrize("reason", ["", "   ", None, 7])
 def test_no_change_needs_a_reason(repo, reason):
-    tid, run_id = _dispatched(repo)
+    tid, run_id = _dispatched(repo, contract=NO_CHANGE_OK)
 
     assert _complete_no_change(tid, run_id, reason=reason) is False
     _, receipts = _state(tid)
@@ -228,7 +256,7 @@ def test_no_change_needs_a_reason(repo, reason):
 
 
 def test_a_commit_with_no_change_declared_is_an_ordinary_success(repo):
-    tid, run_id = _dispatched(repo)
+    tid, run_id = _dispatched(repo, contract=NO_CHANGE_OK)
     _commit(repo)
 
     assert _complete_no_change(tid, run_id) is True
@@ -238,7 +266,7 @@ def test_a_commit_with_no_change_declared_is_an_ordinary_success(repo):
 
 def test_the_orchestrator_closes_a_blocked_no_op_card_with_no_change(repo):
     """The worker blocked (its run ended); the operator closes the card from outside any run."""
-    tid, run_id = _dispatched(repo)
+    tid, run_id = _dispatched(repo, contract=NO_CHANGE_OK)
     with kbc.connect_closing() as conn:
         assert kb.block_task(conn, tid, reason="no changes by design", expected_run_id=run_id)
 

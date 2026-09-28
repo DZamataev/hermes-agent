@@ -2183,7 +2183,7 @@ def _dispatch_lane_task(
             result.auto_blocked.append(claimed.id)
         return False
     _kbw.set_workspace_path(conn, claimed.id, str(workspace))
-    if claimed.completion_contract == "local-commit":
+    if claimed.completion_contract in ("local-commit", "local-commit-or-none"):
         _record_workspace_head(conn, claimed, workspace)
     if claimed.workspace_kind == "worktree":
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
