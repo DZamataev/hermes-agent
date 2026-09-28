@@ -82,6 +82,20 @@ def anthropic_oauth_flag(token: Any, capabilities: Any, provider: Any, base_url:
             and not _is_third_party_anthropic_endpoint(base_url))
 
 
+def _rebind_route_capabilities(agent, base_url: str) -> None:
+    """A credential swap that moved the session to another endpoint carries that endpoint's declared
+    capabilities, not the ones the session had where it came from. The reactive rotation refuses an
+    off-endpoint entry, but the restore/rebind path re-selects one without that check; keeping
+    ``anthropic_oauth_proxy`` would send the sibling Bearer + OAuth identity it never opted into.
+    A module function: ``_swap_credential`` is called unbound on non-agent holders."""
+    from agent.auxiliary_oauth import rebound_capabilities
+    agent.capabilities = rebound_capabilities(
+        getattr(agent, "capabilities", None),
+        (getattr(agent, "requested_provider", None), getattr(agent, "provider", None)),
+        getattr(agent, "model", None), base_url,
+    )
+
+
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
     timeout = get_provider_request_timeout(fb_provider, fb_model)
@@ -1017,6 +1031,8 @@ class ClientLifecycleMixin:
         from hermes_cli.route_identity import normalize_route_base_url
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(runtime_base)
         if self.api_mode == "anthropic_messages":
+            if route_changed:
+                _rebind_route_capabilities(self, stripped_base)
             with suppress(Exception):
                 self._anthropic_client.close()
             self._anthropic_api_key, self._anthropic_base_url = runtime_key, stripped_base
@@ -1046,6 +1062,9 @@ class ClientLifecycleMixin:
         # URL would call every rotation onto a query-bearing entry a route change (and drop the
         # user's default_headers each time).
         route_changed = old_route != (normalize_route_base_url(self.base_url), self._client_kwargs.get("default_query") or None)
+        if route_changed:
+            from hermes_cli.route_identity import url_with_query
+            _rebind_route_capabilities(self, url_with_query(self.base_url, self._client_kwargs.get("default_query")))
         self._reapply_route_client_config(route_changed=route_changed)
         self._replace_primary_openai_client(reason="credential_rotation")
         return True

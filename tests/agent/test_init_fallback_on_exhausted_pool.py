@@ -138,7 +138,8 @@ def test_init_fallback_moves_requested_provider_and_capabilities_to_the_fallback
     Leaving the failed primary's there lets its declaration outlive the switch — and a child's
     model pin, which reads requested_provider, borrow it (review 6 of the OAuth-proxy work)."""
     fb = _mock_client()
-    fb.capabilities = {"anthropic_oauth_proxy": False}
+    # The wrapper's own OAuth flag is not a declaration (review 7): only the route's config is.
+    fb.capabilities = {"anthropic_oauth_proxy": True}
 
     def fake_resolve(provider, model=None, raw_codex=False, explicit_base_url=None, explicit_api_key=None):
         return (fb, "fb-model") if provider == "relay2" else (None, None)
@@ -154,7 +155,7 @@ def test_init_fallback_moves_requested_provider_and_capabilities_to_the_fallback
         )
     assert agent._fallback_activated is True
     assert (agent.provider, agent.requested_provider) == ("relay2", "relay2")
-    assert agent.capabilities == {"anthropic_oauth_proxy": False}
+    assert not agent.capabilities.get("anthropic_oauth_proxy", False)
 
 
 @pytest.mark.parametrize(
