@@ -137,3 +137,15 @@ def test_a_failed_block_records_no_reason_comment(card):
         assert kc.kanban_command(parser.parse_args(["kanban", "block", card, "again"])) != 0  # already blocked
     with kbc.connect_closing() as conn:
         assert [c.body for c in kb.list_comments(conn, card)] == ["BLOCKED: holding while closing"]
+
+
+def test_a_human_comment_after_the_block_clears_the_stuck_signal(card, monkeypatch):
+    from hermes_cli import kanban_diagnostics as kd
+
+    clock = iter(range(1_900_000_000, 1_900_000_000 + 10_000))
+    monkeypatch.setattr(kb.time, "time", lambda: float(next(clock)))
+    _block(card)
+    with kbc.connect_closing() as conn:
+        kb.add_comment(conn, card, "operator", "use v2, then unblock")
+        task, events = kb.get_task(conn, card), kb.list_events(conn, card)
+    assert kd._rule_stuck_in_blocked(task, events, [], 1_900_000_000 + 48 * 3600, {}) == []

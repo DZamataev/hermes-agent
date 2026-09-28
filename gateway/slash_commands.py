@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import contextvars
 import dataclasses
 import inspect
 import logging
@@ -366,7 +365,7 @@ class GatewaySlashCommandsMixin(
                 break
         try:
             # Built-in slash commands run outside an agent turn, where the chat's session vars are not bound. Bind
-            # the chat in the worker thread's own context copy (nothing leaks back into the loop), so a /kanban
+            # the chat in the worker thread (asyncio.to_thread runs it in a context copy), so a /kanban
             # block records this chat as its actor instead of reading a process env that may name another session.
             src = event.source
 
@@ -384,7 +383,7 @@ class GatewaySlashCommandsMixin(
                                  user_id=str(getattr(src, "user_id", "") or ""), session_key=key)
                 return run_slash(text)
 
-            output = await asyncio.to_thread(contextvars.copy_context().run, run_as_this_chat)
+            output = await asyncio.to_thread(run_as_this_chat)  # runs in a copy of this context: nothing leaks back
         except Exception as exc:  # pragma: no cover - defensive
             return t("gateway.kanban.error_prefix", error=exc)
 

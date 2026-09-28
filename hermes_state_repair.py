@@ -556,9 +556,10 @@ def preflight_db_writability(db_path: Path, *, db_label: str = "state.db") -> No
     for p, is_dir in [(db_path.parent, True), *((p, False) for p in (db_path, *sidecars) if p.is_file())]:
         if (is_dir and not p.is_dir()) or os.access(p, os.R_OK | os.W_OK):
             continue
-        if not is_dir and not p.exists():
-            # SQLite removes the -wal/-shm sidecars when another process closes the last connection; one that
-            # vanished between the is_file() above and os.access() is gone, not read-only.
+        if not is_dir and (not p.exists() or os.access(p, os.R_OK | os.W_OK)):
+            # SQLite removes the -wal/-shm sidecars when another process closes the last connection and recreates
+            # them on the next open: one that vanished during the check is gone (or new, and writable), not
+            # read-only. A sidecar that stays read-only still fails both checks.
             continue
         x = "x" if is_dir else ""
         in_scope = False

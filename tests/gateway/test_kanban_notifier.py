@@ -1159,6 +1159,25 @@ def test_a_block_made_from_the_subscribed_chat_is_not_reported_back_to_it(tmp_pa
     assert adapter.sent == [] and adapter.handled == []
 
 
+def test_another_users_block_in_a_shared_chat_is_delivered(tmp_path, monkeypatch):
+    """A group with a session per user: user X's block in the chat is news for user Y, who subscribed from it."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "shared-block.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="shared", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="group",
+                           user_id="uY", delivery_mode="notify")
+        assert kb.block_task(conn, tid, reason="holding for X", actor_user="uX",
+                             actor_chat=kbn.chat_tag("telegram", "chat-1", ""))
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert any("holding for X" in m["text"] for m in adapter.sent)
+
+
 def test_a_block_of_a_card_archived_before_delivery_is_not_reported(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "archived-block.db"))
     kb.init_db()

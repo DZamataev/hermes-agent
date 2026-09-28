@@ -308,8 +308,7 @@ class _Collector:
         # The subscriber's own block, a block of a card archived before delivery, and an idle-board line of only
         # such cards tell the chat nothing (same rule as the desktop poller).
         _task = self.kb.get_task(conn, sub["task_id"])
-        _chat = _kbn().sub_chat_tag(sub)
-        events = [ev for ev in (_kbn().relevant_to(self.kb, conn, ev, _task, chat=_chat) for ev in events) if ev]
+        events = [ev for ev in (_kbn().relevant_to(self.kb, conn, ev, _task, sub=sub) for ev in events) if ev]
         if not events:
             if cursor != old_cursor:  # claimed only announcements for another follower: nothing left to deliver
                 ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],

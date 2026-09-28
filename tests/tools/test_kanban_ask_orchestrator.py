@@ -394,3 +394,4 @@ def test_a_block_landing_between_the_ownership_check_and_the_read_is_not_an_answ
     monkeypatch.setattr(kt, "_still_owns_card", owns_then_blocked)
     out = _ask(worker, minutes=5)
     assert out["replies"] == [] and "no longer" in out["next"]
+
