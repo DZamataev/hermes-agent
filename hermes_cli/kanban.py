@@ -1015,7 +1015,7 @@ def _commented(conn, reason: Optional[str], author, prefix: str, op):
     def run(tid):
         done = op(tid)
         if reason and done:
-            kb.add_comment(conn, tid, author, f"{prefix}: {reason}")
+            kb.add_comment(conn, tid, author, f"{prefix}: {reason}", reason_for=prefix.lower())
         return done
     return run
 

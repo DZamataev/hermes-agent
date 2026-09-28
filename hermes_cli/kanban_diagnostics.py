@@ -603,9 +603,10 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
     age_hours = (now - last_blocked_ts) / 3600.0
     if age_hours < hours:
         return []
-    # Any comment / unblock after the block breaks the "stale" signal.
+    # Any comment / unblock after the block breaks the "stale" signal — except the block's own recorded reason
+    # (`hermes kanban block <id> <reason>` writes it right after the block, possibly a second later).
     if any(_event_kind(ev) in {"commented", "unblocked"} and _event_ts(ev) > last_blocked_ts
-           for ev in events):
+           and not _parse_payload(ev).get("reason_for") for ev in events):
         return []
     return [Diagnostic(
         kind="stuck_in_blocked", severity="warning",

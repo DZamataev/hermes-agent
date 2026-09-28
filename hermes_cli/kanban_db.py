@@ -1811,7 +1811,10 @@ def task_graph_context(conn: sqlite3.Connection, task_id: str) -> dict:
 
 # --- Comments & events ---
 
-def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) -> int:
+def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str, *,
+                reason_for: Optional[str] = None) -> int:
+    """``reason_for`` marks the comment as the recorded reason of that operation (``blocked``, ``scheduled``,
+    ``unblocked``), not a response to it: diagnostics that read "a comment after the block" skip it."""
     if not body or not body.strip():
         raise ValueError("comment body is required")
     if not author or not author.strip():
@@ -1825,7 +1828,10 @@ def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) 
             "INSERT INTO task_comments (task_id, author, body, created_at) "
             "VALUES (?, ?, ?, ?)", (task_id, author.strip(), body.strip(), now),
         )
-        _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
+        payload = {"author": author, "len": len(body)}
+        if reason_for:
+            payload["reason_for"] = reason_for
+        _append_event(conn, task_id, "commented", payload)
         return int(cur.lastrowid or 0)
 
 

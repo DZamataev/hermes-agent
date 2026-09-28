@@ -1,6 +1,8 @@
 """`hermes kanban block` run from a session records that session as the actor, so its own block does not wake it."""
 import argparse
+import json
 import contextlib
+import contextvars
 import io
 from pathlib import Path
 
@@ -74,16 +76,6 @@ def _last_block(tid: str) -> dict:
         return [e.payload for e in kb.list_events(conn, tid) if e.kind == "blocked"][-1]
 
 
-def test_a_block_from_the_chat_slash_command_names_the_chat(card, monkeypatch, telegram_topic):
-    """`/kanban block` runs in the gateway process, whose os.environ has no session vars."""
-    from hermes_cli.kanban import run_slash
-    from hermes_cli.kanban_db_notify import chat_tag
-    for var in ("HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_THREAD_ID", "HERMES_SESSION_KEY"):
-        monkeypatch.delenv(var, raising=False)
-    run_slash(f"block {card} holding while closing")
-    assert _last_block(card).get("actor_chat") == chat_tag("telegram", "-100G", "7")
-
-
 def test_the_block_tool_of_an_orchestrator_agent_names_its_chat(card, monkeypatch, telegram_topic):
     import tools.kanban_tools as kt
     from hermes_cli.kanban_db_notify import chat_tag
@@ -105,3 +97,43 @@ def test_a_worker_blocking_its_own_card_names_no_actor(card, monkeypatch, telegr
     kt._handle_block({"task_id": card, "reason": "need credentials"})
     payload = _last_block(card)
     assert "actor_chat" not in payload and "actor_session" not in payload
+
+
+def test_a_nested_agent_blocking_names_no_actor(card, monkeypatch):
+    """`hermes chat -q …` started from a session's terminal inherits that session's HERMES_SESSION_* in its env and
+    binds no session of its own. Its block is news for the parent session, which subscribed to the card."""
+    import tools.kanban_tools as kt
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_SESSION_KEY", "desktop-session-S")
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "-100G")
+    out = json.loads(contextvars.Context().run(kt._handle_block, {"task_id": card, "reason": "need a decision"}))
+    assert out.get("ok"), out
+    payload = _last_block(card)
+    assert "actor_session" not in payload and "actor_chat" not in payload
+
+
+def test_a_cli_block_whose_writes_straddle_a_second_still_shows_as_stuck(card, monkeypatch):
+    """`hermes kanban block <id> <reason>` also records a `BLOCKED: reason` comment. The stuck-in-blocked diagnostic
+    reads any comment later than the block as a human response; the block's own reason comment must not count."""
+    from hermes_cli import kanban_diagnostics as kd
+
+    clock = iter(range(1_900_000_000, 1_900_000_000 + 10_000))  # every timestamp read is one second later
+    monkeypatch.setattr(kb.time, "time", lambda: float(next(clock)))
+    _block(card)
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, card)
+        events = kb.list_events(conn, card)
+        assert any(c.body == "BLOCKED: holding while closing" for c in kb.list_comments(conn, card))
+    stuck = kd._rule_stuck_in_blocked(task, events, [], 1_900_000_000 + 48 * 3600, {})
+    assert [d.kind for d in stuck] == ["stuck_in_blocked"]
+
+
+def test_a_failed_block_records_no_reason_comment(card):
+    _block(card)
+    parser = argparse.ArgumentParser()
+    build_parser(parser.add_subparsers())
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        assert kc.kanban_command(parser.parse_args(["kanban", "block", card, "again"])) != 0  # already blocked
+    with kbc.connect_closing() as conn:
+        assert [c.body for c in kb.list_comments(conn, card)] == ["BLOCKED: holding while closing"]

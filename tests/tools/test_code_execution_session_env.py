@@ -58,15 +58,16 @@ def test_an_unbound_thread_in_an_engaged_process_gets_no_key(monkeypatch, bound_
 def test_a_gateway_turn_passes_the_chat_with_the_key():
     """kanban-card.sh tells a gateway session from a desktop one by HERMES_SESSION_PLATFORM: a child that got only the
     key would subscribe a desktop-poller row nobody serves."""
-    tokens = set_session_vars(platform="telegram", chat_id="123", chat_type="dm", thread_id="",
-                              session_key="agent:main:telegram:dm:123")
+    tokens = set_session_vars(platform="telegram", chat_id="123", chat_type="group", thread_id="7",
+                              session_key="agent:main:telegram:group:123:7")
     try:
         env = _child_env()
     finally:
         clear_session_vars(tokens)
-    assert env.get("HERMES_SESSION_KEY") == "agent:main:telegram:dm:123"
+    assert env.get("HERMES_SESSION_KEY") == "agent:main:telegram:group:123:7"
     assert env.get("HERMES_SESSION_PLATFORM") == "telegram"
     assert env.get("HERMES_SESSION_CHAT_ID") == "123"
+    assert env.get("HERMES_SESSION_THREAD_ID") == "7"
 
 
 def test_other_session_vars_are_not_borrowed_from_another_turn(monkeypatch, bound_session):
@@ -79,3 +80,18 @@ def test_other_session_vars_are_not_borrowed_from_another_turn(monkeypatch, boun
     t.start()
     t.join()
     assert "HERMES_SESSION_PLATFORM" not in seen and "HERMES_SESSION_CHAT_ID" not in seen
+
+
+def test_a_plain_cli_process_passes_its_own_env(monkeypatch):
+    """A CLI that never bound a session (not a serve/gateway process) keeps the os.environ mirror, as the terminal
+    tool does: that env is the session's own."""
+    import contextvars
+
+    import gateway.session_context as sc
+
+    monkeypatch.setattr(sc, "session_context_engaged", lambda: False)
+    monkeypatch.setenv("HERMES_SESSION_KEY", "cli_session")
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    env = contextvars.Context().run(_child_env)  # nothing bound, as in a plain CLI
+    assert env.get("HERMES_SESSION_KEY") == "cli_session"
+    assert env.get("HERMES_SESSION_PLATFORM") == "telegram"

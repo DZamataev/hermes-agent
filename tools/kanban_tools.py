@@ -654,6 +654,11 @@ def inject_new_comments_from_env(agent: Any) -> bool:
         _comment_watermark[tid] = max((c.id for c in rows), default=0)
     if seen is None or not rows:
         return False
+    # This runs on the activity heartbeat thread: the worker may have started a reply wait since the check above.
+    # The wait now owns these comments (it returns them as `notes`), and it may already have moved the watermark
+    # past its reply — never move it back.
+    if tid in _awaiting_reply or (_comment_watermark.get(tid) or 0) > seen:
+        return False
     # Advance past everything read (including our own notes) so nothing is re-injected.
     _comment_watermark[tid] = max(c.id for c in rows)
     # Same resolution the write side used, so a worker skips its OWN comments even
@@ -841,7 +846,7 @@ def _handle_block(args: dict, **kw) -> str:
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
         from hermes_cli.kanban_db_notify import block_actor
-        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid), **block_actor())
+        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid), **block_actor(bound_only=True))
         _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
         landed_kind = kb.get_task(conn, tid).block_kind
         extra: dict = {"block_kind": landed_kind}
