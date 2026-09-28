@@ -500,6 +500,9 @@ def rewind_notify_cursor(
 # only while the dispatcher spawns reviewers (``kanban.review_dispatch``); otherwise it waits on a human too.
 _QUIESCENT_MARK_KEY = "quiescent_claim_mark"
 _QUIESCENT_ATTENTION_LIMIT = 20
+# A card created blocked (``initial_status``) is usually a chain being assembled (created held, linked, released a
+# few seconds later). While such a hold is this fresh the board is not idle yet: the decision waits for it.
+_CREATION_HOLD_GRACE_SECONDS = 120
 
 
 def _board_active_statuses() -> tuple[str, ...]:
@@ -512,6 +515,15 @@ def _quiescent_claim_mark(conn: sqlite3.Connection) -> int:
     return int(row[0]) if row else 0
 
 
+def _fresh_creation_hold(conn: sqlite3.Connection) -> bool:
+    """A blocked card whose latest block is its creation hold, made within the grace window."""
+    return conn.execute(
+        "SELECT 1 FROM tasks t JOIN task_events e ON e.id = (SELECT MAX(id) FROM task_events"
+        "   WHERE task_id = t.id AND kind = 'blocked')"
+        " WHERE t.status = 'blocked' AND json_extract(e.payload, '$.reason') = 'initial_status'"
+        "   AND e.created_at > ? LIMIT 1", (int(time.time()) - _CREATION_HOLD_GRACE_SECONDS,)).fetchone() is not None
+
+
 def _newest_uncovered_claim(conn: sqlite3.Connection, active: tuple[str, ...]) -> Optional[tuple[int, int]]:
     """``(mark, newest claimed event id)`` when the board is idle and a card was claimed past the mark, else None.
     Both lookups are indexed (``tasks.status``, a rowid range over events newer than the mark)."""
@@ -521,7 +533,9 @@ def _newest_uncovered_claim(conn: sqlite3.Connection, active: tuple[str, ...]) -
     mark = _quiescent_claim_mark(conn)
     newest = conn.execute(
         "SELECT MAX(id) FROM task_events WHERE id > ? AND kind = 'claimed'", (mark,)).fetchone()[0]
-    return (mark, int(newest)) if newest else None
+    if not newest or _fresh_creation_hold(conn):
+        return None
+    return mark, int(newest)
 
 
 _QUIESCENT_SALT_KEY = "quiescent_tag_salt"
