@@ -295,7 +295,11 @@ KANBAN_COMMENT_SCHEMA = _schema(
         "Append a comment to a task's thread. Use for durable notes "
         "that should outlive this run (questions for the next worker, "
         "partial findings, rationale). Ephemeral reasoning doesn't "
-        "belong here — use your normal response instead."
+        "belong here — use your normal response instead. "
+        "To ask the orchestrator a question and get the answer in THIS run, comment on your own task with "
+        "await_reply_minutes: the orchestrator is notified, the call waits for a reply from someone other than "
+        "you and returns it in `replies` (empty on timeout, with what to do next). Prefer this to kanban_block "
+        "when you can keep working once answered; block only if nobody answers."
     ),
     {
         "task_id": _prop("string", (
@@ -303,6 +307,10 @@ KANBAN_COMMENT_SCHEMA = _schema(
                 "another's — comment threads are per-task)."
         )),
         "body": _prop("string", "Markdown-supported comment body."),
+        "await_reply_minutes": _prop("integer", (
+                "Only on your own task: post the body as a question to the orchestrator and wait up to this "
+                "many minutes (1-30) for a reply. Omit for a plain note."
+        )),
     },
     ["task_id", "body"],
 )

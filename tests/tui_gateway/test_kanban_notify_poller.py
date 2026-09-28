@@ -337,6 +337,80 @@ class TestCompressedSessionOwnsItsSubscriptions:
         assert len(texts) == 1 and "for the live tab" in texts[0]
 
 
+class TestTheSessionIsNotToldAboutItsOwnActions:
+    """An orchestrator that blocks a card itself (to hold it while closing) must not be woken by that block, nor by
+    an idle-board line naming the card it holds; nor by a block of a card it has since archived."""
+
+    def _blocked(self, *, actor_session=None, archive=False) -> str:
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            kb.block_task(conn, tid, reason="orchestrator: holding while closing", actor_session=actor_session)
+            if archive:
+                kb.archive_task(conn, tid)
+        finally:
+            conn.close()
+        return tid
+
+    def test_a_block_made_by_this_session_is_not_delivered(self):
+        self._blocked(actor_session=SESSION_KEY)
+        assert _collect_kanban_notifications(_session()) == []
+
+    def test_a_block_made_by_another_session_is_delivered(self):
+        self._blocked(actor_session="someone-else")
+        (text,) = _collect_kanban_notifications(_session())
+        assert "holding while closing" in text
+
+    def test_a_block_of_a_card_archived_before_delivery_is_not_delivered(self):
+        self._blocked(archive=True)
+        assert _collect_kanban_notifications(_session()) == []
+
+    def _announce(self, carrier: str, attention: list) -> None:
+        conn = kbc.connect()
+        try:
+            kb._append_event(conn, carrier, "board_quiescent", {"counts": {"blocked": len(attention)},
+                                                                 "attention": attention})
+        finally:
+            conn.close()
+
+    def test_the_idle_board_line_leaves_out_cards_this_session_holds_or_archived(self):
+        held = self._blocked(actor_session=SESSION_KEY)
+        gone = self._blocked(archive=True)
+        stuck = self._blocked(actor_session="worker-session")
+        _collect_kanban_notifications(_session())  # drain the per-card events
+        self._announce(stuck, [held, gone, stuck])
+
+        (text,) = _collect_kanban_notifications(_session())
+        assert stuck in text and held not in text and gone not in text
+
+    def test_an_idle_board_line_left_with_nothing_to_attend_is_not_delivered(self):
+        held = self._blocked(actor_session=SESSION_KEY)
+        _collect_kanban_notifications(_session())
+        self._announce(held, [held])
+
+        assert _collect_kanban_notifications(_session()) == []
+
+
+class TestAWorkerQuestionReachesTheSession:
+    """A worker that asks with ``kanban_comment(await_reply_minutes=…)`` is waiting on the orchestrator: the question
+    arrives whole, with the command to answer it, and wakes the session."""
+
+    def test_the_question_is_delivered_with_how_to_answer(self):
+        tid = _create_subscribed_task()
+        question = "Which API version should the client use: v1 or v2? " + "context " * 80
+        conn = kbc.connect()
+        try:
+            kb._append_event(conn, tid, "question", {"author": "pwaimpl", "body": question, "await_minutes": 10})
+        finally:
+            conn.close()
+
+        (text,) = _collect_kanban_notifications(_session())
+        assert "❓" in text and tid in text
+        assert question.strip() in text
+        assert f"hermes kanban comment {tid}" in text
+        assert "10 min" in text
+
+
 class TestBoardQuiescentReachesTheSession:
     def test_idle_board_announcement_is_delivered_with_leftovers(self):
         tid = _create_subscribed_task()
@@ -530,6 +604,18 @@ class TestFormatKanbanEventText:
         over = _format_kanban_event_text(self.SUB, self.TASK, ev, "", full_summary="z" * (_TUI_SUMMARY_LIMIT + 1))
         assert "truncated" not in at_limit
         assert over.endswith("z" * _TUI_SUMMARY_LIMIT + "\n… (truncated; hermes kanban show t_abc123)")
+
+    def test_block_reason_arrives_whole(self):
+        reason = "No changes by design. " + "evidence " * 40 + "Please close this card as a no-op."
+        ev = SimpleNamespace(kind="blocked", payload={"reason": reason})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert text.endswith(reason)
+
+    def test_block_reason_is_cut_at_the_summary_limit_with_a_pointer(self):
+        from tui_gateway.session_notifications import _TUI_SUMMARY_LIMIT
+        ev = SimpleNamespace(kind="blocked", payload={"reason": "r" * (_TUI_SUMMARY_LIMIT + 1)})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert text.endswith("r" * _TUI_SUMMARY_LIMIT + "\n… (truncated; hermes kanban show t_abc123)")
 
 
 class TestCompletionCarriesTheWholeSummary:

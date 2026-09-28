@@ -2777,7 +2777,7 @@ def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-    fire_lifecycle_hook: bool = True, force: bool = False,
+    fire_lifecycle_hook: bool = True, force: bool = False, override_acceptance: bool = False,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2788,6 +2788,8 @@ def complete_task(
     :func:`request_review` applies. With no active run the handoff fields survive via
     :func:`_synthesize_ended_run`. ``summary`` (defaults to ``result``) and
     ``metadata`` land on the closing run for :func:`build_worker_context`.
+    ``override_acceptance`` (operator only) lets a failed completion-contract receipt through, audited as
+    ``acceptance_overridden``; ``force`` alone never does.
     ``created_cards`` are verified first — a phantom id raises
     :class:`HallucinatedCardsError` after an auditable event; afterwards the
     prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
@@ -2815,7 +2817,7 @@ def complete_task(
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
             return False
-        if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
+        if acceptance is not None and not record_acceptance(conn, task_id, acceptance, override=override_acceptance):
             return False
         trow = conn.execute(
             "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
@@ -3276,7 +3278,8 @@ def edit_task(
 
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
-    kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    kind: Optional[str] = None, expected_run_id: Optional[int] = None, actor_session: Optional[str] = None,
+    actor_chat: Optional[str] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
@@ -3339,6 +3342,12 @@ def block_task(
         if rekind_reason:
             payload["requested_kind"] = requested_kind
             payload["rekind_reason"] = rekind_reason
+        if actor_session:
+            # The session that blocked it (an orchestrator holding a card) is not woken by its own action.
+            payload["actor_session"] = actor_session
+        if actor_chat:
+            # Same for a messenger chat (kanban_db_notify.chat_tag): the gateway keys its subscriptions by chat.
+            payload["actor_chat"] = actor_chat
         sql = f"""
                 UPDATE tasks
                    SET status        = '{new_status}',

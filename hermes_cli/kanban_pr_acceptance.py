@@ -20,13 +20,20 @@ _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
 
 
+# local-commit: done needs a commit made during the run on a clean tree. local-commit-or-none also accepts a clean,
+# unmoved tree when the completion declares why (metadata.no_change) — for a card whose honest result can be "nothing
+# to change" (a fix card after a clean review). An implementation card keeps the strict one.
+COMMIT_CONTRACTS = ("local-commit", "local-commit-or-none")
+
+
 def validate_contract(value: str | None) -> str:
     if value is None or value == "local-only":
         return "local-only"
-    if value == "local-commit":
+    if value in COMMIT_CONTRACTS:
         return value
     if not isinstance(value, str) or not (_REPO.fullmatch(value) or _PR.fullmatch(value)):
-        raise ValueError("completion_contract must be local-only, local-commit, OWNER/REPO, or an exact GitHub PR URL")
+        raise ValueError("completion_contract must be local-only, local-commit, local-commit-or-none, OWNER/REPO, "
+                         "or an exact GitHub PR URL")
     return value
 
 
@@ -47,9 +54,12 @@ def _dirty_paths(path: str, limit: int = 3, width: int = 60) -> str:
     return f"{shown}{more} —"
 
 
-def collect_commit_acceptance(conn, task_id: str, run_id: int | None) -> dict:
+def collect_commit_acceptance(conn, task_id: str, run_id: int | None, no_change: object = None,
+                              allow_no_change: bool = False) -> dict:
     """``local-commit``: accept ``done`` only on a clean workspace whose HEAD moved since the run started
-    (``workspace_head`` event, recorded by the dispatcher at claim). Anything unknown fails closed."""
+    (``workspace_head`` event, recorded by the dispatcher at claim), or on a clean workspace whose HEAD did not move
+    when the completion declares why nothing changed (``metadata.no_change``). Outside a run (an operator closing a
+    blocked card) the start is the last run's. Anything unknown fails closed."""
     from hermes_cli.kanban_db import _json_dict, _latest_event, _row_get
     from hermes_cli.worktree_ops import _git_out, _worktree_is_dirty
     receipt = {"ok": False, "classification": "missing", "head_sha": None, "event_kind": "commit_acceptance",
@@ -57,8 +67,7 @@ def collect_commit_acceptance(conn, task_id: str, run_id: int | None) -> dict:
                            "failed at claim). Use kanban_block and ask the operator to requeue the card."}
     row = conn.execute("SELECT workspace_path FROM tasks WHERE id = ?", (task_id,)).fetchone()
     path = row[0] if row else None
-    start = _json_dict(_row_get(_latest_event(conn, task_id, "workspace_head", run_id), "payload")).get("head") \
-        if run_id is not None else None
+    start = _json_dict(_row_get(_latest_event(conn, task_id, "workspace_head", run_id), "payload")).get("head")
     if not path or not start:
         return receipt
     if _worktree_is_dirty(path):
@@ -73,9 +82,15 @@ def collect_commit_acceptance(conn, task_id: str, run_id: int | None) -> dict:
     if not head:
         return receipt
     if head == start:
-        receipt.update(classification="no_commit", recovery=f"No commit since the run started ({start}). Commit "
-                       "your work, then retry kanban_complete; if this card intentionally changes nothing, say so "
-                       "with kanban_block.")
+        reason = no_change.strip() if allow_no_change and isinstance(no_change, str) else ""
+        if reason:
+            receipt.update(ok=True, classification="no_change", start_sha=start, detail=reason, recovery="")
+            return receipt
+        recovery = f"No commit since the run started ({start}). Commit your work, then retry kanban_complete."
+        if allow_no_change:
+            recovery = recovery[:-1] + ("; if this card intentionally changes nothing, retry kanban_complete with "
+                                        "metadata {\"no_change\": \"<why>\"}.")
+        receipt.update(classification="no_commit", recovery=recovery)
         return receipt
     receipt.update(ok=True, classification="success", start_sha=start, recovery="")
     return receipt

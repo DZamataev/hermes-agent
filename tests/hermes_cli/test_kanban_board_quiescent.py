@@ -85,6 +85,46 @@ def test_blocked_leftovers_are_listed_and_the_new_blocked_card_is_named(conn):
     assert payload["attention"] == [b]
 
 
+def test_a_chain_being_assembled_defers_the_announcement(conn, monkeypatch):
+    """kanban-chain.py creates a chain blocked, then links and releases it seconds later: a tick in between must
+    not announce an idle board listing those cards. The decision waits; once the chain runs there is nothing to
+    announce."""
+    a = _card(conn, "a", sub=("tui", "orchestrator"))
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    held = kb.create_task(conn, title="next impl", assignee="worker", initial_status="blocked")
+    _tick(conn)
+    assert _quiescent(conn) == []
+
+    kb.unblock_task(conn, held)
+    _tick(conn)
+    assert _quiescent(conn) == []
+
+
+def test_a_card_parked_at_creation_is_announced_once_the_hold_is_not_fresh(conn, monkeypatch):
+    a = _card(conn, "a", sub=("tui", "orchestrator"))
+    _tick(conn)
+    kb.complete_task(conn, a, summary="ok")
+    held = kb.create_task(conn, title="parked for a human", assignee="worker", initial_status="blocked")
+    _tick(conn)
+    assert _quiescent(conn) == []
+
+    real = kbn.time.time
+    monkeypatch.setattr(kbn.time, "time", lambda: real() + kbn._CREATION_HOLD_GRACE_SECONDS + 1)
+    _tick(conn)
+    _, payload = _quiescent(conn)[-1]
+    assert payload["attention"] == [held]
+
+
+def test_a_card_blocked_by_its_worker_is_announced_at_once(conn):
+    a = _card(conn, "a", sub=("tui", "orchestrator"))
+    _tick(conn)
+    kb.block_task(conn, a, reason="needs a decision")
+    _tick(conn)
+    _, payload = _quiescent(conn)[-1]
+    assert payload["attention"] == [a]
+
+
 def test_board_with_a_running_card_is_not_idle(conn):
     a = _card(conn, "a", sub=("tui", "orchestrator"))
     _card(conn, "b", sub=("tui", "orchestrator"))

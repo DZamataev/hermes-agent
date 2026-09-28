@@ -903,6 +903,17 @@ def _goal_gate_error(conn, tid: str, evidence: str, handoff: str, blocked_hint: 
     return None
 
 
+def _acceptance_refusal(conn, tid: str) -> Optional[str]:
+    """The failed completion-contract receipt that just refused ``tid`` ("<Label> <classification>: <detail>
+    <recovery>", as stored on the card), or None when the refusal was something else."""
+    row = conn.execute("SELECT kind, payload FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                       (tid,)).fetchone()
+    if not row or row[0] not in ("commit_acceptance", "pr_acceptance"):
+        return None
+    task = kb.get_task(conn, tid)
+    return (getattr(task, "last_failure_error", None) or "").strip() or None
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids, rc = _require_ids(args)
@@ -918,6 +929,13 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     metadata, rc = _parse_metadata_flag(raw_meta)
     if rc:
         return rc
+    # The acceptance override is the operator's audited escape hatch (recorded as actor=operator); a worker holding
+    # a card must not wave its own completion past the contract.
+    worker = bool(os.environ.get("HERMES_KANBAN_TASK"))
+    if worker and getattr(args, "override_acceptance", False):
+        return _err("kanban complete --override-acceptance is orchestrator-only; a worker fixes what the "
+                    "acceptance check names, or blocks with it as the reason")
+    override_hint = "" if worker else " Or re-run with --override-acceptance (audited)."
     fail_msg: dict[str, str] = {}
     with kbc.connect_closing() as conn:
         def op(tid):
@@ -932,7 +950,8 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
                                         expected_run_id=_worker_run_id_for(tid),
-                                        force=bool(getattr(args, "force", False)))
+                                        force=bool(getattr(args, "force", False)),
+                                        override_acceptance=bool(getattr(args, "override_acceptance", False)))
             except kb.LiveClaimError:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
@@ -950,9 +969,21 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                     detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
                     fail_msg[tid] = (f"cannot complete {tid}: unsatisfied parent dependencies: {detail}; "
                                      f"complete the parents first, or `hermes kanban unlink <parent> {tid}`.")
+                elif refusal := _acceptance_refusal(conn, tid):
+                    fail_msg[tid] = f"cannot complete {tid}: {refusal}{override_hint}"
             return done
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
+
+
+def _actor_chat() -> Optional[str]:
+    """The messenger chat this command runs from (a terminal child of a gateway turn), tagged as the notifier
+    tags its subscriptions; None outside a chat."""
+    platform, chat = os.environ.get("HERMES_SESSION_PLATFORM", ""), os.environ.get("HERMES_SESSION_CHAT_ID", "")
+    if not (platform and chat):
+        return None
+    from hermes_cli.kanban_db_notify import chat_tag
+    return chat_tag(platform, chat, os.environ.get("HERMES_SESSION_THREAD_ID", ""))
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:
@@ -1013,7 +1044,8 @@ def _cmd_block(args: argparse.Namespace) -> int:
             return f"Blocked {tid}{suffix}"
 
         op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
-            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid)))
+            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid),
+            actor_session=os.environ.get("HERMES_SESSION_KEY") or None, actor_chat=_actor_chat()))
         return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot block {tid}")
 
 

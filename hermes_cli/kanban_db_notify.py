@@ -500,6 +500,9 @@ def rewind_notify_cursor(
 # only while the dispatcher spawns reviewers (``kanban.review_dispatch``); otherwise it waits on a human too.
 _QUIESCENT_MARK_KEY = "quiescent_claim_mark"
 _QUIESCENT_ATTENTION_LIMIT = 20
+# A card created blocked (``initial_status``) is usually a chain being assembled (created held, linked, released a
+# few seconds later). While such a hold is this fresh the board is not idle yet: the decision waits for it.
+_CREATION_HOLD_GRACE_SECONDS = 120
 
 
 def _board_active_statuses() -> tuple[str, ...]:
@@ -512,6 +515,15 @@ def _quiescent_claim_mark(conn: sqlite3.Connection) -> int:
     return int(row[0]) if row else 0
 
 
+def _fresh_creation_hold(conn: sqlite3.Connection) -> bool:
+    """A blocked card whose latest block is its creation hold, made within the grace window."""
+    return conn.execute(
+        "SELECT 1 FROM tasks t JOIN task_events e ON e.id = (SELECT MAX(id) FROM task_events"
+        "   WHERE task_id = t.id AND kind = 'blocked')"
+        " WHERE t.status = 'blocked' AND json_extract(e.payload, '$.reason') = 'initial_status'"
+        "   AND e.created_at > ? LIMIT 1", (int(time.time()) - _CREATION_HOLD_GRACE_SECONDS,)).fetchone() is not None
+
+
 def _newest_uncovered_claim(conn: sqlite3.Connection, active: tuple[str, ...]) -> Optional[tuple[int, int]]:
     """``(mark, newest claimed event id)`` when the board is idle and a card was claimed past the mark, else None.
     Both lookups are indexed (``tasks.status``, a rowid range over events newer than the mark)."""
@@ -521,7 +533,9 @@ def _newest_uncovered_claim(conn: sqlite3.Connection, active: tuple[str, ...]) -
     mark = _quiescent_claim_mark(conn)
     newest = conn.execute(
         "SELECT MAX(id) FROM task_events WHERE id > ? AND kind = 'claimed'", (mark,)).fetchone()[0]
-    return (mark, int(newest)) if newest else None
+    if not newest or _fresh_creation_hold(conn):
+        return None
+    return mark, int(newest)
 
 
 _QUIESCENT_SALT_KEY = "quiescent_tag_salt"
@@ -736,3 +750,85 @@ def describe_board_quiescent(payload: Mapping[str, Any]) -> str:
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
 from hermes_cli import kanban_db as _kb  # noqa: E402
+
+
+QUESTION_BODY_LIMIT = 4000
+
+
+def describe_question(task_id: str, payload: dict) -> str:
+    """A worker's waiting question as the notification shows it: the question (capped like a completion summary),
+    how long the worker waits, and the command whose comment is delivered to it as the answer."""
+    body = str(payload.get("body") or "").strip()
+    if len(body) > QUESTION_BODY_LIMIT:
+        body = body[:QUESTION_BODY_LIMIT].rstrip() + f"\n… (truncated; hermes kanban show {task_id})"
+    try:
+        minutes = int(payload.get("await_minutes") or 0)
+    except (TypeError, ValueError):
+        minutes = 0
+    wait = f"The worker waits up to {minutes} min" if minutes else "The worker waits"
+    return (f"{body}\n{wait} for the answer: hermes kanban comment {task_id} \"<answer>\" "
+            f"(no answer → it blocks or proceeds on a stated assumption).")
+
+
+def chat_tag(platform: str, chat_id: str, thread_id: str = "") -> str:
+    """One messenger chat/topic, as a block records its actor (``actor_chat``) and a subscription is matched."""
+    return f"{str(platform or '').lower()}:{chat_id or ''}:{thread_id or ''}"
+
+
+def sub_chat_tag(sub: Mapping[str, Any]) -> str:
+    return chat_tag(str(sub.get("platform") or ""), str(sub.get("chat_id") or ""), str(sub.get("thread_id") or ""))
+
+
+def _made_by(payload: Mapping[str, Any], sub_keys: tuple, chat: str) -> bool:
+    return bool((payload.get("actor_session") and payload.get("actor_session") in sub_keys)
+                or (chat and payload.get("actor_chat") == chat))
+
+
+def _own_hold_or_gone(kb, conn: sqlite3.Connection, task_id: str, sub_keys: tuple, chat: str) -> bool:
+    task = kb.get_task(conn, task_id)
+    if task is None:
+        return False  # another board's id or a purged card: not ours to judge, keep it listed
+    status = getattr(task, "status", "")
+    if status == "archived":
+        return True
+    if status != "blocked":
+        return False
+    row = conn.execute("SELECT payload FROM task_events WHERE task_id = ? AND kind = 'blocked' ORDER BY id DESC"
+                       " LIMIT 1", (task_id,)).fetchone()
+    try:
+        return bool(row and _made_by(json.loads(row[0] or "{}"), sub_keys, chat))
+    except (TypeError, ValueError):
+        return False
+
+
+def relevant_to(kb, conn: sqlite3.Connection, ev, task, *, sub_keys: tuple = (), chat: str = ""):
+    """The event as the subscriber should see it, or None. A block the subscriber made itself (its session key in
+    ``sub_keys`` or its chat ``chat``), a block of a card archived before delivery, and an idle-board line whose
+    every leftover card is such a hold say nothing it does not already know. Shared by the gateway notifier and the
+    TUI/desktop poller so both surfaces filter alike."""
+    import dataclasses
+    kind = getattr(ev, "kind", "")
+    payload = getattr(ev, "payload", None) or {}
+    if kind == "blocked":
+        if _made_by(payload, sub_keys, chat) or getattr(task, "status", "") == "archived":
+            return None
+        return ev
+    if kind == "board_quiescent" and payload.get("attention"):
+        attention = [t for t in payload["attention"] if not _own_hold_or_gone(kb, conn, str(t), sub_keys, chat)]
+        if not attention:
+            return None
+        if attention != payload["attention"]:
+            return dataclasses.replace(ev, payload={**payload, "attention": attention})
+    return ev
+
+
+BLOCK_REASON_LIMIT = 4000
+
+
+def describe_block_reason(task_id: str, reason: str) -> str:
+    """A block reason as notifications show it: whole (a worker explains there what it needs), capped like a
+    completion summary, with where to read the rest."""
+    reason = str(reason or "").strip()
+    if len(reason) > BLOCK_REASON_LIMIT:
+        reason = reason[:BLOCK_REASON_LIMIT].rstrip() + f"\n… (truncated; hermes kanban show {task_id})"
+    return reason
