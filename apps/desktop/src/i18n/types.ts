@@ -1177,6 +1177,11 @@ export interface Translations {
       fileOpenAppEmpty: string
       voiceShortcutHintTitle: string
       voiceShortcutHintDesc: string
+      fileOpenAppTitle: string
+      fileOpenAppDesc: string
+      fileOpenAppSystem: string
+      fileOpenAppLabel: string
+      fileOpenAppEmpty: string
       showOptions: string
     }
     hudModifier: {
