@@ -1822,7 +1822,6 @@ class AnthropicAuxiliaryClient:
 
     def __init__(self, real_client: Any, model: str, api_key: str, base_url: str, is_oauth: bool = False):
         self._real_client = real_client
-        self.capabilities = {"anthropic_oauth_proxy": is_oauth}
         self.chat = _ChatShim(_AnthropicCompletionsAdapter(real_client, model, is_oauth=is_oauth, base_url=base_url))
         self.api_key = api_key
         self.base_url = base_url

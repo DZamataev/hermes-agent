@@ -1011,3 +1011,72 @@ def test_wire_policy_path_reads_no_credential(relay, monkeypatch):
     monkeypatch.setattr(runtime_provider_custom, "get_secret_str", refuse)
     assert runtime_oauth_proxy(None, "relay", URL, TRUSTED_MODEL) is True
     assert runtime_oauth_proxy(None, "relay", "", TRUSTLESS_MODEL) is False
+
+
+# ── one bare name, two vendors (review 7, finding 1) ─────────────────────────
+
+VENDOR_A = f"vendor-a/{TRUSTED_MODEL}"
+VENDOR_B = f"vendor-b/{TRUSTED_MODEL}"
+
+
+def _vendor_config(vendor_b_block=True):
+    """One relay, provider-level ``false``; vendor A opts in, vendor B (when listed) opts out."""
+    models = {VENDOR_A: {"anthropic_oauth_proxy": True}}
+    if vendor_b_block:
+        models[VENDOR_B] = {"anthropic_oauth_proxy": False}
+    _rewrite_config(providers={"vendors": {
+        "api": URL, "key_env": "TEST_RELAY_KEY", "transport": "anthropic_messages",
+        "capabilities": {"anthropic_oauth_proxy": False}, "models": models,
+    }})
+
+
+def _vendor_main():
+    return {
+        "provider": "custom", "requested_provider": "custom:vendors", "base_url": URL,
+        "api_mode": "anthropic_messages", "model": VENDOR_A,
+        "capabilities": {"anthropic_oauth_proxy": True},
+    }
+
+
+@pytest.mark.parametrize("main", [True, False], ids=["with-main-runtime", "without"])
+@pytest.mark.parametrize("aux_model,expected", [
+    (VENDOR_A, True),
+    (VENDOR_B, False),              # same bare name, another vendor, its own ``false``
+    ("claude-haiku-4-6", False),    # different bare name: provider-level ``false``
+])
+def test_a_vendor_prefix_is_part_of_the_models_identity_on_the_wire(relay, main, aux_model, expected):
+    """The main runtime on vendor A must not lend its ``true`` to vendor B's auxiliary request,
+    whose own declaration says ``false``: asserted on the emitted request, not the resolver."""
+    from agent.auxiliary_client import _get_cached_client
+
+    _vendor_config()
+    client, model = _get_cached_client(
+        "custom:vendors", aux_model, main_runtime=_vendor_main() if main else None)
+    client.chat.completions.create(model=model, messages=[{"role": "user", "content": "hello"}], max_tokens=32)
+    assert_oauth_wire(relay[-1], expected)
+
+
+@pytest.mark.parametrize("vendor_b_block", [True, False], ids=["b-declares-false", "b-declares-nothing"])
+@pytest.mark.parametrize("child_model,expected", [
+    (VENDOR_B, {"anthropic_oauth_proxy": False}),
+    ("claude-haiku-4-6", {"anthropic_oauth_proxy": False}),
+])
+def test_a_model_only_child_pin_to_another_vendor_does_not_take_vendor_as_block(
+    relay, vendor_b_block, child_model, expected,
+):
+    """Without a block of its own, vendor B falls back to the provider level — never to vendor
+    A's block that merely shares the bare name."""
+    _vendor_config(vendor_b_block)
+    assert _child_capabilities(URL, URL, child_model, requested="vendors") == expected
+
+
+def test_a_bare_or_prefixed_spelling_with_one_owner_still_matches(relay):
+    """The alias that is safe to keep: exactly one ``models:`` key spells the model."""
+    from agent.auxiliary_oauth import declared_oauth_proxy
+
+    _vendor_config(vendor_b_block=False)
+    assert declared_oauth_proxy("custom:vendors", TRUSTED_MODEL) is True       # bare -> the only owner
+    assert declared_oauth_proxy("custom:vendors", VENDOR_B) is False           # prefixed, another vendor
+    _vendor_config(vendor_b_block=True)
+    assert declared_oauth_proxy("custom:vendors", TRUSTED_MODEL) is False      # two owners: none borrowed
+    assert declared_oauth_proxy("custom:relay", f"anthropic/{TRUSTLESS_MODEL}") is False  # bare key, prefixed id

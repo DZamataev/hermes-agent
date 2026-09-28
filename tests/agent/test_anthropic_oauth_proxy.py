@@ -528,3 +528,102 @@ def test_one_turn_restore_keeps_the_sessions_capabilities(relay, tmp_path, surfa
         assert_wire(relay[-1], True, TOOLS)
     finally:
         agent._anthropic_client.close()
+
+
+@pytest.mark.parametrize("token", ["cc-synthetic-native-token", "eyJsynthetic.native.token"])
+def test_native_oauth_fallback_is_not_a_declared_relay(relay, tmp_path, monkeypatch, token):
+    """Review 7, finding 2: a built-in ``anthropic`` fallback through an accepted foreign
+    ``/anthropic`` gateway with an OAuth-shaped native token. The wrapper's OAuth flag is a
+    credential-shape fact, not ``anthropic_oauth_proxy``: the session must keep refreshing that
+    token and must not send the relay-only conversation header."""
+    from agent.chat_completion_helpers import build_api_kwargs
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("ANTHROPIC_TOKEN", token)
+    path = tmp_path / "config.yaml"
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    config["providers"]["other"] = {
+        "api": "https://other.example.com", "key_env": "TEST_RELAY_KEY", "transport": "anthropic_messages",
+    }
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    runtime = resolve_runtime_provider(requested="custom:other", target_model=MODEL)
+    agent = AIAgent(
+        model=MODEL, provider=runtime["provider"], api_key=runtime["api_key"],
+        base_url=runtime["base_url"], api_mode=runtime["api_mode"],
+        capabilities=runtime.get("capabilities"), enabled_toolsets=[], quiet_mode=True,
+        skip_context_files=True, skip_memory=True, session_id="sess-native",
+        fallback_model=[{"provider": "anthropic", "model": MODEL,
+                         "base_url": "https://gw.example.com/anthropic"}],
+    )
+    try:
+        assert agent._try_activate_fallback()
+        assert agent.provider == "anthropic"
+        assert agent._anthropic_api_key == token
+        assert not agent.capabilities.get("anthropic_oauth_proxy", False)
+        kwargs = build_api_kwargs(agent, [{"role": "user", "content": "hello"}])
+        assert "x-claude-code-session-id" not in (kwargs.get("extra_headers") or {})
+        # The native token still rotates: the gateway holds an Anthropic credential.
+        monkeypatch.setenv("ANTHROPIC_TOKEN", token + "-rotated")
+        assert agent._try_refresh_anthropic_client_credentials() is True
+        assert agent._anthropic_api_key == token + "-rotated"
+    finally:
+        agent._anthropic_client.close()
+
+
+SIBLING = "https://sibling.example.test/anthropic"
+
+
+def test_pool_restore_onto_a_sibling_endpoint_drops_the_relays_oauth_identity(relay, tmp_path):
+    """Review 7, finding 3: the full chain — primary relay pool entry exhausted, fallback, then the
+    next-turn restore re-selects the primary pool's other entry, which serves a sibling URL. The
+    session lands on the sibling; the relay's declared OAuth identity must not come with it."""
+    from agent.anthropic_adapter import build_anthropic_kwargs
+    from agent.credential_pool import load_pool
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from run_agent import AIAgent
+
+    path = tmp_path / "config.yaml"
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    config["providers"]["other"] = {
+        "api": "https://other.example.com", "key_env": "TEST_RELAY_KEY", "transport": "anthropic_messages",
+    }
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    (tmp_path / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "credential_pool": {
+            "relay": [
+                {"id": "own", "access_token": KEY, "base_url": URL, "priority": 0},
+                {"id": "sibling", "access_token": "sibling-key", "base_url": SIBLING, "priority": 1},
+            ],
+            # The fallback attaches its own pool, so the restore reloads and re-selects the primary's.
+            "custom:other": [{"id": "fb", "access_token": KEY, "base_url": "https://other.example.com"}],
+        },
+    }), encoding="utf-8")
+    pool = load_pool("relay")
+    assert pool.select().id == "own"
+    runtime = resolve_runtime_provider(requested="custom:relay", target_model=MODEL)
+    agent = AIAgent(
+        model=MODEL, provider=runtime["provider"], requested_provider="custom:relay",
+        api_key=KEY, base_url=runtime["base_url"], api_mode=runtime["api_mode"],
+        capabilities=runtime.get("capabilities"), credential_pool=pool, enabled_toolsets=[],
+        quiet_mode=True, skip_context_files=True, skip_memory=True,
+        fallback_model=[{"provider": "custom:other", "model": MODEL}],
+    )
+    try:
+        assert agent.capabilities == {"anthropic_oauth_proxy": True}
+        pool.mark_exhausted_and_rotate(status_code=429, credential_id="own")
+        assert agent._try_activate_fallback()
+        assert agent._restore_primary_runtime() is True
+        assert agent.base_url.rstrip("/") == SIBLING
+        kwargs = build_anthropic_kwargs(
+            model=MODEL, messages=[{"role": "user", "content": "hello"}], tools=TOOLS,
+            max_tokens=32, reasoning_config=None, is_oauth=agent._is_anthropic_oauth,
+            base_url=agent.base_url,
+        )
+        agent._anthropic_client.messages.create(**kwargs)
+        assert_wire(relay[-1], False, TOOLS, host="sibling.example.test", key="sibling-key")
+        assert not agent.capabilities.get("anthropic_oauth_proxy", False)
+    finally:
+        agent._anthropic_client.close()
+
