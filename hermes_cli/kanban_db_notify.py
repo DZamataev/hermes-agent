@@ -775,6 +775,24 @@ def chat_tag(platform: str, chat_id: str, thread_id: str = "") -> str:
     return f"{str(platform or '').lower()}:{chat_id or ''}:{thread_id or ''}"
 
 
+def block_actor() -> dict:
+    """Who is blocking, as a block records it (``actor_session`` / ``actor_chat``), so the conversation that did it
+    is not told about its own action. Read from the session context (a gateway turn binds it in ContextVars; a
+    terminal child carries it in its env). A dispatcher's worker is never an actor: its block is news for the
+    orchestrator, whatever session vars it inherited."""
+    import os
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return {}
+    from gateway.session_context import get_session_env
+    actor = {}
+    if key := get_session_env("HERMES_SESSION_KEY", ""):
+        actor["actor_session"] = key
+    platform, chat = get_session_env("HERMES_SESSION_PLATFORM", ""), get_session_env("HERMES_SESSION_CHAT_ID", "")
+    if platform and chat:
+        actor["actor_chat"] = chat_tag(platform, chat, get_session_env("HERMES_SESSION_THREAD_ID", ""))
+    return actor
+
+
 def sub_chat_tag(sub: Mapping[str, Any]) -> str:
     return chat_tag(str(sub.get("platform") or ""), str(sub.get("chat_id") or ""), str(sub.get("thread_id") or ""))
 

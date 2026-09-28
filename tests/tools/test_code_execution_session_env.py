@@ -53,3 +53,29 @@ def test_an_unbound_thread_in_an_engaged_process_gets_no_key(monkeypatch, bound_
     t.start()
     t.join()
     assert seen["key"] is None
+
+
+def test_a_gateway_turn_passes_the_chat_with_the_key():
+    """kanban-card.sh tells a gateway session from a desktop one by HERMES_SESSION_PLATFORM: a child that got only the
+    key would subscribe a desktop-poller row nobody serves."""
+    tokens = set_session_vars(platform="telegram", chat_id="123", chat_type="dm", thread_id="",
+                              session_key="agent:main:telegram:dm:123")
+    try:
+        env = _child_env()
+    finally:
+        clear_session_vars(tokens)
+    assert env.get("HERMES_SESSION_KEY") == "agent:main:telegram:dm:123"
+    assert env.get("HERMES_SESSION_PLATFORM") == "telegram"
+    assert env.get("HERMES_SESSION_CHAT_ID") == "123"
+
+
+def test_other_session_vars_are_not_borrowed_from_another_turn(monkeypatch, bound_session):
+    import threading
+
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "someone-else")
+    seen = {}
+    t = threading.Thread(target=lambda: seen.update(_child_env()))
+    t.start()
+    t.join()
+    assert "HERMES_SESSION_PLATFORM" not in seen and "HERMES_SESSION_CHAT_ID" not in seen

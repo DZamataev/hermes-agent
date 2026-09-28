@@ -976,14 +976,9 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
 
 
-def _actor_chat() -> Optional[str]:
-    """The messenger chat this command runs from (a terminal child of a gateway turn), tagged as the notifier
-    tags its subscriptions; None outside a chat."""
-    platform, chat = os.environ.get("HERMES_SESSION_PLATFORM", ""), os.environ.get("HERMES_SESSION_CHAT_ID", "")
-    if not (platform and chat):
-        return None
-    from hermes_cli.kanban_db_notify import chat_tag
-    return chat_tag(platform, chat, os.environ.get("HERMES_SESSION_THREAD_ID", ""))
+def _kbn_block_actor() -> dict:
+    from hermes_cli.kanban_db_notify import block_actor
+    return block_actor()
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:
@@ -1013,11 +1008,15 @@ def _cmd_edit(args: argparse.Namespace) -> int:
 
 
 def _commented(conn, reason: Optional[str], author, prefix: str, op):
-    """Wrap a per-task ``op`` so a ``reason`` is first recorded as a ``PREFIX: reason`` comment."""
+    """Wrap a per-task ``op`` so a ``reason`` is recorded as a ``PREFIX: reason`` comment once ``op`` succeeded.
+    After, not before: a worker waiting on its card for an answer (``kanban_comment`` with ``await_reply_minutes``)
+    takes any new comment on a card it still holds for the reply, so a comment ahead of the block would reach it
+    as "continue the work"."""
     def run(tid):
-        if reason:
+        done = op(tid)
+        if reason and done:
             kb.add_comment(conn, tid, author, f"{prefix}: {reason}")
-        return op(tid)
+        return done
     return run
 
 
@@ -1045,7 +1044,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
 
         op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
             conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid),
-            actor_session=os.environ.get("HERMES_SESSION_KEY") or None, actor_chat=_actor_chat()))
+            **_kbn_block_actor()))
         return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot block {tid}")
 
 

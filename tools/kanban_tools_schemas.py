@@ -297,8 +297,9 @@ KANBAN_COMMENT_SCHEMA = _schema(
         "partial findings, rationale). Ephemeral reasoning doesn't "
         "belong here — use your normal response instead. "
         "To ask the orchestrator a question and get the answer in THIS run, comment on your own task with "
-        "await_reply_minutes: the orchestrator is notified, the call waits for a reply from someone other than "
-        "you and returns it in `replies` (empty on timeout, with what to do next). Prefer this to kanban_block "
+        "await_reply_minutes: the orchestrator is notified, the call waits for the next comment on the card and "
+        "returns it in `replies` (empty on timeout or when the card stops being yours, with what to do next; "
+        "earlier notes you had not seen yet come back in `notes`). Prefer this to kanban_block "
         "when you can keep working once answered; block only if nobody answers."
     ),
     {

@@ -135,17 +135,21 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     if _tz_name and not _IS_WINDOWS:
         child_env["TZ"] = _tz_name
     child_env.pop("HERMES_TIMEZONE", None)
-    # The calling session's key is a routing handle, not a secret: scripts that subscribe the
-    # session to Kanban cards read it, as they do from a terminal child. Same rule as the terminal's
-    # _inject_session_context_env: a bound value wins; once any session is bound in this process the
-    # os.environ mirror is another turn's, so an unbound context passes no key; an unengaged CLI keeps it.
+    # The calling session's routing handles are not secrets: scripts that subscribe the session to Kanban
+    # cards read the key, and tell a messenger chat from a desktop session by the platform/chat — as they
+    # do from a terminal child. Same rule as the terminal's _inject_session_context_env: a bound value
+    # wins; once any session is bound in this process the os.environ mirror is another turn's, so an
+    # unbound context passes nothing; an unengaged CLI keeps the mirror.
     from gateway.session_context import _UNSET, _VAR_MAP, session_context_engaged
-    child_env.pop("HERMES_SESSION_KEY", None)
-    _bound = _VAR_MAP["HERMES_SESSION_KEY"].get()
-    _session_key = (os.environ.get("HERMES_SESSION_KEY", "") if _bound is _UNSET and not session_context_engaged()
-                    else "" if _bound is _UNSET or _bound is None else str(_bound))
-    if _session_key:
-        child_env["HERMES_SESSION_KEY"] = _session_key
+    _engaged = session_context_engaged()
+    for _name in ("HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID",
+                  "HERMES_SESSION_THREAD_ID"):
+        child_env.pop(_name, None)
+        _bound = _VAR_MAP[_name].get()
+        _value = (os.environ.get(_name, "") if _bound is _UNSET and not _engaged
+                  else "" if _bound is _UNSET or _bound is None else str(_bound))
+        if _value:
+            child_env[_name] = _value
     apply_subprocess_home_env(child_env)
     # Multiplexed gateway/Desktop (#110303): the server process env carries the machine-default
     # HERMES_HOME, but this turn runs under a per-profile override (ContextVar bound per turn).

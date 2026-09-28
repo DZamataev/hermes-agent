@@ -7,6 +7,7 @@ The reply is the tool result, so the worker keeps its context instead of blockin
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -197,3 +198,120 @@ def test_an_interrupt_ends_the_wait(worker, monkeypatch):
     out = _ask(worker, minutes=5)
     assert time.monotonic() - started < 0.3
     assert out["replies"] == [] and "interrupted" in out["next"]
+
+
+class _Agent:
+    def __init__(self):
+        self.steers = []
+
+    def steer(self, text):
+        self.steers.append(text)
+        return True
+
+
+def _tick(agent):
+    """One activity-heartbeat tick of the live comment injector."""
+    kt._comment_poll_last_attempt = 0.0
+    return kt.inject_new_comments_from_env(agent)
+
+
+def test_a_note_written_just_before_the_question_is_not_lost(worker):
+    """A note the injector had not polled yet when the worker asked: the wait returns it (as a note), and it is not
+    steered in twice afterwards."""
+    agent = _Agent()
+    _tick(agent)  # seeds the watermark, as a running worker's first tool call does
+    with kbc.connect_closing() as conn:
+        kb.add_comment(conn, worker, author="orchestrator", body="NOTE: also update the changelog")
+    t = _reply_later(worker, "v2", after=0.2)
+    out = _ask(worker)
+    t.join()
+    _tick(agent)
+    assert [r["body"] for r in out["replies"]] == ["v2"]
+    delivered = [n["body"] for n in out.get("notes", [])] + [s for s in agent.steers]
+    assert sum("also update the changelog" in d for d in delivered) == 1
+
+
+def test_the_workers_own_earlier_comments_are_not_returned_as_notes(worker):
+    agent = _Agent()
+    _tick(agent)
+    with kbc.connect_closing() as conn:
+        kb.add_comment(conn, worker, author="worker-bot", body="progress: half done")
+    t = _reply_later(worker, "v2", after=0.2)
+    out = _ask(worker)
+    t.join()
+    assert "notes" not in out
+
+
+def test_a_worker_that_lost_its_card_is_not_fed_the_next_workers_comments(worker):
+    agent = _Agent()
+    _tick(agent)
+
+    def take_away():
+        time.sleep(0.1)
+        with kbc.connect_closing() as conn:
+            assert kb.block_task(conn, worker, reason="operator stop")
+    t = threading.Thread(target=take_away)
+    t.start()
+    out = _ask(worker, minutes=5)
+    t.join()
+    assert "no longer" in out["next"]
+    with kbc.connect_closing() as conn:
+        kb.add_comment(conn, worker, author="orchestrator", body="for the NEXT worker: redo it with v3")
+    assert _tick(agent) is False
+    assert agent.steers == []
+
+
+def test_a_block_comment_written_before_the_block_is_not_taken_as_the_answer(worker, monkeypatch):
+    """`hermes kanban block <id> <reason>` records a `BLOCKED: …` comment; a wait polling while the command runs must
+    not hand that comment to the worker as the answer — it gets "no longer yours"."""
+    import argparse
+    import contextlib
+    import io
+    from hermes_cli import kanban as kc
+    from hermes_cli.kanban_parser import build_parser
+
+    real_block = kb.block_task
+
+    def slow_block(conn, tid, **kw):  # widen the window between the command's writes
+        time.sleep(0.3)
+        return real_block(conn, tid, **kw)
+    monkeypatch.setattr(kb, "block_task", slow_block)
+
+    def cli_block():
+        time.sleep(0.1)
+        parser = argparse.ArgumentParser()
+        build_parser(parser.add_subparsers())
+        env = {k: os.environ.pop(k) for k in ("HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID") if k in os.environ}
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                assert kc.kanban_command(parser.parse_args(["kanban", "block", worker, "stop, wrong approach"])) == 0
+        finally:
+            os.environ.update(env)
+    t = threading.Thread(target=cli_block)
+    t.start()
+    out = _ask(worker, minutes=5)
+    t.join()
+    assert out["replies"] == [] and "no longer" in out["next"]
+    with kbc.connect_closing() as conn:
+        assert any(c.body == "BLOCKED: stop, wrong approach" for c in kb.list_comments(conn, worker))
+
+
+def test_the_injector_resumes_after_the_wait(worker):
+    """The wait's marker is cleared when the call returns: a later operator note is steered in as usual."""
+    agent = _Agent()
+    _tick(agent)
+    _reply_later(worker, "v2", after=0.05).join()
+    _ask(worker)
+    with kbc.connect_closing() as conn:
+        kb.add_comment(conn, worker, author="orchestrator", body="one more thing")
+    assert _tick(agent) is True
+    assert "one more thing" in agent.steers[-1]
+
+
+def test_a_worker_started_without_a_run_id_still_gets_its_reply(worker, monkeypatch):
+    """A hand-started worker has no HERMES_KANBAN_RUN_ID: holding a running card is enough to be answered."""
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID")
+    t = _reply_later(worker, "v2")
+    out = _ask(worker)
+    t.join()
+    assert [r["body"] for r in out["replies"]] == ["v2"]
