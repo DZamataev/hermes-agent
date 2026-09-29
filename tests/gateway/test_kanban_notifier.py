@@ -1191,10 +1191,27 @@ def _shared_chat_block(monkeypatch, tmp_path, *, thread: str, per_user: bool, su
     return [m["text"] for m in adapter.sent]
 
 
-def test_another_users_block_in_a_per_user_group_is_delivered(tmp_path, monkeypatch):
-    """A group with a session per user: user X's block is news for user Y's session."""
-    sent = _shared_chat_block(monkeypatch, tmp_path, thread="", per_user=True, sub_user="uY", actor_user="uX")
-    assert any("holding it" in t for t in sent)
+def test_a_block_from_the_subscribed_chat_counts_as_its_own_whoever_typed(tmp_path, monkeypatch):
+    """Chat subscriptions match by chat: the documented limit is a group without topics that keeps a session per
+    user, where user X's block also silences user Y's subscription."""
+    assert _shared_chat_block(monkeypatch, tmp_path, thread="", per_user=True, sub_user="uY", actor_user="uX") == []
+
+
+def test_a_block_from_another_chat_is_delivered(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "other-chat.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="shared", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="group",
+                           delivery_mode="notify")
+        assert kb.block_task(conn, tid, reason="holding it", actor_chat=kbn.chat_tag("telegram", "chat-2", ""),
+                             actor_session="agent:main:telegram:group:chat-2")
+    finally:
+        conn.close()
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert any("holding it" in m["text"] for m in adapter.sent)
 
 
 def test_your_own_block_in_a_per_user_group_is_not_reported_back(tmp_path, monkeypatch):
@@ -1215,12 +1232,6 @@ def test_an_older_block_without_a_session_still_matches_by_chat(tmp_path, monkey
     """Blocks recorded before the actor session was stored name only the chat: they stay the chat's own."""
     assert _shared_chat_block(monkeypatch, tmp_path, thread="", per_user=True, sub_user="uY", actor_user="uX",
                               with_session=False) == []
-
-
-def test_an_idle_board_line_keeps_another_users_hold(tmp_path, monkeypatch):
-    sent = _shared_chat_block(monkeypatch, tmp_path, thread="", per_user=True, sub_user="uY", actor_user="uX",
-                              quiescent=True)
-    assert any("no work left" in t for t in sent)
 
 
 def test_an_idle_board_line_of_only_your_own_hold_says_nothing(tmp_path, monkeypatch):

@@ -51,10 +51,7 @@ def _block_from_chat(monkeypatch, *, process_env: dict, source=None, sub_user: s
         task = kb.get_task(conn, tid)
         event = [e for e in kb.list_events(conn, tid) if e.kind == "blocked"][-1]
         sub = kbn.list_notify_subs(conn, tid)[0]
-        sub_session = runner._session_key_for_source(SessionSource(
-            platform=Platform.TELEGRAM, chat_id=sub["chat_id"], chat_type=sub.get("chat_type") or "group",
-            thread_id=sub.get("thread_id") or None, user_id=sub.get("user_id")))
-        told = kbn.relevant_to(kb, conn, event, task, sub=sub, sub_session=sub_session) is not None
+        told = kbn.relevant_to(kb, conn, event, task, sub=sub) is not None
     return event.payload, told
 
 
@@ -69,14 +66,6 @@ def test_the_gateway_process_env_does_not_name_another_chat(board, monkeypatch):
     payload, _ = _block_from_chat(monkeypatch, process_env={"HERMES_SESSION_PLATFORM": "telegram",
                                                             "HERMES_SESSION_CHAT_ID": "999"})
     assert payload.get("actor_chat") == kbn.chat_tag("telegram", "-100G", "7")
-
-
-def test_another_users_block_in_a_shared_group_still_reaches_your_session(board, monkeypatch):
-    """A group without topics keeps a session per user: user X blocking in the chat is news for user Y's session,
-    which subscribed to the card from the same chat."""
-    x = SessionSource(platform=Platform.TELEGRAM, user_id="uX", chat_id="-100G", user_name="x", chat_type="group")
-    _, told = _block_from_chat(monkeypatch, process_env={}, source=x, sub_user="uY")
-    assert told is True
 
 
 def test_your_own_block_in_a_shared_group_is_not_reported_back(board, monkeypatch):

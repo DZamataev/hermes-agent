@@ -808,24 +808,16 @@ def sub_chat_tag(sub: Mapping[str, Any]) -> str:
     return chat_tag(str(sub.get("platform") or ""), str(sub.get("chat_id") or ""), str(sub.get("thread_id") or ""))
 
 
-def _made_by(payload: Mapping[str, Any], sub_keys: tuple, chat: str, sub_session: str = "") -> bool:
-    """The subscriber did this itself: the block's session is one of its sessions (``sub_keys``), or — for a chat
-    subscription — the block came from the subscriber's chat session. A chat may keep one session for everyone (a
-    forum topic, ``group_sessions_per_user: false``) or one per user, so the session decides, not the chat or the
-    user: the caller passes the subscriber's own key under this gateway's config (``sub_session``). A block that
-    recorded no session (older events) falls back to the chat."""
-    actor_session = payload.get("actor_session")
-    if actor_session and actor_session in sub_keys:
-        return True
-    if not chat or payload.get("actor_chat") != chat:
-        return False
-    if actor_session and sub_session:
-        return actor_session == sub_session
-    return True
+def _made_by(payload: Mapping[str, Any], sub_keys: tuple, chat: str) -> bool:
+    """The subscriber did this itself: the block's session is one of its sessions, or the block came from the
+    subscriber's chat. Matching a chat subscription by chat (not by a derived session key) is deliberate: rows are
+    written by several writers in different shapes, and only the chat is reliable across them. Known limit: in a
+    group without topics that keeps a session per user, one user's block silences another user's subscription."""
+    return bool((payload.get("actor_session") and payload.get("actor_session") in sub_keys)
+                or (chat and payload.get("actor_chat") == chat))
 
 
-def _own_hold_or_gone(kb, conn: sqlite3.Connection, task_id: str, sub_keys: tuple, chat: str,
-                      sub_session: str = "") -> bool:
+def _own_hold_or_gone(kb, conn: sqlite3.Connection, task_id: str, sub_keys: tuple, chat: str) -> bool:
     task = kb.get_task(conn, task_id)
     if task is None:
         return False  # another board's id or a purged card: not ours to judge, keep it listed
@@ -837,30 +829,29 @@ def _own_hold_or_gone(kb, conn: sqlite3.Connection, task_id: str, sub_keys: tupl
     row = conn.execute("SELECT payload FROM task_events WHERE task_id = ? AND kind = 'blocked' ORDER BY id DESC"
                        " LIMIT 1", (task_id,)).fetchone()
     try:
-        return bool(row and _made_by(json.loads(row[0] or "{}"), sub_keys, chat, sub_session))
+        return bool(row and _made_by(json.loads(row[0] or "{}"), sub_keys, chat))
     except (TypeError, ValueError):
         return False
 
 
 def relevant_to(kb, conn: sqlite3.Connection, ev, task, *, sub_keys: tuple = (), chat: str = "",
-                sub: Optional[Mapping[str, Any]] = None, sub_session: str = ""):
+                sub: Optional[Mapping[str, Any]] = None):
     """The event as the subscriber should see it, or None. A block the subscriber made itself (its session key in
-    ``sub_keys``, or from the chat subscription ``sub`` whose session is ``sub_session`` — see ``_made_by``), a block
-    of a card archived before delivery, and an idle-board line whose every leftover card is such a hold say nothing
-    it does not already know. Shared by the gateway notifier and the TUI/desktop poller so both surfaces filter
-    alike."""
+    ``sub_keys``, or from the chat of the subscription ``sub`` — see ``_made_by``), a block of a card archived
+    before delivery, and an idle-board line whose every leftover card is such a hold say nothing it does not
+    already know. Shared by the gateway notifier and the TUI/desktop poller so both surfaces filter alike."""
     import dataclasses
     if sub is not None:
         chat = sub_chat_tag(sub)
     kind = getattr(ev, "kind", "")
     payload = getattr(ev, "payload", None) or {}
     if kind == "blocked":
-        if _made_by(payload, sub_keys, chat, sub_session) or getattr(task, "status", "") == "archived":
+        if _made_by(payload, sub_keys, chat) or getattr(task, "status", "") == "archived":
             return None
         return ev
     if kind == "board_quiescent" and payload.get("attention"):
         attention = [t for t in payload["attention"]
-                     if not _own_hold_or_gone(kb, conn, str(t), sub_keys, chat, sub_session)]
+                     if not _own_hold_or_gone(kb, conn, str(t), sub_keys, chat)]
         if not attention:
             return None
         if attention != payload["attention"]:
