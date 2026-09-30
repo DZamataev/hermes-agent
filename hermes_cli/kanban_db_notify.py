@@ -775,11 +775,44 @@ def chat_tag(platform: str, chat_id: str, thread_id: str = "") -> str:
     return f"{str(platform or '').lower()}:{chat_id or ''}:{thread_id or ''}"
 
 
+def block_actor(*, bound_only: bool = False) -> dict:
+    """Who is blocking, as a block records it (``actor_session`` / ``actor_chat``), so the conversation that did it
+    is not told about its own action. A dispatcher's worker is never an actor: its block is news for the
+    orchestrator, whatever session vars it inherited.
+
+    ``bound_only`` (the ``kanban_block`` tool): only a session bound in this process (a turn binds its ContextVars)
+    is the actor. An agent that merely inherited ``HERMES_SESSION_*`` in its env — ``hermes chat -q`` started from a
+    session's terminal — is a different conversation, and its block is news for that session. The CLI reads the env
+    too: a terminal child of a session is that session acting."""
+    import os
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return {}
+    from gateway.session_context import _UNSET, _VAR_MAP, get_session_env
+
+    def var(name: str) -> str:
+        if not bound_only:
+            return get_session_env(name, "")
+        value = _VAR_MAP[name].get()
+        return "" if value is _UNSET or value is None else str(value)
+
+    actor = {}
+    if key := var("HERMES_SESSION_KEY"):
+        actor["actor_session"] = key
+    platform, chat = var("HERMES_SESSION_PLATFORM"), var("HERMES_SESSION_CHAT_ID")
+    if platform and chat:
+        actor["actor_chat"] = chat_tag(platform, chat, var("HERMES_SESSION_THREAD_ID"))
+    return actor
+
+
 def sub_chat_tag(sub: Mapping[str, Any]) -> str:
     return chat_tag(str(sub.get("platform") or ""), str(sub.get("chat_id") or ""), str(sub.get("thread_id") or ""))
 
 
 def _made_by(payload: Mapping[str, Any], sub_keys: tuple, chat: str) -> bool:
+    """The subscriber did this itself: the block's session is one of its sessions, or the block came from the
+    subscriber's chat. Matching a chat subscription by chat (not by a derived session key) is deliberate: rows are
+    written by several writers in different shapes, and only the chat is reliable across them. Known limit: in a
+    group without topics that keeps a session per user, one user's block silences another user's subscription."""
     return bool((payload.get("actor_session") and payload.get("actor_session") in sub_keys)
                 or (chat and payload.get("actor_chat") == chat))
 
@@ -801,12 +834,15 @@ def _own_hold_or_gone(kb, conn: sqlite3.Connection, task_id: str, sub_keys: tupl
         return False
 
 
-def relevant_to(kb, conn: sqlite3.Connection, ev, task, *, sub_keys: tuple = (), chat: str = ""):
+def relevant_to(kb, conn: sqlite3.Connection, ev, task, *, sub_keys: tuple = (), chat: str = "",
+                sub: Optional[Mapping[str, Any]] = None):
     """The event as the subscriber should see it, or None. A block the subscriber made itself (its session key in
-    ``sub_keys`` or its chat ``chat``), a block of a card archived before delivery, and an idle-board line whose
-    every leftover card is such a hold say nothing it does not already know. Shared by the gateway notifier and the
-    TUI/desktop poller so both surfaces filter alike."""
+    ``sub_keys``, or from the chat of the subscription ``sub`` — see ``_made_by``), a block of a card archived
+    before delivery, and an idle-board line whose every leftover card is such a hold say nothing it does not
+    already know. Shared by the gateway notifier and the TUI/desktop poller so both surfaces filter alike."""
     import dataclasses
+    if sub is not None:
+        chat = sub_chat_tag(sub)
     kind = getattr(ev, "kind", "")
     payload = getattr(ev, "payload", None) or {}
     if kind == "blocked":
@@ -814,7 +850,8 @@ def relevant_to(kb, conn: sqlite3.Connection, ev, task, *, sub_keys: tuple = (),
             return None
         return ev
     if kind == "board_quiescent" and payload.get("attention"):
-        attention = [t for t in payload["attention"] if not _own_hold_or_gone(kb, conn, str(t), sub_keys, chat)]
+        attention = [t for t in payload["attention"]
+                     if not _own_hold_or_gone(kb, conn, str(t), sub_keys, chat)]
         if not attention:
             return None
         if attention != payload["attention"]:

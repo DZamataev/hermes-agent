@@ -188,3 +188,64 @@ class TestSessionDBIntegration:
         finally:
             os.chmod(db_path, 0o644)
             hermes_state._set_last_init_error(None)
+
+
+@pytest.mark.parametrize("sidecar", ["-wal", "-shm"])
+def test_a_sidecar_removed_during_the_check_is_not_reported_read_only(tmp_path, monkeypatch, sidecar):
+    """SQLite deletes the WAL sidecars when another process closes the last connection. One that vanishes between
+    the existence check and the access check is gone, not read-only: the open must proceed."""
+    import hermes_state_repair
+
+    db = tmp_path / "kanban.db"
+    sqlite3.connect(db).close()
+    side = db.with_name(db.name + sidecar)
+    side.write_bytes(b"")
+    real_access = os.access
+
+    def access_after_the_last_close(path, mode):
+        if Path(path) == side and side.exists():
+            side.unlink()  # the other process closes its last connection right here
+        return real_access(path, mode)
+
+    monkeypatch.setattr(hermes_state_repair.os, "access", access_after_the_last_close)
+    preflight_db_writability(db, db_label="kanban.db")
+
+
+def test_a_read_only_sidecar_that_stays_is_still_reported(tmp_path):
+    db = tmp_path / "kanban.db"
+    sqlite3.connect(db).close()
+    side = db.with_name(db.name + "-shm")
+    side.write_bytes(b"")
+    side.chmod(0o444)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="kanban.db-shm is read-only"):
+            preflight_db_writability(db, db_label="kanban.db")
+    finally:
+        side.chmod(0o644)
+
+
+def test_a_sidecar_recreated_during_the_check_is_not_reported_read_only(tmp_path, monkeypatch):
+    """Vanish-then-recreate: the access check fails on a file that is gone, then another connection's open recreates
+    it (writable). Outside the Hermes home there is no chmod repair to fall back on (a profile's shared board)."""
+    import hermes_state_repair
+
+    home = tmp_path / "profiles" / "p"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    db = tmp_path / "kanban.db"
+    sqlite3.connect(db).close()
+    side = db.with_name(db.name + "-wal")
+    side.write_bytes(b"")
+    real_access, flipped = os.access, []
+
+    def access_across_a_recreate(path, mode):
+        if Path(path) == side and not flipped:
+            flipped.append(True)
+            side.unlink()
+            result = real_access(path, mode)  # gone: False
+            side.write_bytes(b"")  # another connection's open recreates it
+            return result
+        return real_access(path, mode)
+
+    monkeypatch.setattr(hermes_state_repair.os, "access", access_across_a_recreate)
+    preflight_db_writability(db, db_label="kanban.db")

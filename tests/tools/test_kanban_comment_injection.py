@@ -54,6 +54,13 @@ def worker_home(tmp_path, monkeypatch):
     return home
 
 
+def _claim_as_worker(conn, tid, monkeypatch):
+    """What the dispatcher does before a worker runs: the card is claimed (running) under the worker's run id.
+    The injector only steers notes into a worker that still holds its card."""
+    kb.claim_task(conn, tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(kb.get_task(conn, tid).current_run_id))
+
+
 def _unthrottle():
     """Bypass the inter-poll rate limit for deterministic tests."""
     kt._comment_poll_last_attempt = 0.0
@@ -71,6 +78,7 @@ def test_seed_then_inject_new_comment(worker_home, monkeypatch):
     try:
         tid = kb.create_task(conn, title="live task")
         kb.add_comment(conn, tid, author="desktop", body="pre-existing note")
+        _claim_as_worker(conn, tid, monkeypatch)
     finally:
         conn.close()
 
@@ -134,6 +142,7 @@ def test_delegated_child_in_worker_process_neither_receives_nor_consumes_notes(w
     conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="live task")
+        _claim_as_worker(conn, tid, monkeypatch)
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
