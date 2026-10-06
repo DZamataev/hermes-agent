@@ -5,8 +5,13 @@ Contract: the model picks a fixed-name tier per task; the operator maps tiers to
 merge over it. An unconfigured tier behaves exactly like ``normal``.
 """
 
+import json
+import threading
+from unittest.mock import MagicMock, patch
+
 import pytest
 
+from tools.delegate_tool import DELEGATE_TASK_SCHEMA, delegate_task
 from tools.delegate_tool_config import (
     DELEGATION_TIERS,
     _merge_tier_config,
@@ -97,3 +102,130 @@ class TestRoutingCfgForTier:
     def test_malformed_tiers_fall_back_to_normal(self, tiers):
         cfg = {"model": "sonnet", "tiers": tiers}
         assert _routing_cfg_for_tier(cfg, "hard") is cfg
+
+
+# ── delegate_task end to end (children built for real, run patched) ─────────────────────────────
+
+def _parent():
+    parent = MagicMock()
+    parent.base_url = "https://parent.example/v1"
+    parent.api_key = "parent-key"
+    parent.provider = "openrouter"
+    parent.requested_provider = "openrouter"
+    parent.api_mode = "chat_completions"
+    parent.model = "parent-model"
+    parent.platform = "cli"
+    parent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+    parent.providers_allowed = parent.providers_ignored = parent.providers_order = parent.provider_sort = None
+    parent._session_db = None
+    parent._delegate_depth = 0
+    parent._active_children = []
+    parent._active_children_lock = threading.Lock()
+    parent._print_fn = None
+    parent.tool_progress_callback = None
+    parent.thinking_callback = None
+    parent._delegation_override = None
+    parent.capabilities = {}
+    return parent
+
+
+CFG = {
+    "max_iterations": 10, "model": "normal-model", "reasoning_effort": "medium",
+    "tiers": {
+        "easy": {"model": "easy-model", "reasoning_effort": "low"},
+        "hard": {"base_url": "http://localhost:9/v1", "api_key": "hard-key", "model": "hard-model",
+                 "reasoning_effort": "high"},
+    },
+}
+
+
+def _done(i):
+    return {"task_index": i, "status": "completed", "summary": "ok", "api_calls": 1, "duration_seconds": 0.1}
+
+
+def _spawn(tasks, cfg=CFG, parent=None, **kw):
+    """Run delegate_task synchronously; return (result dict, AIAgent kwargs per built child, in task order)."""
+    parent = parent or _parent()
+    with patch("tools.delegate_tool._load_config", return_value=cfg), \
+            patch("tools.delegate_tool._run_single_child", side_effect=lambda task_index, **_: _done(task_index)), \
+            patch("run_agent.AIAgent") as MockAgent:
+        MockAgent.side_effect = lambda **_: MagicMock()
+        result = json.loads(delegate_task(tasks=tasks, parent_agent=parent, **kw))
+    return result, [c.kwargs for c in MockAgent.call_args_list]
+
+
+GOAL_A = "Search the repository for every caller of the parser entry point"
+GOAL_B = "Review the parser redesign for correctness and missing edge cases"
+
+
+class TestDelegateTaskTiers:
+    def test_tasks_route_by_their_own_tier(self):
+        result, built = _spawn([{"goal": GOAL_A, "tier": "easy"}, {"goal": GOAL_B, "tier": "hard"}])
+        assert "error" not in result
+        easy, hard = built
+        assert easy["model"] == "easy-model"
+        assert easy["base_url"] == "https://parent.example/v1"  # model-only tier keeps the parent route
+        assert easy["reasoning_config"] == {"enabled": True, "effort": "low"}
+        assert (hard["model"], hard["base_url"], hard["api_key"]) == ("hard-model", "http://localhost:9/v1", "hard-key")
+        assert hard["reasoning_config"] == {"enabled": True, "effort": "high"}
+
+    def test_task_without_tier_is_normal(self):
+        _, (child,) = _spawn([{"goal": GOAL_A}])
+        assert child["model"] == "normal-model"
+        assert child["reasoning_config"] == {"enabled": True, "effort": "medium"}
+
+    def test_unconfigured_tier_is_normal(self):
+        cfg = {**CFG, "tiers": {}}
+        _, (child,) = _spawn([{"goal": GOAL_A, "tier": "hard"}], cfg=cfg)
+        assert child["model"] == "normal-model"
+
+    def test_nothing_configured_inherits_parent(self):
+        _, (child,) = _spawn([{"goal": GOAL_A, "tier": "hard"}], cfg={"max_iterations": 10})
+        assert (child["model"], child["base_url"]) == ("parent-model", "https://parent.example/v1")
+        assert child["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+
+    def test_task_effort_beats_tier_effort(self):
+        _, (child,) = _spawn([{"goal": GOAL_A, "tier": "easy", "reasoning_effort": "xhigh"}])
+        assert child["model"] == "easy-model"
+        assert child["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+
+    def test_task_effort_none_disables_thinking(self):
+        _, (child,) = _spawn([{"goal": GOAL_A, "reasoning_effort": "none"}])
+        assert child["reasoning_config"] == {"enabled": False}
+
+    def test_bad_tier_fails_before_any_child_is_built(self):
+        result, built = _spawn([{"goal": GOAL_A, "tier": "easy"}, {"goal": GOAL_B, "tier": "huge"}])
+        assert "Invalid delegation tier" in result["error"] and "Task 1" in result["error"]
+        assert built == []
+
+    def test_bad_effort_fails_before_any_child_is_built(self):
+        result, built = _spawn([{"goal": GOAL_A}, {"goal": GOAL_B, "reasoning_effort": "turbo"}])
+        assert "reasoning_effort" in result["error"] and "Task 1" in result["error"]
+        assert built == []
+
+    def test_internal_route_owner_ignores_tiers(self):
+        """/review passes its own route (credentials_cfg); a tier must not re-route it."""
+        route = {"model": "review-model"}
+        _, (child,) = _spawn([{"goal": GOAL_A, "tier": "hard"}], credentials_cfg=route)
+        assert child["model"] == "review-model"
+
+
+class TestSchemaContract:
+    def test_tier_enum_is_the_declared_set(self):
+        item = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
+        assert tuple(item["tier"]["enum"]) == DELEGATION_TIERS
+
+    def test_effort_enum_parses(self):
+        from hermes_constants import parse_reasoning_effort
+        item = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
+        assert item["reasoning_effort"]["enum"]
+        assert all(parse_reasoning_effort(v) is not None for v in item["reasoning_effort"]["enum"])
+
+    def test_no_free_form_route_fields_for_the_model(self):
+        item = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
+        assert not {"model", "provider", "base_url", "api_key"} & set(item)
+
+    def test_dynamic_overrides_keep_tier_fields(self):
+        from tools.delegate_tool import _build_dynamic_schema_overrides
+        props = _build_dynamic_schema_overrides()["parameters"]["properties"]["tasks"]["items"]["properties"]
+        assert {"tier", "reasoning_effort"} <= set(props)

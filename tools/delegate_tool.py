@@ -16,6 +16,7 @@ import time
 import weakref
 from typing import Any, Dict, List, Optional
 
+from hermes_constants import VALID_REASONING_EFFORTS
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb  # noqa: F401  (used via _ChildRun.await_child)
 from utils import is_truthy_value
 
@@ -28,6 +29,7 @@ from tools.delegate_tool_child_run import (  # noqa: F401
     _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (  # noqa: F401
+    DELEGATION_TIERS,
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _child_route_capabilities, _get_child_timeout, _get_max_async_children,
     _get_max_concurrent_children, _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled,
     _get_subagent_approval_callback, _get_worktree_isolation, _load_config, _merge_request_overrides,
@@ -36,6 +38,7 @@ from tools.delegate_tool_config import (  # noqa: F401
     _subagent_auto_approve, _subagent_auto_deny,
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
+from tools.delegate_tool_routes import _batch_creds_summary, _plan_task_routes
 from tools.delegate_tool_progress import (  # noqa: F401
     DelegateEvent, SUBAGENT_FAILURE_STATUSES, _batch_prefix, _build_child_progress_callback,
     _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _resolve_workspace_hint,
@@ -179,6 +182,8 @@ def _build_child_agent(
     # callers such as /review pass auxiliary.review here so fallback policy is
     # not accidentally read from the general delegation block.
     routing_cfg: Optional[Dict[str, Any]] = None,
+    # This child's planned effort (tier / task / forced session route); None = delegation.reasoning_effort > parent.
+    reasoning_effort_override: Any = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
 ):
@@ -226,6 +231,7 @@ def _build_child_agent(
         override_acp_args=override_acp_args,
         override_capabilities=override_capabilities,
         routing_cfg=routing_cfg,
+        reasoning_effort_override=reasoning_effort_override,
     )
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
@@ -367,25 +373,28 @@ def _run_single_child(
 
 
 def _build_children(
-    task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
-    top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
+    task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], routes: List[Dict[str, Any]], *,
+    top_role: str, max_iterations: int, parent_agent,
     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
 ) -> tuple[List[tuple], Optional[str]]:
-    """Build every child on the main thread (construction is not thread-safe);
-    ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
+    """Build every child on the main thread (construction is not thread-safe), each on its own planned route
+    (``_plan_task_routes``); ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
-    overrides = {
-        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
-        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
-        "override_request_overrides": creds.get("request_overrides"),
-        "override_capabilities": creds.get("capabilities"),
-        "override_acp_command": creds.get("command"),
-        "override_acp_args": creds.get("args"),
-        "routing_cfg": routing_cfg,
-    }
     children = []
     for i, t in enumerate(task_list):
+        route = routes[i]
+        creds = route["creds"]
+        overrides = {
+            "override_provider": creds["provider"], "override_base_url": creds["base_url"],
+            "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
+            "override_request_overrides": creds.get("request_overrides"),
+            "override_capabilities": creds.get("capabilities"),
+            "override_acp_command": creds.get("command"),
+            "override_acp_args": creds.get("args"),
+            "routing_cfg": route["routing_cfg"],
+            "reasoning_effort_override": route["effort"],
+        }
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
@@ -495,13 +504,6 @@ def delegate_task(
     # credentials_cfg (internal callers only, e.g. /review → auxiliary.review) is
     # a per-call routing owner shaped like the delegation config section. Keep
     # the route and its fallback policy together through child construction.
-    routing_cfg = credentials_cfg if credentials_cfg is not None else cfg
-    try:
-        creds = _resolve_delegation_credentials(routing_cfg, parent_agent)
-    except ValueError as exc:
-        # Explicit-pin preflight failures (e.g. pinned delegation.command missing from PATH) refuse the
-        # spawn loudly (#80450).
-        return tool_error(str(exc))
     max_children = _get_max_concurrent_children()
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
     if not err:
@@ -510,9 +512,18 @@ def delegate_task(
         task_images, err = _coerce_task_images(task_list, images)
     if err:
         return tool_error(err)
+    # Every task's route is resolved BEFORE any child exists: a bad tier/effort or an unresolvable pinned
+    # provider in task k must not leave children 0..k-1 built and orphaned.
+    try:
+        routes = _plan_task_routes(task_list, cfg, credentials_cfg, parent_agent)
+    except ValueError as exc:
+        # Explicit-pin preflight failures (e.g. pinned delegation.command missing from PATH) refuse the
+        # spawn loudly (#80450).
+        return tool_error(str(exc))
     err = _oneshot_spawn_budget(parent_agent, len(task_list))
     if err:
         return tool_error(err)
+    creds = _batch_creds_summary(routes)
 
     overall_start = time.monotonic()
     # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
@@ -525,8 +536,8 @@ def delegate_task(
     origin = _capture_origin()
 
     children, err = _build_children(
-        task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
+        task_list, task_schemas, routes, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
+        live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
     )
     if err:
         return tool_error(err)
@@ -595,7 +606,8 @@ _DESCRIPTION_HEAD = (
     "the parent applies the transition.\n"
 )
 _DESCRIPTION_TAIL = (
-    "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml."
+    "- Pick each task's `tier` by difficulty (easy / normal / hard); the user maps tiers to models, so never "
+    "name a model yourself. Omitted = normal."
 )
 
 def _build_tasks_param_description() -> str:
@@ -689,6 +701,19 @@ DELEGATE_TASK_SCHEMA = {
                             "is enabled; otherwise the whole call returns as one message). Tasks sharing a group return "
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
+                        ),
+                        "tier": _p(
+                            "string",
+                            "Optional difficulty of THIS task; the user maps each tier to a model. 'easy' = search, "
+                            "lookups, mechanical edits, summarising; 'normal' (default) = ordinary implementation and "
+                            "debugging; 'hard' = review, design, subtle bugs, anything where a wrong answer is costly.",
+                            enum=list(DELEGATION_TIERS),
+                        ),
+                        "reasoning_effort": _p(
+                            "string",
+                            "Optional thinking depth for THIS task, overriding its tier's level. Omit unless the task "
+                            "clearly needs more or less thinking than its tier.",
+                            enum=["none", *VALID_REASONING_EFFORTS],
                         ),
                     },
                     "required": ["goal"],
