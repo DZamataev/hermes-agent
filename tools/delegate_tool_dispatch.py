@@ -387,13 +387,14 @@ def _units_of(batch: _Batch) -> List[_Batch]:
     return [replace(batch, children=ch, group=(key[1] if key[0] == "g" else None)) for key, ch in members.items()]
 
 def _unit_model_label(unit: _Batch) -> Optional[str]:
-    """The routed models THIS unit's tasks run on, for the async registry. A task with no route of its own
-    (nothing configured) contributes None — the label then stays what it always was (the call's route model)."""
+    """The models THIS unit's children run on, for the async registry. With no route on any task (nothing
+    configured) the label stays what it always was — the call's route model (None → "?")."""
     per_task = unit.task_route_models
-    if not per_task:
+    if not per_task or not any(per_task):
         return unit.creds.get("model")
-    models = list(dict.fromkeys(str(per_task[i]) for (i, _, _) in unit.children if per_task[i]))
-    return ", ".join(models) if models else unit.creds.get("model")
+    models = list(dict.fromkeys(
+        str(per_task[i] or getattr(c, "model", "") or "") for (i, _, c) in unit.children))
+    return ", ".join(m for m in models if m) or unit.creds.get("model")
 
 
 def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str], routing: dict) -> dict:
