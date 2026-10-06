@@ -76,7 +76,8 @@ export function DeleteProfileDialog({
         // directory the delete just removed (hermes-agent#94235).
         // A remote profile's renderer state is keyed by ITS connection: a
         // route-less drop would speak for this window's backend instead (and
-        // clear a same-named local profile).
+        // clear a same-named local profile). Preview-rail tabs are keyed by
+        // profile name alone, so a same-named local profile's rail still goes.
         const remoteConnection = remote && typeof scope === 'object' ? scope.connectionId?.trim() : ''
 
         if (remoteConnection) {

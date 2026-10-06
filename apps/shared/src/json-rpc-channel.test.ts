@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  carryRequestInFlight,
   isRequestInFlightError,
   JSON_RPC_SESSION_NOT_SHOWN,
   JsonRpcGatewayError,
@@ -341,5 +342,24 @@ describe('JsonRpcRequestChannel', () => {
     const third = sent.at(-1)!
     expect((JSON.parse(third) as { id: string }).id).toBe('srq-3')
     expect((JSON.parse(third) as { result?: { answer?: string } }).result?.answer).toBe('yes')
+  })
+
+  // A retrying layer (reconnect-and-resend, or a reauth that ends it) carries
+  // the first frame's in-flight mark onto the error it finally throws — and
+  // only when the first frame had left.
+  it('carries the in-flight mark onto a retry error only when the first frame left', async () => {
+    const channel = new JsonRpcRequestChannel({ requestTimeoutMs: 60_000 })
+    const { transport } = spyTransport()
+
+    channel.attach(transport)
+    const lost = channel.request('a.call').catch((error: unknown) => error)
+    channel.detach(new Error('gateway connection closed'))
+    const neverLeft = await channel.request('b.call').catch((error: unknown) => error)
+
+    const afterLost = carryRequestInFlight(await lost, new Error('reauth required'))
+    const afterNeverLeft = carryRequestInFlight(neverLeft, new Error('reauth required'))
+
+    expect(isRequestInFlightError(afterLost)).toBe(true)
+    expect(isRequestInFlightError(afterNeverLeft)).toBe(false)
   })
 })

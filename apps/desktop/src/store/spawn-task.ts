@@ -13,9 +13,9 @@ import { pinSession } from './layout'
  *   in the same profile opens on the model/effort/mode picked last time — a
  *   model pair from one profile is never offered to another that may not have
  *   that provider configured;
- * - each chip's outcome keyed by the offering conversation's lineage root +
- *   tool-call id, so a launched or dismissed chip stays that way across
- *   re-renders, reloads and compression (which rotates the session id).
+ * - each chip's outcome keyed by the offer itself (tool-call id + a digest of
+ *   its title and prompt — see `spawnTaskChipKey`), so a launched or dismissed
+ *   chip stays that way across re-renders, reloads, compression and windows.
  *
  * The launch itself is the controller's job (session create + first prompt),
  * so the chip calls a launcher the controller registers; `$spawnTaskLauncherReady`

@@ -21,6 +21,24 @@ it.each([
   ['a live owner (4090)', 4090],
   ['session busy (4009)', 4009]
 ])('a lost first frame resent by useGatewayRequest and refused with %s stays unknown', async (_label, code) => {
+  expect(await kickoffOutcome({ firstFrame: 'lost', resend: new JsonRpcGatewayError('refused', { code }) })).toBe('unknown')
+})
+
+// The other direction: the first attempt never left (the socket was already
+// closed), the resend is refused — nothing reached the backend, so not-sent.
+it('a first attempt that never left, resent and refused, is not sent', async () => {
+  expect(
+    await kickoffOutcome({ firstFrame: 'never-left', resend: new JsonRpcGatewayError('refused', { code: 4090 }) })
+  ).toBe('not-sent')
+})
+
+async function kickoffOutcome({
+  firstFrame,
+  resend
+}: {
+  firstFrame: 'lost' | 'never-left'
+  resend: Error
+}): Promise<unknown> {
   $activeSessionId.set('foreground-runtime')
   setSessions([])
   $sessionTiles.set([{ runtimeId: 'rt', storedSessionId: 'stored' }])
@@ -51,6 +69,11 @@ it.each([
       submits += 1
 
       if (submits === 1) {
+        if (firstFrame === 'never-left') {
+          // No transport bound: refused before any frame leaves.
+          return await new JsonRpcRequestChannel({ requestTimeoutMs: 60_000 }).request(method, params, undefined, undefined, () => new Error('Hermes gateway connection closed'))
+        }
+
         // The frame LEFT; the socket then drops (same message HermesGateway uses).
         const call = channel.request(method, params)
         channel.detach(new Error('Hermes gateway connection closed'))
@@ -58,7 +81,7 @@ it.each([
         return await call
       }
 
-      throw new JsonRpcGatewayError('refused', { code })
+      throw resend
     })
   }
 
@@ -79,5 +102,6 @@ it.each([
   })
 
   expect(submits).toBeGreaterThanOrEqual(2)
-  expect(outcome).toBe('unknown')
-})
+
+  return outcome
+}

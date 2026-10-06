@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { I18nProvider } from '@/i18n'
+import { toChatMessages } from '@/lib/chat-messages/hydration'
 import { queryClient } from '@/lib/query-client'
 import { $pinnedSessionIds } from '@/store/layout'
 import { setModelPreset } from '@/store/model-presets'
@@ -231,6 +232,23 @@ describe('the spawn-task chip', () => {
     await waitFor(() =>
       expect(launcher).toHaveBeenCalledWith(expect.objectContaining({ title: 'x'.repeat(100) }), expect.anything())
     )
+  })
+
+  // `session.resume` / `/compress` hand over the gateway's compact projection
+  // (`_history_to_messages`), not raw rows: the chip must still render from it.
+  it('renders from the compact resume/compress projection of the transcript', () => {
+    const receipt = JSON.stringify({ status: 'offered', success: true, title: ARGS.title })
+
+    const part = toChatMessages([
+      { role: 'user', text: 'go' },
+      { args: ARGS, content: receipt, context: 'Fix tests', name: 'spawn_task', role: 'tool', tool_call_id: 'call_1' }
+    ] as never)
+      .flatMap(message => message.parts)
+      .find(candidate => (candidate as { type: string }).type === 'tool-call') as unknown as ToolCallMessagePartProps
+
+    renderChip({ ...PROPS, ...part, toolName: 'spawn_task' })
+
+    expect(screen.getByRole('button', { name: 'Start in new tab' })).toBeTruthy()
   })
 
   it('a dismissed chip stays dismissed and never launches', () => {

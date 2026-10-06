@@ -112,3 +112,23 @@ def test_lives_only_in_the_desktop_surface_toolset():
     assert "spawn_task" in TOOLSETS["desktop_ui"]["tools"]
     assert "spawn_task" not in _HERMES_CORE_TOOLS
     assert registry.get_toolset_for_tool("spawn_task") == "desktop_ui"
+
+
+def test_the_compact_history_projection_keeps_the_receipt():
+    """`session.resume` / `/compress` hand the Desktop a compact transcript that
+    drops most tool outputs. The chip renders only from the success receipt,
+    so this tool's output must survive the projection or the chip vanishes."""
+    from tui_gateway.server import _history_to_messages  # bound in server
+
+    receipt = st.spawn_task_tool(title="Fix flaky test", prompt="Investigate it")
+    history = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "spawn_task",
+                         "arguments": json.dumps({"title": "Fix flaky test", "prompt": "Investigate it"})}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": receipt},
+    ]
+
+    tool_row = next(m for m in _history_to_messages(history) if m["role"] == "tool")
+    assert json.loads(tool_row["content"])["success"] is True

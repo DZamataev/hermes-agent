@@ -1,4 +1,4 @@
-import type { GatewayWsUrlResult } from '@hermes/shared'
+import { type GatewayWsUrlResult, isGatewayReauthRequired, isRequestInFlightError, JsonRpcRequestChannel } from '@hermes/shared'
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -316,6 +316,40 @@ describe('useGatewayRequest', () => {
     expect(desktop.getConnection).not.toHaveBeenCalled()
     expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
     expect(gateway.connect).toHaveBeenLastCalledWith(expect.stringContaining('ticket=fresh-2'))
+  })
+
+  // A request whose frame LEFT before the socket dropped may have run on the
+  // backend. When the reconnect then demands a sign-in, the caller gets the
+  // actionable reauth error — and must still be able to tell the frame left.
+  it('carries a lost frame’s in-flight mark onto the reauth error', async () => {
+    const desktop = installPrimaryDesktop('oauth')
+    desktop.getGatewayWsUrl.mockResolvedValueOnce({ error: 'expired', needsOauthLogin: true, ok: false } as never)
+
+    const channel = new JsonRpcRequestChannel({ requestTimeoutMs: 60_000 })
+    channel.attach({ send: () => undefined } as never)
+    const primary = makePrimaryGateway()
+
+    primary.request.mockImplementationOnce(async (method: string) => {
+      const call = channel.request(method)
+      channel.detach(new Error('connection closed'))
+      primary.connectionState = 'closed'
+
+      return await call
+    })
+
+    setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('open')
+
+    const { result } = renderHook(() => useGatewayRequest())
+    let thrown: unknown
+
+    await act(async () => {
+      thrown = await result.current.requestGateway('prompt.submit').catch((error: unknown) => error)
+    })
+
+    expect(isGatewayReauthRequired(thrown)).toBe(true)
+    expect(isRequestInFlightError(thrown)).toBe(true)
   })
 
   it('does not reconnect for a non-transport request failure', async () => {
