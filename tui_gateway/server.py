@@ -3067,6 +3067,7 @@ def _fallback_session_info(session: dict) -> dict:
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
         "model": _session_default_model(session), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        "delegation_override": dict(session.get("delegation_override") or {}),
     }
 
 

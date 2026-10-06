@@ -8895,6 +8895,17 @@
             "default": null,
             "title": "Deferred"
           },
+          "delegation_override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DelegationOverride"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "tool_progress": {
             "anyOf": [
               {

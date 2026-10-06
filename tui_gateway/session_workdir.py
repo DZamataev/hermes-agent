@@ -404,6 +404,8 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
             model_config[flag] = True
     if isinstance(composer_profile := session.get("composer_override_profile"), dict):
         model_config["composer_override_profile"] = composer_profile
+    from tui_gateway.session_delegation import stamp_model_config
+    stamp_model_config(model_config, session)  # the composer Subagents pick (a draft pick reaches the row here)
     return row_model, model_config
 
 

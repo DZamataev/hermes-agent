@@ -471,24 +471,28 @@ def _set_display_toggle(rid, params, key, value, session):
 def _set_delegation(rid, params, key, value, session):
     """The session's forced subagent route (composer "Subagents" pick). Session-only by design: the global
     routes are config.yaml's ``delegation`` tiers, edited in Settings — so no session means nothing to set."""
-    from tui_gateway.session_delegation import CLEAR_WORDS, apply_delegation_override, normalize_delegation_pick
+    from tui_gateway.session_delegation import (
+        CLEAR_WORDS, apply_delegation_override, normalize_delegation_pick, persist_delegation_pick)
     if session is None:
         return _err(rid, 4002, "delegation needs a session_id (global subagent routes live in config.yaml)")
     if isinstance(value, str) and value.strip().lower() in CLEAR_WORDS:
         session.pop("delegation_override", None)
-        reported = "auto"
+        pick = None
     else:
         pick = normalize_delegation_pick(value)
         if pick is None:
             return _err(rid, 4002, "delegation takes {provider, model, reasoning_effort} with a model and a known "
                                    "effort, or 'auto'")
-        session["delegation_override"] = reported = pick
+        session["delegation_override"] = pick
     agent = session.get("agent")
     if agent is not None:
         apply_delegation_override(session, agent)
         _persist_live_session_runtime(session)
         _emit_session_info(params.get("session_id", ""), session)
-    return _kv(rid, key, reported)
+    else:
+        persist_delegation_pick(session)  # a lazy session's row must not resurrect the old pick on resume
+    # ``value`` stays a word (ConfigSetResult.value is str|bool); the structured pick rides beside it.
+    return _kv(rid, key, pick["model"] if pick else "auto", delegation_override=dict(pick or {}))
 
 
 # ── dispatch

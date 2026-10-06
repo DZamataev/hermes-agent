@@ -507,11 +507,19 @@ export interface ConfigSetResult {
   confirm_message?: string | null
   scope?: string | null
   deferred?: boolean | null
+  delegation_override?: DelegationOverride | null
   tool_progress?: string | null
   cwd?: string | null
   branch?: string | null
   history_reset?: boolean | null
   info?: SessionLiveInfo | null
+}
+/** A session's forced subagent route (composer "Subagents" pick) — ``tui_gateway/session_delegation.py``. ``model`` is required to force anything; ``provider`` / ``reasoning_effort`` "" = inherit. */
+export interface DelegationOverride {
+  provider?: string
+  model?: string
+  reasoning_effort?: string
+  [key: string]: unknown
 }
 /** ``tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of ``session.create`` / ``session.resume`` / ``session.activate`` results. */
 export interface SessionLiveInfo {
@@ -580,13 +588,6 @@ export interface Usage {
   dev_credits_spent_micros?: number | null
   cost_usd?: number | null
   cost_status?: string | null
-  [key: string]: unknown
-}
-/** A session's forced subagent route (composer "Subagents" pick) — ``tui_gateway/session_delegation.py``. ``model`` is required to force anything; ``provider`` / ``reasoning_effort`` "" = inherit. */
-export interface DelegationOverride {
-  provider?: string
-  model?: string
-  reasoning_effort?: string
   [key: string]: unknown
 }
 export interface McpServerStatus {

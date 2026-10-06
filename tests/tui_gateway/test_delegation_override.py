@@ -44,7 +44,7 @@ class TestConfigSetDelegation:
         agent = _agent()
         session = {"session_key": "k1", "agent": agent}
         resp, write_key, save_cfg, persist = _call(session, dict(PICK))
-        assert resp["result"]["value"] == PICK
+        assert resp["result"]["value"] == PICK["model"] and resp["result"]["delegation_override"] == PICK
         assert session["delegation_override"] == PICK
         assert agent._delegation_override == PICK
         write_key.assert_not_called()
@@ -54,7 +54,7 @@ class TestConfigSetDelegation:
     def test_model_only_pick_is_valid(self):
         session = {"session_key": "k1", "agent": _agent()}
         resp, *_ = _call(session, {"model": "m"})
-        assert resp["result"]["value"] == {"provider": "", "model": "m", "reasoning_effort": ""}
+        assert resp["result"]["delegation_override"] == {"provider": "", "model": "m", "reasoning_effort": ""}
 
     def test_auto_clears(self):
         agent = _agent(_delegation_override=dict(PICK))

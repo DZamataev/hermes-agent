@@ -15,7 +15,7 @@ from typing import Literal
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import OkResult, OpenModel, ProfileParams, SessionLiveInfo
+from .common import DelegationOverride, OkResult, OpenModel, ProfileParams, SessionLiveInfo
 from .registry import method
 
 # ── config.get ────────────────────────────────────────────────────────────────────────────────
@@ -97,6 +97,8 @@ class ConfigSetResult(Result):
     confirm_message: str | None = None
     scope: str | None = None
     deferred: bool | None = None
+    # ``key=delegation``: the session's subagent pick after the write ({} = Auto); ``value`` is its model or "auto".
+    delegation_override: DelegationOverride | None = None
     tool_progress: str | None = None
     cwd: str | None = None
     branch: str | None = None
