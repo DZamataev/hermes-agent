@@ -4,13 +4,12 @@ import type { SessionCreateOverrides } from '@/app/session/hooks/use-session-act
 import { translateNow } from '@/i18n'
 import { desktopGit } from '@/lib/desktop-git'
 import { isGitRepoPath } from '@/store/coding-status'
-import { $activeConnectionId } from '@/store/connections'
 import { notify, notifyError } from '@/store/notifications'
 import type { AgentProfileRoute } from '@/store/profile'
-import { startWorkInRepo } from '@/store/projects'
-import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
+import { removeWorktreePath, startWorkInRepo } from '@/store/projects'
+import { $connection, knownSessionOwner, ownerLookupSessionRows, setSessions } from '@/store/session'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
-import { sessionTileOwnerRoute } from '@/store/session-states'
+import { closeSessionTile, sessionTileOwnerRoute } from '@/store/session-states'
 import {
   type QueuedKickoff,
   queueTileKickoff,
@@ -38,6 +37,22 @@ function ownerFor(offer: SpawnTaskOffer) {
     ? (sessionTileOwnerRoute(offer.ownerStoredSessionId) ??
         knownSessionOwner(ownerLookupSessionRows(), offer.ownerStoredSessionId))
     : undefined
+}
+
+/** Same identity rule as `tileBackendIdentityChanged` (session-tile): an
+ *  unqualified local window (no connection id, mode local) IS `local`, so a
+ *  `local`-routed chat on this machine is never mistaken for a remote one. */
+function ownedByAnotherBackend(ownerConnectionId: string | undefined): boolean {
+  const owner = String(ownerConnectionId || '').trim()
+  const window = $connection.get()
+
+  if (!owner || !window) {
+    return false
+  }
+
+  const active = String(window.connectionId || '').trim() || (window.mode === 'local' ? 'local' : '')
+
+  return Boolean(active) && owner !== active
 }
 
 function ownerRouteFor(offer: SpawnTaskOffer): AgentProfileRoute | undefined {
@@ -94,17 +109,18 @@ export function spawnTaskWorktreeName(title: string, now = Date.now()): string {
  *  folder, which is never what a side task meant. It branches from the
  *  offering checkout's own HEAD: the backend runs `worktree add` in the MAIN
  *  checkout, whose HEAD is the wrong base when the chat lives in a worktree. */
-async function launchCwd(offer: SpawnTaskOffer, choice: SpawnTaskChoice): Promise<null | string | undefined> {
+async function launchCwd(
+  offer: SpawnTaskOffer,
+  choice: SpawnTaskChoice
+): Promise<null | { cwd?: string; worktree?: { path: string; repo: string } }> {
   if (choice.mode !== 'worktree') {
-    return offer.cwd || undefined
+    return offer.cwd ? { cwd: offer.cwd } : {}
   }
 
   // The git facade acts on the WINDOW's connection; a chat routed to another
   // backend has its checkout on that machine. Refuse rather than probe (or
   // create a worktree in) a same-named path on the wrong filesystem.
-  const ownerConnection = ownerRouteFor(offer)?.connectionId
-
-  if (ownerConnection && ownerConnection !== $activeConnectionId.get()) {
+  if (ownedByAnotherBackend(ownerRouteFor(offer)?.connectionId)) {
     notify({ kind: 'error', message: translateNow('assistant.spawnTask.worktreeOtherBackend') })
 
     return null
@@ -119,7 +135,21 @@ async function launchCwd(offer: SpawnTaskOffer, choice: SpawnTaskChoice): Promis
   const base = (await desktopGit()?.review?.revParse(offer.cwd, 'HEAD').catch(() => null)) || undefined
   const tree = await startWorkInRepo(offer.cwd, { ...(base ? { base } : {}), name: spawnTaskWorktreeName(offer.title) })
 
-  return tree?.path ?? null
+  return tree ? { cwd: tree.path, worktree: { path: tree.path, repo: offer.cwd } } : null
+}
+
+/** Undo what a failed launch left behind, so a retry starts clean: the tab
+ *  and its sidebar row (a session whose first prompt never went out has no
+ *  stored row yet) and the fresh worktree with its branch. Best effort. */
+async function rollbackLaunch(stored: null | string, worktree?: { path: string; repo: string }): Promise<void> {
+  if (stored) {
+    closeSessionTile(stored)
+    setSessions(prev => prev.filter(session => session.id !== stored))
+  }
+
+  if (worktree) {
+    await removeWorktreePath(worktree.repo, worktree.path, { force: true }).catch(() => undefined)
+  }
 }
 
 /** Registers how a spawn-task chip starts its session: open a listed tab on
@@ -130,39 +160,43 @@ export function useSpawnTaskLauncher(openNewSessionTile: OpenNewSessionTile): vo
 
   useEffect(() => {
     const launch: SpawnTaskLauncher = async (offer, choice) => {
-      try {
-        const cwd = await launchCwd(offer, choice)
+      let start: Awaited<ReturnType<typeof launchCwd>> = null
+      let stored: null | string = null
 
-        if (cwd === null) {
+      try {
+        start = await launchCwd(offer, choice)
+
+        if (start === null) {
           return null
         }
 
         let kickoff: null | QueuedKickoff = null
 
-        const stored = await openRef.current('center', {
+        stored = await openRef.current('center', {
           ...ownerOptions(offer),
           createOverrides: createOverrides(offer, choice, queued => (kickoff = queued)),
-          ...(cwd ? { cwd } : {}),
+          ...(start.cwd ? { cwd: start.cwd } : {}),
           listed: true
         })
 
-        if (!stored) {
-          return null
-        }
-
         // "Launched" means the task reached the new session, not just that a
         // tab opened: the tile's first submit can be refused or never happen.
-        const sent = kickoff ? await (kickoff as QueuedKickoff).sent : false
+        const sent = stored && kickoff ? await (kickoff as QueuedKickoff).sent : false
 
         if (!sent) {
-          notify({ kind: 'error', message: translateNow('assistant.spawnTask.kickoffFailed') })
+          if (stored) {
+            notify({ kind: 'error', message: translateNow('assistant.spawnTask.kickoffFailed') })
+          }
+
+          await rollbackLaunch(stored, start.worktree)
 
           return null
         }
 
-        return { storedSessionId: stored }
+        return { storedSessionId: stored! }
       } catch (error) {
         notifyError(error, translateNow('assistant.spawnTask.launchFailed'))
+        await rollbackLaunch(stored, start?.worktree)
 
         return null
       }

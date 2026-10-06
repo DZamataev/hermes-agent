@@ -9,7 +9,7 @@ needs no event or round-trip; the result is only a receipt for the model.
 
 import json
 
-from tools.registry import registry, tool_error
+from tools.registry import no_cache_check_fn, registry, tool_error
 
 
 def spawn_task_tool(title: str, prompt: str, tldr: str = "") -> str:
@@ -70,12 +70,15 @@ SPAWN_TASK_SCHEMA = {
 }
 
 
+@no_cache_check_fn
 def check_spawn_task_available() -> bool:
     """Withdrawn for delegate_task children. Their offer renders no chip that
     anyone could launch, and the success reply would tell the model the user saw
     one. Listing the name in DELEGATE_BLOCKED_TOOLS is not enough, because it
     only strips toolsets made up entirely of blocked tools, and ``desktop_ui``
-    is a mixed toolset."""
+    is a mixed toolset. Uncached: the answer depends on WHO is building
+    (a task-local ContextVar), and the process-wide check_fn cache is not keyed
+    by it — a cached parent answer would leak to the child and vice versa."""
     from agent.delegation_context import is_delegated_child_context
 
     return not is_delegated_child_context()

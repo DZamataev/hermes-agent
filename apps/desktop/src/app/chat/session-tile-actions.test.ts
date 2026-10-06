@@ -18,6 +18,8 @@ const { listTileSessionRow, useSessionTileActions, useTileKickoff } = await impo
 
 const { queueTileKickoff } = await import('@/store/spawn-task')
 
+const { requestDesktopOnboardingForCredentialWarning } = await import('@/store/onboarding')
+
 const RUNTIME_SESSION_ID = 'rt-tile-current'
 const STORED_SESSION_ID = 'stored-tile-db'
 const RECOVERED_SESSION_ID = 'rt-tile-recovered'
@@ -288,6 +290,49 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     expect(calls.filter(c => c.method === 'prompt.submit').map(c => c.params?.text)).toEqual([
       '/yolo then fix the flaky login test'
     ])
+  })
+
+  // A submit that refused (here: the profile has no provider, so onboarding
+  // opens instead of a doomed send) must settle the kickoff as NOT sent, and
+  // the prompt must be gone from the queue so a remount cannot resend it.
+  it('reports a refused first prompt as not sent, and consumes it once', async () => {
+    const calls: string[] = []
+
+    requestGatewayMock.mockImplementation(async (method: string) => {
+      calls.push(method)
+
+      return {}
+    })
+    requestDesktopOnboardingForCredentialWarning("No API key configured for provider 'x'. First message will fail.")
+
+    const { sent } = queueTileKickoff(STORED_SESSION_ID, 'fix the flaky login test')
+
+    const useKickoffTile = () => {
+      const actions = useSessionTileActions({
+        requestGateway: requestGatewayMock,
+        runtimeId: RUNTIME_SESSION_ID,
+        scope: MAIN_COMPOSER_SCOPE,
+        storedSessionId: STORED_SESSION_ID
+      })
+
+      useTileKickoff(STORED_SESSION_ID, actions)
+    }
+
+    const first = renderHook(useKickoffTile)
+
+    await act(async () => {
+      await expect(sent).resolves.toBe(false)
+    })
+    first.unmount()
+
+    // Remount (StrictMode, tab move): nothing left to send. The onboarding
+    // gate is spent, so a second take WOULD reach the wire — flush and check.
+    await act(async () => {
+      renderHook(useKickoffTile)
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+
+    expect(calls).not.toContain('prompt.submit')
   })
 })
 

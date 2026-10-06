@@ -2,6 +2,7 @@ import { renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionCreateOverrides } from '@/app/session/hooks/use-session-actions/create-overrides'
+import { $connection, $sessions } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 import {
   $spawnTaskChips,
@@ -24,10 +25,12 @@ const startWorkInRepo = vi.fn(async (_repo: string, _options: unknown) => ({
 }))
 
 const revParse = vi.fn(async () => 'abc123')
+const removeWorktreePath = vi.fn(async (_repo: string, _path: string, _options?: unknown) => undefined)
 const notify = vi.fn()
 
 vi.mock('@/store/coding-status', () => ({ isGitRepoPath: (p: string) => isGitRepoPath(p) }))
 vi.mock('@/store/projects', () => ({
+  removeWorktreePath: (repo: string, path: string, options?: unknown) => removeWorktreePath(repo, path, options),
   startWorkInRepo: (repo: string, options: unknown) => startWorkInRepo(repo, options)
 }))
 vi.mock('@/lib/desktop-git', () => ({ desktopGit: () => ({ review: { revParse } }) }))
@@ -75,11 +78,15 @@ describe('spawn-task launcher', () => {
     isGitRepoPath.mockClear()
     startWorkInRepo.mockClear()
     revParse.mockClear()
+    removeWorktreePath.mockClear()
     notify.mockClear()
+    $connection.set({ mode: 'local' } as never)
   })
 
   afterEach(() => {
     vi.useRealTimers()
+    $connection.set(null)
+    $sessions.set([])
     $sessionTiles.set([])
     setSpawnTaskLauncher(null)
   })
@@ -194,6 +201,38 @@ describe('spawn-task launcher', () => {
     expect(isGitRepoPath).not.toHaveBeenCalled()
     expect(startWorkInRepo).not.toHaveBeenCalled()
     expect(open).not.toHaveBeenCalled()
+  })
+
+  // The other side of the guard: a chat on THIS machine — routed `local`
+  // while the window descriptor carries no connection id — still gets one.
+  it('makes a worktree for a local-routed chat in an unqualified local window', async () => {
+    mountLauncher()
+    $sessionTiles.set([{ ownerRoute: { connectionId: 'local', profile: 'default' }, storedSessionId: 'owner' } as never])
+
+    await expect(launchSpawnTask(OFFER, { ...CHOICE, mode: 'worktree' }, 'scope')).resolves.toBe(true)
+
+    expect(startWorkInRepo).toHaveBeenCalledTimes(1)
+  })
+
+  // A failed launch must not leave litter a retry would duplicate: the fresh
+  // worktree goes, and so do the tab and its sidebar row.
+  it('rolls back the worktree, tab and row when the first prompt never goes out', async () => {
+    mountLauncher(
+      vi.fn(async (_dir: 'center', options: OpenOptions) => {
+        $sessions.set([{ id: 'stored-new' } as never])
+        options.createOverrides.onComposerScopeAssigned?.('stored-new')
+        takeTileKickoff('stored-new')?.settle(false)
+
+        return 'stored-new'
+      })
+    )
+    $sessionTiles.set([{ storedSessionId: 'stored-new' } as never])
+
+    await expect(launchSpawnTask(OFFER, { ...CHOICE, mode: 'worktree' }, 'scope')).resolves.toBe(false)
+
+    expect(removeWorktreePath).toHaveBeenCalledWith(OFFER.cwd, '/repo/.worktrees/x', { force: true })
+    expect($sessions.get().some(session => session.id === 'stored-new')).toBe(false)
+    expect($sessionTiles.get().some(tile => tile.storedSessionId === 'stored-new')).toBe(false)
   })
 
   it('never reuses a worktree name, even for titles that slug to nothing', () => {

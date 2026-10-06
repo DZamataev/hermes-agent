@@ -141,6 +141,36 @@ describe('spawn-task store', () => {
     expect(spawnTaskChoiceFor(SCOPE).pin).toBe(false)
   })
 
+  // Two windows on one transcript: a write here must not erase a launch made
+  // there, and a chip launched there must not launch again here.
+  it('keeps another window’s chip outcomes, and refuses a chip it already launched', async () => {
+    const launcher = vi.fn(async () => ({ storedSessionId: 'stored-9' }))
+    setSpawnTaskLauncher(launcher)
+    const other = { ...OFFER, toolCallId: 'call-other' }
+
+    // Window B launches `other` after this window loaded its chips.
+    window.localStorage.setItem(
+      'hermes.desktop.spawn-task.chips',
+      JSON.stringify({ [spawnTaskChipKey(other)]: { state: 'launched', storedSessionId: 'from-b' } })
+    )
+
+    await expect(launchSpawnTask(other, CHOICE, SCOPE)).resolves.toBe(false)
+    dismissSpawnTask(KEY)
+
+    resetSpawnTaskStoreForTests()
+    expect($spawnTaskChips.get()[spawnTaskChipKey(other)]).toEqual({ state: 'launched', storedSessionId: 'from-b' })
+    expect($spawnTaskChips.get()[KEY]).toEqual({ state: 'dismissed' })
+    expect(launcher).not.toHaveBeenCalled()
+  })
+
+  it('picks up another window’s chip outcomes live', () => {
+    const value = JSON.stringify({ [KEY]: { state: 'dismissed' } })
+    window.localStorage.setItem('hermes.desktop.spawn-task.chips', value)
+    window.dispatchEvent(new StorageEvent('storage', { key: 'hermes.desktop.spawn-task.chips', newValue: value }))
+
+    expect($spawnTaskChips.get()[KEY]).toEqual({ state: 'dismissed' })
+  })
+
   it('dismisses a chip for good', () => {
     dismissSpawnTask(KEY)
     resetSpawnTaskStoreForTests()

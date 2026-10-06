@@ -352,8 +352,27 @@ class TestPendingTitleDedupe:
 
         self._run_first_turn(monkeypatch, db, session)
 
-        assert db.get_session_title("new-session") == "Flaky login #2"
+        assert db.get_session_title("new-session") == "Flaky login (2)"
         assert session.get("pending_title") is None
+        # The dedupe must not read as a lineage continuation: name lookups
+        # (`-c "<title>"`, `/resume <title>`) still open the user's own session.
+        assert db.resolve_session_by_title("Flaky login") == "older"
+
+    def test_dedupe_keeps_a_title_that_ends_in_a_number(self, monkeypatch, tmp_path):
+        """A title like "Fix flaky test #4512" is a name, not a lineage counter."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("older", source="desktop")
+        db.set_session_title("older", "Fix flaky test #4512")
+        db.create_session("new-session", source="desktop")
+        session = _tui_session(agent=self._agent(), session_key="new-session",
+                               pending_title="Fix flaky test #4512", pending_title_dedupe=True)
+
+        self._run_first_turn(monkeypatch, db, session)
+
+        assert db.get_session_title("new-session") == "Fix flaky test #4512 (2)"
+        assert db.resolve_session_by_title("Fix flaky test #4512") == "older"
 
     def test_without_dedupe_a_taken_title_is_still_dropped(self, monkeypatch, tmp_path):
         db = self._db(tmp_path)

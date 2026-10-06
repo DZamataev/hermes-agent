@@ -44,25 +44,35 @@ def test_delegated_children_never_get_it():
     """A child's chip would render nowhere; the model must not be told the user
     sees one. Checked through the real schema assembly, not the deny list —
     a name in DELEGATE_BLOCKED_TOOLS alone does not strip a tool out of a
-    mixed toolset like ``desktop_ui``."""
+    mixed toolset like ``desktop_ui``. No cache resets between the builds: a
+    desktop session builds first, then delegates (and the reverse, a child in
+    one session then a new desktop session) inside the check_fn cache TTL."""
     from agent.delegation_context import delegated_child_context
     from model_tools import _clear_tool_defs_cache, get_tool_definitions
     from tools.registry import invalidate_check_fn_cache
 
     def names():
-        invalidate_check_fn_cache()
-        _clear_tool_defs_cache()
         return {
             row["function"]["name"]
             for row in get_tool_definitions(
                 enabled_toolsets=["desktop_ui"], quiet_mode=True, skip_tool_search_assembly=True)
         }
 
-    assert "spawn_task" in names()
-    with delegated_child_context():
-        child = names()
+    def child_names():
+        with delegated_child_context():
+            return names()
+
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+    assert "spawn_task" in names()  # parent first
+    child = child_names()
     assert "spawn_task" not in child
     assert "focus_pane" in child  # only the offer tool is withdrawn, not the toolset
+
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+    assert "spawn_task" not in child_names()  # child first
+    assert "spawn_task" in names()
 
 
 def test_lives_only_in_the_desktop_surface_toolset():

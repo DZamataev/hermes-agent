@@ -178,6 +178,18 @@ function loadChips(): Record<string, SpawnTaskChipState> {
 /** Remembered choices, one per backend scope (`connection::profile`). */
 export const $spawnTaskChoices = atom<Record<string, SpawnTaskChoice>>(loadChoices())
 export const $spawnTaskChips = atom<Record<string, SpawnTaskChipState>>(loadChips())
+
+// Keep every window's view of chip outcomes and remembered choices live.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', event => {
+    if (event.key === CHIPS_KEY) {
+      $spawnTaskChips.set(loadChips())
+    } else if (event.key === CHOICE_KEY) {
+      $spawnTaskChoices.set(loadChoices())
+    }
+  })
+}
+
 /** Chip ids with a launch in flight; renderer-only, never persisted. */
 export const $spawnTaskLaunching = atom<ReadonlySet<string>>(new Set())
 
@@ -256,8 +268,10 @@ export function spawnTaskChipKey(
   return `${offer.lineageId || offer.ownerStoredSessionId || ''}::${offer.toolCallId}`
 }
 
+/** Another window may have recorded chips since this one loaded: merge onto
+ *  what is stored NOW, so a write here never erases a launch made there. */
 function recordChip(key: string, state: SpawnTaskChipState): void {
-  const entries = Object.entries({ ...$spawnTaskChips.get(), [key]: state })
+  const entries = Object.entries({ ...$spawnTaskChips.get(), ...loadChips(), [key]: state })
   const next = Object.fromEntries(entries.slice(-MAX_CHIPS))
 
   $spawnTaskChips.set(next)
@@ -290,7 +304,9 @@ export async function launchSpawnTask(
 ): Promise<boolean> {
   const key = spawnTaskChipKey(offer)
 
-  if (!launcher || $spawnTaskLaunching.get().has(key) || $spawnTaskChips.get()[key]) {
+  // Re-read storage: the same transcript may be open in another window that
+  // already launched (or dismissed) this chip.
+  if (!launcher || $spawnTaskLaunching.get().has(key) || $spawnTaskChips.get()[key] || loadChips()[key]) {
     return false
   }
 

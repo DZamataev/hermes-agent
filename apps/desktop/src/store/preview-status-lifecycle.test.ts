@@ -7,6 +7,7 @@ import {
   recordPreviewArtifact
 } from './preview-status'
 import { dropTilesForProfile, migrateTilesForProfile, recordSessionEventScope } from './session-states'
+import { setSpawnTaskChoice, spawnTaskChoiceFor, spawnTaskChoiceScope } from './spawn-task'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -62,4 +63,19 @@ it('honors a durable close after module reload', async () => {
   scope({ session_id: 'after-reload', connectionId: 'local', profile: 'persist' })
   fresh.recordPreviewArtifact('after-reload', '/work/saved.html', '/work', 'persist-stored')
   expect(fresh.$previewStatusBySession.get()['after-reload']).toBeUndefined()
+})
+
+// The spawn-task chip's remembered pick is the same kind of profile-keyed
+// family: the rename and delete entry points must carry it along.
+it('moves the spawn-task chip choice on rename and forgets it on delete', () => {
+  const choice = { effort: 'high', fast: false, mode: 'tab' as const, model: 'm', pin: false, provider: 'p' }
+
+  setSpawnTaskChoice(spawnTaskChoiceScope('local', 'before-rename'), choice)
+
+  migrateTilesForProfile('before-rename', 'after-rename')
+  expect(spawnTaskChoiceFor(spawnTaskChoiceScope('local', 'after-rename')).model).toBe('m')
+  expect(spawnTaskChoiceFor(spawnTaskChoiceScope('local', 'before-rename')).model).toBe('')
+
+  dropTilesForProfile('after-rename')
+  expect(spawnTaskChoiceFor(spawnTaskChoiceScope('local', 'after-rename')).model).toBe('')
 })
