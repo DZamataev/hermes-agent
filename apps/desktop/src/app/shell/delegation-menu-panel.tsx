@@ -44,13 +44,20 @@ export function DelegationMenuPanel({ gateway, ownerConnectionId, profile, reque
   const copy = t.shell.delegation
   const view = useSessionView()
   const runtimeId = useStore(view.$runtimeId)
+  const storedId = useStore(view.$storedId)
   const value = useStore(view.$delegationOverride ?? $draftDelegationOverride)
   const [saving, setSaving] = useState(false)
   const request: GatewayRequest | null = requestGateway ?? (gateway ? gateway.request.bind(gateway) : null)
+  // Only a true new-chat draft (the primary pane with nothing selected) owns the draft pick. A stored session
+  // whose runtime is still resuming — or a tile — has no runtime to write to yet and must never leak a pick
+  // into the next new chat's draft.
+  const isDraft = view.kind === 'primary' && !storedId
 
   const commit = async (next: ModelRoute) => {
     if (!runtimeId) {
-      setDraftDelegationOverride(next)
+      if (isDraft) {
+        setDraftDelegationOverride(next)
+      }
 
       return
     }
@@ -80,7 +87,7 @@ export function DelegationMenuPanel({ gateway, ownerConnectionId, profile, reque
         <DropdownMenuItem
           className={cn(dropdownMenuRow, !value.model && 'text-foreground', value.model && 'text-(--ui-text-tertiary)')}
           data-testid="delegation-auto"
-          disabled={saving}
+          disabled={saving || (!runtimeId && !isDraft)}
           onSelect={() => void commit(EMPTY_ROUTE)}
         >
           <Codicon name={value.model ? 'discard' : 'check'} size="0.75rem" />

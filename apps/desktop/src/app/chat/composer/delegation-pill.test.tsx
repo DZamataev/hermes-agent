@@ -131,9 +131,18 @@ describe('DelegationPill', () => {
   })
 })
 
-function renderPanel(runtimeId: null | string, write: () => Promise<unknown> = () => Promise.resolve({ value: 'ok' })) {
+function renderPanel(
+  runtimeId: null | string,
+  write: () => Promise<unknown> = () => Promise.resolve({ value: 'ok' }),
+  shape: { kind: SessionView['kind']; storedId: null | string } = { kind: 'primary', storedId: null }
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const sessionView = view(runtimeId)
+
+  if (!runtimeId) {
+    sessionView.kind = shape.kind
+    sessionView.$storedId = atom(shape.storedId)
+  }
 
   // One owner-routed RPC for both the catalog read and the pick write, like a real surface.
   const request = vi.fn((method: string) => (method === 'model.options' ? Promise.resolve(CATALOG) : write()))
@@ -172,6 +181,20 @@ describe('DelegationMenuPanel', () => {
     fireEvent.click(await screen.findByText(/Gemini 3\.1 Pro/i))
 
     expect($draftDelegationOverride.get()).toMatchObject({ model: 'gemini-3.1-pro', provider: 'google' })
+  })
+
+  it('a tile with no runtime yet never writes into the new-chat draft', async () => {
+    renderPanel(null, undefined, { kind: 'tile', storedId: 'stored-tile' })
+    fireEvent.click(await screen.findByText(/Gemini 3\.1 Pro/i))
+
+    expect($draftDelegationOverride.get()).toEqual(EMPTY_ROUTE)
+  })
+
+  it('a stored primary session still resuming never writes into the new-chat draft', async () => {
+    renderPanel(null, undefined, { kind: 'primary', storedId: 'stored-resuming' })
+    fireEvent.click(await screen.findByText(/Gemini 3\.1 Pro/i))
+
+    expect($draftDelegationOverride.get()).toEqual(EMPTY_ROUTE)
   })
 
   it('a live session writes the pick through config.set key=delegation with its own session id', async () => {

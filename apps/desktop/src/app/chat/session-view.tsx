@@ -124,9 +124,10 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $awaitingResponse: primaryField<boolean>(state => state.awaitingResponse, $awaitingResponse),
   $busy: $primaryBusy,
   $cwd: primaryField<string>(state => state.cwd, $currentCwd),
-  $delegationOverride: primaryField<ModelRoute>(
-    state => state.delegationOverride ?? EMPTY_ROUTE,
-    $draftDelegationOverride
+  // A stored session whose slice is not built yet shows Auto, never the new-chat draft's pick.
+  $delegationOverride: computed(
+    [$primaryState, $draftDelegationOverride, $selectedStoredSessionId],
+    (state, draft, storedId): ModelRoute => (state ? (state.delegationOverride ?? EMPTY_ROUTE) : storedId ? EMPTY_ROUTE : draft)
   ),
   $fast: primaryField<boolean>(state => state.fast, $currentFastMode),
   $lastVisibleIsUser: computed($primaryMessages, lastVisibleMessageIsUser),

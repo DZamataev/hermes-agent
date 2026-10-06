@@ -107,10 +107,12 @@ export function DelegationTierSettings({
       {DELEGATION_TIERS.map(tier => {
         const route = tierRoute(config, tier)
         const fallback = tier === 'normal' ? copy.inheritParent : copy.inheritNormal
+        // A configured base_url wins over provider in the backend (direct endpoint), so name the endpoint.
+        const endpoint = text(getNested(config, `${tier === 'normal' ? 'delegation' : `delegation.tiers.${tier}`}.base_url`))
 
         const label = route.model
           ? [
-              route.provider ? `${route.provider}: ${route.model}` : route.model,
+              endpoint ? `${endpoint}: ${route.model}` : route.provider ? `${route.provider}: ${route.model}` : route.model,
               route.effort && effortLabel(route.effort)
             ]
               .filter(Boolean)

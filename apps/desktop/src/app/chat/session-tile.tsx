@@ -189,7 +189,7 @@ export function shouldResumeSessionTile(opts: {
 
 /** The tile's SessionView: the same atom shape the primary chat renders
  *  from, computed from this session's slice of `$sessionStates`. */
-function buildTileView(storedSessionId: string): SessionView {
+export function buildTileView(storedSessionId: string): SessionView {
   const $runtimeId = computed(
     $sessionTiles,
     tiles => tiles.find(t => t.storedSessionId === storedSessionId)?.runtimeId ?? null
