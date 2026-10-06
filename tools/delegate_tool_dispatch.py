@@ -49,6 +49,9 @@ class _Batch:
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
     unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
+    # Per task (call-wide index): the model its resolved route names, None = inherit the parent. Labels a
+    # split unit with ITS tasks' routes rather than the whole call's summary.
+    task_route_models: Optional[List[Optional[str]]] = None
 
     def owner_kwargs(self) -> Dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -384,9 +387,12 @@ def _units_of(batch: _Batch) -> List[_Batch]:
     return [replace(batch, children=ch, group=(key[1] if key[0] == "g" else None)) for key, ch in members.items()]
 
 def _unit_model_label(unit: _Batch) -> Optional[str]:
-    """The models THIS unit's children run on (tasks may route to different tiers), for the async registry."""
-    models = list(dict.fromkeys(str(getattr(c, "model", "") or "") for (_, _, c) in unit.children))
-    models = [m for m in models if m]
+    """The routed models THIS unit's tasks run on, for the async registry. A task with no route of its own
+    (nothing configured) contributes None — the label then stays what it always was (the call's route model)."""
+    per_task = unit.task_route_models
+    if not per_task:
+        return unit.creds.get("model")
+    models = list(dict.fromkeys(str(per_task[i]) for (i, _, _) in unit.children if per_task[i]))
     return ", ".join(models) if models else unit.creds.get("model")
 
 

@@ -238,7 +238,8 @@ class TestSessionForcedRoute:
         assert child["model"] == "forced-model"
         assert child["reasoning_config"] == {"enabled": True, "effort": "medium"}
 
-    def test_forced_provider_switch_does_not_borrow_hard_tier_endpoint(self):
+    def test_forced_model_only_keeps_the_base_endpoint_even_on_an_endpoint_tier(self):
+        """A forced pick that names only a model rides the base (normal) endpoint — never the hard tier's."""
         parent = self._forced(provider="", model="forced-model")
         cfg = {**CFG, "base_url": "http://normal/v1", "api_key": "normal-key"}
         _, (child,) = _spawn([{"goal": GOAL_A, "tier": "hard"}], cfg=cfg, parent=parent)

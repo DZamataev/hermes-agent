@@ -544,6 +544,7 @@ def delegate_task(
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
+        task_route_models=[r["creds"].get("model") for r in routes],
     )
     return _run_batch(batch, background)
 
