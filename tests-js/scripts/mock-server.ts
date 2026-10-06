@@ -123,6 +123,9 @@ const INTERIM_SCRIPT: ScriptedTurn[] = [
 
 /** Per-server request counter so we can walk through the script turns. */
 let _scriptIndex = 0
+/** Bumps once per scripted assistant reply that carries tool calls, so call ids
+ *  are unique per reply as real providers make them (the Desktop keys chips by id). */
+let _toolCallSeq = 0
 
 /** Per-server counter for the sidebar-states script (independent from _scriptIndex). */
 let _sidebarScriptIndex = 0
@@ -148,6 +151,7 @@ const _receivedUserTexts: string[] = []
 /** Reset the script indices (called between tests via restartMockServer). */
 function resetScriptIndex(): void {
   _scriptIndex = 0
+  _toolCallSeq = 0
   _sidebarScriptIndex = 0
   _sidebarCrossIndex = 0
   _queueStopIndex = 0
@@ -1154,6 +1158,10 @@ function streamScriptedTurn(
   })
 
   const hasToolCalls = turn.toolCalls && turn.toolCalls.length > 0
+
+  if (hasToolCalls) {
+    _toolCallSeq++
+  }
   const finishReason = hasToolCalls ? 'tool_calls' : 'stop'
 
   // If there's no text to stream, go straight to the tool_calls / finish.
@@ -1163,7 +1171,7 @@ function streamScriptedTurn(
         sseChunk(model, {
           tool_calls: turn.toolCalls!.map((tc, idx) => ({
             index: idx,
-            id: `call_e2e_${_scriptIndex}_${idx}`,
+            id: `call_e2e_${_toolCallSeq}_${idx}`,
             type: 'function',
             function: { name: tc.name, arguments: JSON.stringify(tc.args) },
           })),
@@ -1191,7 +1199,7 @@ function streamScriptedTurn(
           sseChunk(model, {
             tool_calls: turn.toolCalls!.map((tc, idx) => ({
               index: idx,
-              id: `call_e2e_${_scriptIndex}_${idx}`,
+              id: `call_e2e_${_toolCallSeq}_${idx}`,
               type: 'function',
               function: { name: tc.name, arguments: JSON.stringify(tc.args) },
             })),
@@ -1223,6 +1231,10 @@ function nonStreamingScriptedTurn(
   turn: ScriptedTurn,
 ): void {
   const hasToolCalls = turn.toolCalls && turn.toolCalls.length > 0
+
+  if (hasToolCalls) {
+    _toolCallSeq++
+  }
   const finishReason = hasToolCalls ? 'tool_calls' : 'stop'
 
   const message: Record<string, unknown> = { role: 'assistant' }
@@ -1233,7 +1245,7 @@ function nonStreamingScriptedTurn(
 
   if (hasToolCalls) {
     message.tool_calls = turn.toolCalls!.map((tc, idx) => ({
-      id: `call_e2e_${_scriptIndex}_${idx}`,
+      id: `call_e2e_${_toolCallSeq}_${idx}`,
       type: 'function',
       function: { name: tc.name, arguments: JSON.stringify(tc.args) },
     }))
