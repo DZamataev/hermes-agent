@@ -1,6 +1,7 @@
 import type { GatewayEventPayload } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { isTodoToolName } from '@/lib/todos'
+import { routeFromWire, sameRoute } from '@/store/delegation-override'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -9,6 +10,7 @@ type SessionRuntimeStatePatch = Partial<
     ClientSessionState,
     | 'branch'
     | 'cwd'
+    | 'delegationOverride'
     | 'fast'
     | 'model'
     | 'personality'
@@ -53,6 +55,10 @@ export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined):
     patch.reasoningEffortWire = payload.reasoning_effort_wire
   }
 
+  if (payload?.delegation_override && typeof payload.delegation_override === 'object') {
+    patch.delegationOverride = routeFromWire(payload.delegation_override)
+  }
+
   if (typeof payload?.service_tier === 'string') {
     patch.serviceTier = payload.service_tier
   }
@@ -89,6 +95,8 @@ export function applySessionInfoStatePatch(
     (patch.reasoningEffort === undefined || patch.reasoningEffort === state.reasoningEffort) &&
     (patch.reasoningEffortPending === undefined ||
       patch.reasoningEffortPending === Boolean(state.reasoningEffortPending)) &&
+    (patch.delegationOverride === undefined ||
+      (state.delegationOverride !== undefined && sameRoute(patch.delegationOverride, state.delegationOverride))) &&
     (patch.serviceTier === undefined || patch.serviceTier === state.serviceTier) &&
     (patch.yolo === undefined || patch.yolo === state.yolo)
   ) {

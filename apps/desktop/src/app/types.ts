@@ -1,5 +1,6 @@
 import type * as React from 'react'
 
+import type { ModelRoute } from '@/app/shell/detached-model-controller'
 import type { ChatMessage } from '@/lib/chat-messages'
 import type { Tiered } from '@/store/interface-mode'
 import type { SessionMessage, UsageStats } from '@/types/hermes'
@@ -163,6 +164,8 @@ export interface ClientSessionState {
    *  "unknown", not "profile default". A cold resume answers before the agent
    *  builds, and only the built agent knows the session's own pin (#79807). */
   reasoningEffortPending?: boolean
+  /** The session's forced subagent route (composer "Subagents" pick); empty model = Auto. */
+  delegationOverride?: ModelRoute
   serviceTier: string
   fast: boolean
   yolo: boolean

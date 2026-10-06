@@ -23,6 +23,7 @@ import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useModelControls } from '@/app/session/hooks/use-model-controls'
 import { blobToDataUrl } from '@/app/session/hooks/use-prompt-actions/utils'
 import { probeStoredSession, resolveStoredSession } from '@/app/session/hooks/use-session-actions/utils'
+import { EMPTY_ROUTE } from '@/app/shell/detached-model-controller'
 import { ModelMenuPanel } from '@/app/shell/model-menu-panel'
 import { ReasoningMenuPanel } from '@/app/shell/reasoning-menu-panel'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
@@ -205,6 +206,7 @@ function buildTileView(storedSessionId: string): SessionView {
     $awaitingResponse: computed($state, state => Boolean(state?.awaitingResponse)),
     $busy: computed($state, state => Boolean(state?.busy)),
     $cwd: computed($state, state => state?.cwd ?? ''),
+    $delegationOverride: computed($state, state => state?.delegationOverride ?? EMPTY_ROUTE),
     $fast: computed($state, state => Boolean(state?.fast)),
     $lastVisibleIsUser: computed($messages, lastVisibleMessageIsUser),
     $messages,

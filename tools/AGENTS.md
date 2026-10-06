@@ -123,7 +123,13 @@ it is never the first signal a live parent receives.
 
 Spawns a subagent with isolated context + terminal session; the parent waits for the summary unless
 `background=true`, which returns a delegation id and re-enters the result via the async-delegation
-completion queue. Shapes: single (`goal` + optional `context`, `toolsets`) or batch (`tasks: [...]`,
+completion queue. **Routing per task** (`tools/delegate_tool_routes.py::_plan_task_routes`, every task
+resolved before any child is built): the session's forced route (`parent_agent._delegation_override`, set by
+the Desktop composer through `config.set key=delegation`, `tui_gateway/session_delegation.py`) → the task's
+difficulty `tier` (`easy|normal|hard`; `normal` = the base `delegation.*` block, others
+`delegation.tiers.<tier>` merged over it by `_merge_tier_config`) → parent. Effort: forced → task
+`reasoning_effort` → tier → parent. Internal route owners (`credentials_cfg`, e.g. /review) bypass both. The
+schema exposes only the two enums — never a free-form model/provider (the model would invent ids). Shapes: single (`goal` + optional `context`, `toolsets`) or batch (`tasks: [...]`,
 concurrency capped by `delegation.max_concurrent_children`, default 3). A background batch returns as ONE
 completion by default; with `delegation.independent_completions` it is split into completion **units**
 (`delegate_tool_dispatch._units_of`): tasks sharing a `group` join and report together; each ungrouped

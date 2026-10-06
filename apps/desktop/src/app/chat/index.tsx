@@ -9,6 +9,7 @@ import { useLocation } from 'react-router'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { sessionShouldHaveTranscript } from '@/app/session/hooks/use-session-actions/utils'
+import { DelegationMenuPanel } from '@/app/shell/delegation-menu-panel'
 import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
@@ -719,6 +720,27 @@ const ChatViewContent = memo(function ChatViewContent({
 
   const supportsReasoning = currentModelCapabilities(modelOptionsQuery.data, currentProvider, currentModel)?.reasoning
 
+  // The Subagents pill's menu, bound to THIS surface's catalog owner (a tile queries its own backend).
+  const delegationMenuContent = useMemo(
+    () =>
+      gatewayOpen ? (
+        <DelegationMenuPanel
+          gateway={gateway || undefined}
+          ownerConnectionId={modelOptionsOwnerConnectionId}
+          profile={modelOptionsProfile || activeGatewayProfile}
+          requestGateway={requestModelOptionsForOwner}
+        />
+      ) : null,
+    [
+      activeGatewayProfile,
+      gateway,
+      gatewayOpen,
+      modelOptionsOwnerConnectionId,
+      modelOptionsProfile,
+      requestModelOptionsForOwner
+    ]
+  )
+
   const chatBarState = useMemo<ChatBarState>(
     () => ({
       model: {
@@ -729,6 +751,7 @@ const ChatViewContent = memo(function ChatViewContent({
         modelMenuContent,
         quickModels,
         reasoningMenuContent,
+        delegationMenuContent,
         supportsReasoning
       },
       tools: {
@@ -745,6 +768,7 @@ const ChatViewContent = memo(function ChatViewContent({
       contextSuggestions,
       currentModel,
       currentProvider,
+      delegationMenuContent,
       gatewayOpen,
       modelMenuContent,
       quickModels,

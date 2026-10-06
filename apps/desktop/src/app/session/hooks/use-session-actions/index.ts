@@ -36,6 +36,7 @@ import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import { $connectionRequests } from '@/store/connection-request'
+import { $draftDelegationOverride, routeToWire } from '@/store/delegation-override'
 import {
   $gateway,
   openGatewayForAgent,
@@ -339,6 +340,9 @@ async function desktopSessionCreateParams(
     provider: isManualSelection ? $currentProvider.get().trim() : ''
   }
 
+  // The draft composer's Subagents pick rides the create like the model pick (session-scoped, never config).
+  const delegationPick = routeToWire($draftDelegationOverride.get())
+
   const profile =
     capturedRoute?.profile ||
     requestedProfile ||
@@ -367,6 +371,7 @@ async function desktopSessionCreateParams(
             ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
             : {}),
           ...(selection.effort ? { reasoning_effort: selection.effort } : {}),
+          ...(delegationPick === 'auto' ? {} : { delegation_override: delegationPick }),
           fast: selection.fast
         }
       : {})

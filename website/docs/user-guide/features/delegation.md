@@ -289,7 +289,23 @@ delegation:
 
 Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model. Setting `delegation.provider` alongside `delegation.base_url` keeps the explicit endpoint but carries that provider's request overrides and max output tokens into the child. An explicit `delegation.request_overrides` dict is honored on every branch and merges over those runtime-derived values (see [Configuration](#configuration) below).
 
-Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
+### Difficulty tiers (per task)
+
+The pin above is the **normal** tier. Each task in a `delegate_task` call may name a difficulty `tier` — `easy`, `normal` (default) or `hard` — and an optional `reasoning_effort`; the model never names a provider or model id. You map the other two tiers under `delegation.tiers`, merged over the base block:
+
+```yaml
+delegation:
+  model: "claude-sonnet-5"            # normal tier (and the default for untiered tasks)
+  provider: "anthropic"
+  reasoning_effort: medium
+  tiers:
+    easy: { provider: deepseek, model: deepseek-v4-flash, reasoning_effort: low }
+    hard: { model: claude-opus-5, reasoning_effort: high }   # model-only: keeps the normal tier's provider
+```
+
+A tier that changes `provider` or `base_url` drops the inherited key/endpoint; an unset tier behaves like `normal`; with nothing configured children inherit the parent, exactly as before. Effort resolves task `reasoning_effort` → tier → `delegation.reasoning_effort` → parent. Config is read on every call, so a change applies to the next spawn of every session. The Desktop app edits these rows under **Settings → Advanced → Subagents**.
+
+**Forcing one model for a chat (Desktop).** The composer's **Subagents** pill (next to the model and reasoning pills) is Auto by default. Picking a model + effort there forces it for every child of that chat — tiers and the model's own effort pick are ignored — without touching `config.yaml`; the pick persists with the session and survives resume. Internal route owners such as `/review` keep their own route either way.
 
 ## The `/review` Command
 

@@ -828,12 +828,11 @@ export const SECTIONS: DesktopConfigSection[] = [
       'agent.api_max_retries',
       'agent.service_tier',
       'agent.tool_use_enforcement',
-      'delegation.model',
-      'delegation.provider',
+      // delegation.model / provider / reasoning_effort are the "Normal" tier row of the
+      // Subagent models editor (DelegationTierSettings), not free-text fields here.
       'delegation.max_iterations',
       'delegation.max_concurrent_children',
       'delegation.child_timeout_seconds',
-      'delegation.reasoning_effort',
       'updates.non_interactive_local_changes'
     ]
   }

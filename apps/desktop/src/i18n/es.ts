@@ -2061,6 +2061,21 @@ export const esOverrides = {
       deepLinkErrorUrl: 'Solo se permiten URL de servidor http:// y https://.',
       deepLinkErrorTooLarge: 'La configuración supera el límite de 32 KB.'
     },
+    delegationTiers: {
+      description:
+        'Los subagentes eligen un nivel por tarea según su dificultad; elige el modelo de cada nivel. Un chat aún puede forzar un modelo para todos sus subagentes desde el compositor.',
+      tiers: { easy: 'Fácil', normal: 'Normal', hard: 'Difícil' },
+      hints: {
+        easy: 'Búsqueda, consultas, ediciones mecánicas',
+        normal: 'Implementación y depuración habituales — también por defecto',
+        hard: 'Revisión, diseño, errores sutiles'
+      },
+      defaultPill: 'por defecto',
+      inheritParent: 'Igual que el modelo del chat',
+      inheritNormal: 'Igual que Normal',
+      thinkingOff: 'Razonamiento desactivado',
+      clear: 'Borrar'
+    },
     model: {
       setupProviderFallback: 'proveedor',
       setUpProvider: name => `Configurar ${name}`,
@@ -5038,6 +5053,13 @@ export const esOverrides = {
       cacheRead: 'lectura en caché',
       priceTitle: (input: string, output: string, cache: string) =>
         `Entrada ${input}/Mtok · Salida ${output}/Mtok` + (cache ? ` · Lectura en caché ${cache}/Mtok` : '')
+    },
+    delegation: {
+      pillPrefix: 'Subagentes:',
+      auto: 'Auto',
+      autoTitle: 'Los subagentes eligen modelo según la dificultad de cada tarea (Ajustes → Modelos de subagentes)',
+      forcedTitle: (model: string) => `Cada subagente de este chat usa ${model}`,
+      updateFailed: 'No se pudo actualizar el modelo de subagentes'
     },
     modelOptions: {
       noOptions: 'No hay opciones para este modelo',
