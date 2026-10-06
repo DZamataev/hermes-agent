@@ -535,7 +535,8 @@ def _load_config() -> dict:
 DELEGATION_TIERS = ("easy", "normal", "hard")
 _DEFAULT_TIER = "normal"
 # Keys that together address one route: a tier that switches provider or endpoint must not inherit the rest.
-_ROUTE_BUNDLE_KEYS = ("model", "provider", "base_url", "api_key", "api_mode", "command", "args")
+# ``request_overrides`` belongs to the route too: it can carry extra_headers (tokens) meant for the base endpoint.
+_ROUTE_BUNDLE_KEYS = ("model", "provider", "base_url", "api_key", "api_mode", "command", "args", "request_overrides")
 
 
 def _normalize_tier(value: Any) -> str:

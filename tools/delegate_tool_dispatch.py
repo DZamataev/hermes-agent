@@ -383,6 +383,13 @@ def _units_of(batch: _Batch) -> List[_Batch]:
         members.setdefault(key, []).append((i, t, c))
     return [replace(batch, children=ch, group=(key[1] if key[0] == "g" else None)) for key, ch in members.items()]
 
+def _unit_model_label(unit: _Batch) -> Optional[str]:
+    """The models THIS unit's children run on (tasks may route to different tiers), for the async registry."""
+    models = list(dict.fromkeys(str(getattr(c, "model", "") or "") for (_, _, c) in unit.children))
+    models = [m for m in models if m]
+    return ", ".join(models) if models else unit.creds.get("model")
+
+
 def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str], routing: dict) -> dict:
     """Hand ONE unit to the async registry; the runner joins on that unit's children only."""
     from tools.async_delegation import dispatch_async_delegation_batch
@@ -396,7 +403,7 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         # Call-wide goals: completion formatting indexes them by task_index.
         goals=[t["goal"] for t in unit.task_list], context=unit.context,
         toolsets=None,  # metadata for the completion block only; subagents inherit the parent's toolsets
-        role=unit.top_role, model=unit.creds["model"],
+        role=unit.top_role, model=_unit_model_label(unit),
         runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
         interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
         task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,

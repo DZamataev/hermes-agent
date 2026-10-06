@@ -62,6 +62,13 @@ class TestMergeTierConfig:
             assert key not in merged
         assert merged["max_iterations"] == 50  # non-route keys survive
 
+    def test_endpoint_switch_drops_base_request_overrides(self):
+        """Base request_overrides can carry endpoint-specific headers (tokens); a new endpoint must not get them."""
+        base = {**self.BASE, "request_overrides": {"extra_headers": {"X-Token": "base"}}}
+        assert "request_overrides" not in _merge_tier_config(base, {"base_url": "http://other/v1"})
+        assert "request_overrides" not in _merge_tier_config(base, {"provider": "deepseek"})
+        assert _merge_tier_config(base, {"model": "cheap"})["request_overrides"] == base["request_overrides"]
+
     def test_base_url_switch_drops_inherited_route_bundle(self):
         merged = _merge_tier_config(self.BASE, {"base_url": "http://localhost:1234/v1"})
         assert merged["base_url"] == "http://localhost:1234/v1"
@@ -236,6 +243,30 @@ class TestSessionForcedRoute:
         cfg = {**CFG, "base_url": "http://normal/v1", "api_key": "normal-key"}
         _, (child,) = _spawn([{"goal": GOAL_A, "tier": "hard"}], cfg=cfg, parent=parent)
         assert (child["model"], child["base_url"]) == ("forced-model", "http://normal/v1")
+
+    def test_forced_model_without_effort_ignores_task_effort(self):
+        """Under a forced route the model's own effort pick is ignored even when the pick names no effort."""
+        parent = self._forced(model="forced-model")
+        _, (child,) = _spawn([{"goal": GOAL_A, "reasoning_effort": "xhigh"}], parent=parent)
+        assert child["reasoning_config"] == {"enabled": True, "effort": "medium"}
+
+    def test_forced_provider_switch_drops_base_endpoint_key_and_overrides(self):
+        """A forced provider must not inherit the base block's endpoint, key or request headers."""
+        parent = self._forced(provider="deepseek", model="deepseek-v4")
+        cfg = {**CFG, "base_url": "http://normal/v1", "api_key": "normal-key",
+               "request_overrides": {"extra_headers": {"X-Token": "normal-only"}}}
+        seen = {}
+
+        def _creds(routing_cfg, parent_agent):
+            seen.update(routing_cfg)
+            return {"model": routing_cfg.get("model"), "provider": routing_cfg.get("provider"),
+                    "base_url": None, "api_key": None, "api_mode": None}
+
+        with patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=_creds):
+            _spawn([{"goal": GOAL_A}], cfg=cfg, parent=parent)
+        assert (seen["provider"], seen["model"]) == ("deepseek", "deepseek-v4")
+        for key in ("base_url", "api_key", "request_overrides"):
+            assert key not in seen, key
 
     @pytest.mark.parametrize("override", [None, {}, {"model": ""}, "auto"])
     def test_auto_or_empty_override_leaves_tiers_in_charge(self, override):

@@ -303,9 +303,9 @@ delegation:
     hard: { model: claude-opus-5, reasoning_effort: high }   # model-only: keeps the normal tier's provider
 ```
 
-A tier that changes `provider` or `base_url` drops the inherited key/endpoint; an unset tier behaves like `normal`; with nothing configured children inherit the parent, exactly as before. Effort resolves task `reasoning_effort` → tier → `delegation.reasoning_effort` → parent. Config is read on every call, so a change applies to the next spawn of every session. The Desktop app edits these rows under **Settings → Advanced → Subagents**.
+A tier that changes `provider` or `base_url` drops the inherited key/endpoint/request overrides; an unset tier behaves like `normal`. With nothing configured the child's route is the parent's, exactly as before — but the model may still set a task's `reasoning_effort`, which then applies (that is the one thing a zero-config user can see change). Effort resolves task `reasoning_effort` → tier → `delegation.reasoning_effort` → parent. Config is read on every call, so a change applies to the next spawn of every session. The Desktop app edits these rows under **Settings → Advanced → Subagents**.
 
-**Forcing one model for a chat (Desktop).** The composer's **Subagents** pill (next to the model and reasoning pills) is Auto by default. Picking a model + effort there forces it for every child of that chat — tiers and the model's own effort pick are ignored — without touching `config.yaml`; the pick persists with the session and survives resume. Internal route owners such as `/review` keep their own route either way.
+**Forcing one model for a chat (Desktop).** The composer's **Subagents** pill (next to the model and reasoning pills) is Auto by default. Picking a model + effort there forces it for every child of that chat — tiers and the model's own effort pick are ignored (a pick without an effort uses `delegation.reasoning_effort`, then the parent's) — without touching `config.yaml`; the pick persists with the session and survives resume, rebuilds and compression. Internal route owners such as `/review` keep their own route either way.
 
 ## The `/review` Command
 

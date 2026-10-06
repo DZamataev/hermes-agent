@@ -1,10 +1,11 @@
 """Per-task route planning for ``delegate_task``: which provider/model/effort each child runs on.
 
 Precedence for model-facing calls: the session's forced subagent route (Desktop composer) → the task's
-difficulty ``tier`` → ``normal`` (the base ``delegation.*`` block) → the parent's own route. Effort follows the
-same owner, with a task's own ``reasoning_effort`` between the forced route and the tier. Internal callers that
-pass their own route (``credentials_cfg``, e.g. /review → auxiliary.review) keep it: tiers and the session route
-re-route only what the model spawns.
+difficulty ``tier`` → ``normal`` (the base ``delegation.*`` block) → the parent's own route. Effort: under a
+forced route, its own effort → ``delegation.reasoning_effort`` → parent (the task's ``reasoning_effort`` is
+ignored — the operator forced the whole route); otherwise the task's ``reasoning_effort`` → the tier's →
+``delegation.reasoning_effort`` → parent. Internal callers that pass their own route (``credentials_cfg``, e.g.
+/review → auxiliary.review) keep it: tiers and the session route re-route only what the model spawns.
 """
 
 from __future__ import annotations
