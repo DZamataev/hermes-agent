@@ -172,3 +172,36 @@ def test_session_create_carries_a_draft_pick(tmp_path, monkeypatch):
     """A pick made on the draft composer rides session.create, like the model/effort pick does."""
     assert _create(tmp_path, monkeypatch, dict(PICK))["delegation_override"] == PICK
     assert "delegation_override" not in _create(tmp_path, monkeypatch, {"provider": "x"})
+
+
+def test_create_and_resume_answers_report_the_pick(tmp_path, monkeypatch):
+    """The pill paints from the create/resume answer before any session.info; a pick must not read as Auto."""
+    from hermes_state import SessionDB
+    from tui_gateway.transport import bind_transport, reset_transport
+
+    class _Socket:
+        def write(self, frame):
+            return True
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
+    token = bind_transport(_Socket())
+    try:
+        created = server.handle_request({"id": "1", "method": "session.create", "params": {
+            "cols": 80, "source": "desktop", "cwd": str(tmp_path), "delegation_override": dict(PICK)}})["result"]
+        assert created["info"]["delegation_override"] == PICK
+        key = created["stored_session_id"]
+        db.create_session(key, source="desktop", model="test-model",
+                          model_config={"delegation_override": dict(PICK)})
+        db.append_message(key, "user", "hi")
+        server._sessions.pop(created["session_id"], None)
+        resumed = server.handle_request({"id": "2", "method": "session.resume", "params": {
+            "session_id": key, "cols": 80, "source": "desktop"}})
+        assert "result" in resumed, resumed
+        assert resumed["result"]["info"]["delegation_override"] == PICK
+        server._sessions.pop(resumed["result"]["session_id"], None)
+    finally:
+        reset_transport(token)

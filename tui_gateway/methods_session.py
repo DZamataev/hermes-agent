@@ -469,6 +469,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
                  **({"provider": override["provider"]} if override.get("provider") else {}),
                  "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
                  "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+                 "delegation_override": dict(_sessions[sid].get("delegation_override") or {}),
                  "profile_name": _response_profile_name(profile)}})
 
 
@@ -715,6 +716,7 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
         "message_count": len(messages), "messages": messages,
         "info": {"model": model, "provider": provider, "lazy": True,
                  "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+                 "delegation_override": dict(live.get("delegation_override") or {}),
                  "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))
 
 
@@ -873,6 +875,8 @@ def _resume_response(
         messages = ctx.messages(display)
     if message_count is None:
         message_count = len(count_source) if ctx.omit_messages else len(messages)
+    # The Subagents pill reads the restored pick from the resume answer; the lazy info shapes never built it.
+    info = {**info, "delegation_override": dict(record.get("delegation_override") or {})}
     payload = {"session_id": sid, "resumed": ctx.target, "message_count": message_count, "messages": messages,
                **({"messages_omitted": ctx.omit_messages} if hydrating is None else {"hydrating": hydrating}),
                "info": info, "inflight": None, "running": running, "session_key": ctx.target,
