@@ -541,6 +541,7 @@ export interface SessionLiveInfo {
   update_command?: string
   usage?: Usage | null
   profile_name?: string | null
+  delegation_override?: DelegationOverride | null
   mcp_servers?: McpServerStatus[]
   system_prompt?: string | null
   credential_warning?: string | null
@@ -579,6 +580,13 @@ export interface Usage {
   dev_credits_spent_micros?: number | null
   cost_usd?: number | null
   cost_status?: string | null
+  [key: string]: unknown
+}
+/** A session's forced subagent route (composer "Subagents" pick) — ``tui_gateway/session_delegation.py``. ``model`` is required to force anything; ``provider`` / ``reasoning_effort`` "" = inherit. */
+export interface DelegationOverride {
+  provider?: string
+  model?: string
+  reasoning_effort?: string
   [key: string]: unknown
 }
 export interface McpServerStatus {
@@ -2942,6 +2950,7 @@ export interface SessionCreateParams {
   provider?: string | null
   reasoning_effort?: string | null
   fast?: boolean | null
+  delegation_override?: DelegationOverride | null
   close_on_disconnect?: boolean
   hidden?: boolean
   room_plumbing?: boolean
@@ -3241,6 +3250,7 @@ export interface SessionCwdSetResult {
   update_command?: string
   usage?: Usage | null
   profile_name?: string | null
+  delegation_override?: DelegationOverride | null
   mcp_servers?: McpServerStatus[]
   system_prompt?: string | null
   credential_warning?: string | null

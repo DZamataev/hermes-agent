@@ -210,6 +210,46 @@ class TestDelegateTaskTiers:
         assert child["model"] == "review-model"
 
 
+class TestSessionForcedRoute:
+    """The Desktop composer's subagent pick: one route for every child of that session."""
+
+    def _forced(self, **route):
+        parent = _parent()
+        parent._delegation_override = route
+        return parent
+
+    def test_forced_route_beats_tier_and_task_effort(self):
+        parent = self._forced(model="forced-model", reasoning_effort="minimal")
+        _, built = _spawn([{"goal": GOAL_A, "tier": "easy"},
+                           {"goal": GOAL_B, "tier": "hard", "reasoning_effort": "xhigh"}], parent=parent)
+        assert [c["model"] for c in built] == ["forced-model", "forced-model"]
+        assert all(c["reasoning_config"] == {"enabled": True, "effort": "minimal"} for c in built)
+
+    def test_forced_model_without_effort_keeps_normal_effort(self):
+        parent = self._forced(model="forced-model")
+        _, (child,) = _spawn([{"goal": GOAL_A, "tier": "easy"}], parent=parent)
+        assert child["model"] == "forced-model"
+        assert child["reasoning_config"] == {"enabled": True, "effort": "medium"}
+
+    def test_forced_provider_switch_does_not_borrow_hard_tier_endpoint(self):
+        parent = self._forced(provider="", model="forced-model")
+        cfg = {**CFG, "base_url": "http://normal/v1", "api_key": "normal-key"}
+        _, (child,) = _spawn([{"goal": GOAL_A, "tier": "hard"}], cfg=cfg, parent=parent)
+        assert (child["model"], child["base_url"]) == ("forced-model", "http://normal/v1")
+
+    @pytest.mark.parametrize("override", [None, {}, {"model": ""}, "auto"])
+    def test_auto_or_empty_override_leaves_tiers_in_charge(self, override):
+        parent = _parent()
+        parent._delegation_override = override
+        _, (child,) = _spawn([{"goal": GOAL_A, "tier": "easy"}], parent=parent)
+        assert child["model"] == "easy-model"
+
+    def test_internal_route_owner_ignores_forced_route(self):
+        parent = self._forced(model="forced-model")
+        _, (child,) = _spawn([{"goal": GOAL_A}], parent=parent, credentials_cfg={"model": "review-model"})
+        assert child["model"] == "review-model"
+
+
 class TestSchemaContract:
     def test_tier_enum_is_the_declared_set(self):
         item = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]

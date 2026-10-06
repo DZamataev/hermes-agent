@@ -346,6 +346,12 @@ def _create_overrides(params: dict) -> tuple:
     return model_override, reasoning_override, service_tier_override
 
 
+def _create_delegation_override(params: dict) -> dict | None:
+    """``session.create``'s ``delegation_override`` (a draft's composer Subagents pick); malformed = Auto."""
+    from tui_gateway.session_delegation import normalize_delegation_pick
+    return normalize_delegation_pick(params.get("delegation_override"))
+
+
 def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
     """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
     transcript server-side and omits it from the reply."""
@@ -407,6 +413,8 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "composer_override_profile": composer_override_profile,
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,
+            # Composer "Subagents" pick made on the draft before this session existed.
+            **({"delegation_override": pick} if (pick := _create_delegation_override(params)) else {}),
             "parent_session_id": parent_session_id, "pending_title": _str_param(params, "title") or None,
             "pending_hidden": _flag(params, "hidden"), "room_plumbing": _flag(params, "room_plumbing"),
             "follow_profile_config": _flag(params, "follow_profile_config"),
@@ -624,6 +632,9 @@ class _Resume:
             follows_profile = _row_follows_profile(self.found)
         else:
             model_config, follows_profile = {}, False
+        from tui_gateway.session_delegation import delegation_override_from_model_config
+        extra.setdefault("delegation_override", delegation_override_from_model_config(
+            _parse_model_config((self.found or {}).get("model_config"), quiet=True)))
         record = _deferred_session_record(
             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
@@ -978,6 +989,11 @@ def _resume_eager(ctx: _Resume) -> dict:
                 if stored_runtime_overrides.get("model_override") is not None:
                     session["model_override"] = stored_runtime_overrides["model_override"]
                 model_config = _parse_model_config(ctx.found.get("model_config"), quiet=True)
+                from tui_gateway.session_delegation import (
+                    apply_delegation_override, delegation_override_from_model_config)
+                if (pick := delegation_override_from_model_config(model_config)) is not None:
+                    session["delegation_override"] = pick
+                    apply_delegation_override(session, agent)
                 if _row_follows_profile(ctx.found):
                     session["follow_profile_config"] = True
                     session["composer_override_profile"] = (

@@ -1062,6 +1062,8 @@ def _attach_built_agent(current: dict, agent) -> None:
     if _title_hint := str(current.get("pending_title") or "").strip():
         agent._session_title_hint = _title_hint
     current["agent"] = agent
+    from tui_gateway.session_delegation import apply_delegation_override
+    apply_delegation_override(current, agent)  # a composer pick made before the deferred build ran
     # A workspace move can land while construction is still in flight.
     _register_session_cwd(current)
     _session_todo_state(current)
@@ -1714,6 +1716,10 @@ def _persist_live_session_runtime(session: dict | None) -> None:
         if (tier_override := session.get("create_service_tier_override")) is not None:
             # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
             model_config["service_tier"] = tier_override or "normal"
+        if isinstance(delegation_pick := session.get("delegation_override"), dict):
+            model_config["delegation_override"] = delegation_pick
+        else:
+            model_config.pop("delegation_override", None)
         model = str(getattr(agent, "model", "") or "").strip()
         if hasattr(db, "update_session_meta"):
             db.update_session_meta(session_key, json.dumps(model_config), model or None)
@@ -2355,6 +2361,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "version": "", "release_date": "", "update_behind": None, "update_command": "",
         "usage": _session_usage_snapshot(session),
         "profile_name": profile_name_for_home(sess.get("profile_home")) or _current_profile_name(),
+        # Composer "Subagents" pick ({} = Auto: tier routes from config.yaml).
+        "delegation_override": dict(sess["delegation_override"]) if isinstance(sess.get("delegation_override"), dict) else {},
     }
     with contextlib.suppress(Exception):
         from hermes_cli import __release_date__
@@ -2804,10 +2812,10 @@ def _deferred_session_record(
     close_on_disconnect: bool = False, display_history_prefix: list | None = None,
     profile_home: Path | None = None, lazy: bool = False, model_override=None,
     resume_runtime_overrides: dict | None = None, todo_state: dict | None = None,
-    explicit_cwd: bool = False) -> dict:
+    explicit_cwd: bool = False, delegation_override: dict | None = None) -> dict:
     """A live-session record whose AIAgent is built later (lazy watch / cold resume) — _init_session's shape minus the agent."""
     now = time.time()
-    return {
+    record = {
         "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
         "close_on_disconnect": close_on_disconnect, "active_session_lease": lease, "cols": cols,
         "created_at": now, "cwd": cwd, "display_history_prefix": display_history_prefix or [],
@@ -2823,6 +2831,9 @@ def _deferred_session_record(
         "transport": current_transport() or _stdio_transport,
         "auth_user_id": _transport_auth_user_id(current_transport()),
     }
+    if delegation_override:
+        record["delegation_override"] = dict(delegation_override)
+    return record
 
 
 _ANY_PROFILE = object()  # default: match a live session regardless of profile

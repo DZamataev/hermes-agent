@@ -468,6 +468,29 @@ def _set_display_toggle(rid, params, key, value, session):
     return _kv(rid, key, on)
 
 
+def _set_delegation(rid, params, key, value, session):
+    """The session's forced subagent route (composer "Subagents" pick). Session-only by design: the global
+    routes are config.yaml's ``delegation`` tiers, edited in Settings — so no session means nothing to set."""
+    from tui_gateway.session_delegation import CLEAR_WORDS, apply_delegation_override, normalize_delegation_pick
+    if session is None:
+        return _err(rid, 4002, "delegation needs a session_id (global subagent routes live in config.yaml)")
+    if isinstance(value, str) and value.strip().lower() in CLEAR_WORDS:
+        session.pop("delegation_override", None)
+        reported = "auto"
+    else:
+        pick = normalize_delegation_pick(value)
+        if pick is None:
+            return _err(rid, 4002, "delegation takes {provider, model, reasoning_effort} with a model and a known "
+                                   "effort, or 'auto'")
+        session["delegation_override"] = reported = pick
+    agent = session.get("agent")
+    if agent is not None:
+        apply_delegation_override(session, agent)
+        _persist_live_session_runtime(session)
+        _emit_session_info(params.get("session_id", ""), session)
+    return _kv(rid, key, reported)
+
+
 # ── dispatch
 
 _CONFIG_SETTERS = {
@@ -477,13 +500,13 @@ _CONFIG_SETTERS = {
     "density": _set_toggle, "battery": _set_toggle, "theme": _set_word,
     "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word, "voice.voice_chat_mode": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
-    "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
+    "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin, "delegation": _set_delegation}
 
 # Keys whose sessionless branch writes a different, wider scope than the session branch (config.yaml's
 # agent.* for every surface, the process env every later child inherits). A non-empty session_id this
 # backend no longer holds (reaped / re-minted) is a stale session, not "no session": it answers 4001 so
 # the client resumes, never the global write. An explicit scope="global" is still honoured.
-_SESSION_SCOPED_KEYS = frozenset({"model", "fast", "yolo", "reasoning"})
+_SESSION_SCOPED_KEYS = frozenset({"model", "fast", "yolo", "reasoning", "delegation"})
 
 
 @method("config.set")

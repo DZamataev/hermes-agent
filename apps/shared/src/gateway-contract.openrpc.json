@@ -12090,6 +12090,29 @@
         "title": "CurrentSubscription",
         "type": "object"
       },
+      "DelegationOverride": {
+        "additionalProperties": true,
+        "description": "A session's forced subagent route (composer \"Subagents\" pick) \u2014 ``tui_gateway/session_delegation.py``.\n``model`` is required to force anything; ``provider`` / ``reasoning_effort`` \"\" = inherit.",
+        "properties": {
+          "provider": {
+            "default": "",
+            "title": "Provider",
+            "type": "string"
+          },
+          "model": {
+            "default": "",
+            "title": "Model",
+            "type": "string"
+          },
+          "reasoning_effort": {
+            "default": "",
+            "title": "Reasoning Effort",
+            "type": "string"
+          }
+        },
+        "title": "DelegationOverride",
+        "type": "object"
+      },
       "DelegationPauseParams": {
         "additionalProperties": false,
         "properties": {
@@ -29661,6 +29684,17 @@
             "default": null,
             "title": "Fast"
           },
+          "delegation_override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DelegationOverride"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "close_on_disconnect": {
             "default": false,
             "title": "Close On Disconnect",
@@ -29943,6 +29977,17 @@
             ],
             "default": null,
             "title": "Profile Name"
+          },
+          "delegation_override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DelegationOverride"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "mcp_servers": {
             "items": {
@@ -30798,6 +30843,17 @@
             ],
             "default": null,
             "title": "Profile Name"
+          },
+          "delegation_override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DelegationOverride"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "mcp_servers": {
             "items": {
