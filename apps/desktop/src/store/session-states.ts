@@ -1448,7 +1448,10 @@ const tilesByProfile = loadTilesByProfile()
 // it left the previous profile's tiles registered (phantom "Session" tabs).
 const profileKey = () => normalizeProfileKey($activeGatewayProfile.get())
 
-const tileConnectionScopeId = (connection: ReturnType<typeof $connection.get>) => {
+/** The connection half of every per-backend renderer key (tiles, the
+ *  spawn-task chip's remembered pick): registry id, `url:<base>` for a
+ *  legacy direct remote, or null for this machine. */
+export const tileConnectionScopeId = (connection: ReturnType<typeof $connection.get>) => {
   const id = connection?.connectionId?.trim()
 
   if (id) {
@@ -2807,7 +2810,8 @@ export function dropTilesForProfile(
   const name = normalizeProfileKey(profile)
   dropPreviewArtifactsForProfile(name, route)
   dropStatusDrawersForProfile(name, route)
-  dropSpawnTaskChoicesForProfile(name, route?.connectionId)
+  // Route-less = the window's own backend (as the tile drop below uses it).
+  dropSpawnTaskChoicesForProfile(name, route ? route.connectionId : (tileConnectionScopeId($connection.get()) ?? undefined))
 
   // The chip keys a routed owner by its BACKEND profile (targetProfile).
   if (route?.targetProfile && normalizeProfileKey(route.targetProfile) !== name) {

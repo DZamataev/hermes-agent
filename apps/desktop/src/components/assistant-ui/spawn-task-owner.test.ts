@@ -1,7 +1,7 @@
 import { renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { $sessions } from '@/store/session'
+import { $connection, $sessions } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 import { spawnTaskChoiceScope } from '@/store/spawn-task'
 import type { SessionInfo } from '@/types/hermes'
@@ -38,6 +38,21 @@ describe('useChipOwner', () => {
     const tile = renderHook(() => useChipOwner('tile')).result.current.choiceScope
 
     expect(main).toBe(tile)
+  })
+
+  // A legacy direct remote (no registry id) is a different machine: its pick
+  // must never be offered to (or overwritten by) this machine's profile.
+  it('keeps a legacy direct remote window apart from local', () => {
+    $connection.set({ baseUrl: 'https://box:9119', mode: 'remote' } as never)
+
+    try {
+      const scope = renderHook(() => useChipOwner('main-session')).result.current.choiceScope
+
+      expect(scope).not.toBe(spawnTaskChoiceScope('local', 'default'))
+      expect(scope).toBe(spawnTaskChoiceScope('url:https://box:9119', 'default'))
+    } finally {
+      $connection.set(null)
+    }
   })
 
   it('keys by the lineage root once compression rotates the live id', () => {

@@ -6,6 +6,7 @@ import {
   dismissPreviewArtifact,
   recordPreviewArtifact
 } from './preview-status'
+import { $connection } from './session'
 import { dropTilesForProfile, migrateTilesForProfile, recordSessionEventScope } from './session-states'
 import { setSpawnTaskChoice, spawnTaskChoiceFor, spawnTaskChoiceScope } from './spawn-task'
 
@@ -89,4 +90,37 @@ it('forgets a routed owner’s spawn-task choice on a source-scoped delete', () 
   dropTilesForProfile('desktop-name', { connectionId: 'homelab', profile: 'desktop-name', targetProfile: 'backend-name' })
 
   expect(spawnTaskChoiceFor(spawnTaskChoiceScope('homelab', 'backend-name')).model).toBe('')
+})
+
+// A route-less delete speaks for the WINDOW's backend (as the tile drop does):
+// in a remote window it forgets that remote's pick, not a same-named local one.
+it('a route-less delete in a remote window forgets that remote’s choice, not local', () => {
+  const choice = { effort: '', fast: false, mode: 'tab' as const, model: 'm', pin: false, provider: 'p' }
+
+  setSpawnTaskChoice(spawnTaskChoiceScope('homelab', 'work'), choice)
+  setSpawnTaskChoice(spawnTaskChoiceScope('local', 'work'), choice)
+  $connection.set({ connectionId: 'homelab', mode: 'remote', profile: 'work' } as never)
+
+  try {
+    dropTilesForProfile('work')
+
+    expect(spawnTaskChoiceFor(spawnTaskChoiceScope('homelab', 'work')).model).toBe('')
+    expect(spawnTaskChoiceFor(spawnTaskChoiceScope('local', 'work')).model).toBe('m')
+  } finally {
+    $connection.set(null)
+  }
+})
+
+// The chip keys a routed owner by targetProfile; with profile == targetProfile
+// the plain drop already covers it, so pin the case where they differ AND the
+// desktop name has its own choice that must survive.
+it('a source-scoped delete forgets the targetProfile choice, keeping an unrelated same-named one', () => {
+  const choice = { effort: '', fast: false, mode: 'tab' as const, model: 'm', pin: false, provider: 'p' }
+
+  setSpawnTaskChoice(spawnTaskChoiceScope('homelab', 'backend-name'), choice)
+  setSpawnTaskChoice(spawnTaskChoiceScope('homelab', 'unrelated'), choice)
+  dropTilesForProfile('desktop-name', { connectionId: 'homelab', profile: 'desktop-name', targetProfile: 'backend-name' })
+
+  expect(spawnTaskChoiceFor(spawnTaskChoiceScope('homelab', 'backend-name')).model).toBe('')
+  expect(spawnTaskChoiceFor(spawnTaskChoiceScope('homelab', 'unrelated')).model).toBe('m')
 })

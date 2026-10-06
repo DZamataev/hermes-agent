@@ -94,11 +94,12 @@ describe('JsonRpcRequestChannel', () => {
       expect((notSent as Error).message).toBe('gateway not connected')
 
       // A caller must tell "the frame left, the reply was lost" (the peer may
-      // have acted) from "never sent" — and the shared detach error is copied,
-      // never tagged in place for its other holders.
+      // have acted) from "never sent" — without the marker changing the error
+      // any other consumer sees: same object, class, fields and cause.
       expect(isRequestInFlightError(inFlight)).toBe(true)
       expect(isRequestInFlightError(notSent)).toBe(false)
-      expect(isRequestInFlightError(exited)).toBe(false)
+      expect(inFlight).toBe(exited)
+      expect(inFlight).toStrictEqual(new Error('gateway exited (1)'))
     } finally {
       vi.useRealTimers()
     }

@@ -63,6 +63,16 @@ def test_a_lineage_shaped_title_cannot_hijack_name_lookups(tmp_path):
     assert json.loads(st.spawn_task_tool(title="Refactor auth #2", prompt="p"))["title"] == "Refactor auth (2)"
 
 
+def test_the_lineage_rewrite_never_pushes_a_title_past_the_store_limit(tmp_path):
+    from hermes_state import SessionDB
+
+    out = json.loads(st.spawn_task_tool(title="a" * 90 + " fix #urgent", prompt="p"))
+    assert len(out["title"]) <= SessionDB.MAX_TITLE_LENGTH
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s", source="desktop")
+    assert db.set_session_title("s", out["title"])  # the store accepts the receipt as-is
+
+
 def test_delegated_children_never_get_it():
     """A child's chip would render nowhere; the model must not be told the user
     sees one. Checked through the real schema assembly, not the deny list —

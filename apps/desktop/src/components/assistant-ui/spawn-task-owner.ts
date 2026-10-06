@@ -2,11 +2,10 @@ import { useStore } from '@nanostores/react'
 import { useMemo } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
-import { $activeConnectionId } from '@/store/connections'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $sessions, knownSessionOwner, ownerLookupSessionRows, sessionMatchesStoredId, sessionPinId } from '@/store/session'
+import { $connection, $sessions, knownSessionOwner, ownerLookupSessionRows, sessionMatchesStoredId, sessionPinId } from '@/store/session'
 import { isSessionOwnerRoute, requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
-import { $sessionTiles, sessionTileOwnerRoute } from '@/store/session-states'
+import { $sessionTiles, sessionTileOwnerRoute, tileConnectionScopeId } from '@/store/session-states'
 import { spawnTaskChoiceScope } from '@/store/spawn-task'
 
 type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -35,7 +34,7 @@ export function useChipOwner(storedId: null | string): ChipOwner {
   // Subscriptions only: they re-run the owner lookup when rows or tiles land.
   const sessionRows = useStore($sessions)
   const tiles = useStore($sessionTiles)
-  const activeConnectionId = useStore($activeConnectionId)
+  const windowConnection = useStore($connection)
   const activeProfile = useStore($activeGatewayProfile)
 
   return useMemo(() => {
@@ -52,9 +51,10 @@ export function useChipOwner(storedId: null | string): ChipOwner {
     const connectionId = route?.connectionId || undefined
 
     return {
-      // `spawnTaskChoiceScope` maps an unqualified local window to `local`,
-      // so one local profile has one remembered pick wherever the chip sits.
-      choiceScope: spawnTaskChoiceScope(connectionId || activeConnectionId, profile),
+      // The window's backend by the tile rule: an unqualified local window is
+      // `local` (one pick per local profile wherever the chip sits), a legacy
+      // direct remote is `url:<base>` — never merged with local.
+      choiceScope: spawnTaskChoiceScope(connectionId || tileConnectionScopeId(windowConnection), profile),
       connectionId,
       lineageId: row ? sessionPinId(row) : storedId,
       profile,
@@ -64,5 +64,5 @@ export function useChipOwner(storedId: null | string): ChipOwner {
         : undefined
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- rows/tiles are read through the lookups
-  }, [activeConnectionId, activeProfile, requestGateway, sessionRows, storedId, tiles])
+  }, [activeProfile, requestGateway, sessionRows, storedId, tiles, windowConnection])
 }

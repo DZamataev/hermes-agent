@@ -383,6 +383,83 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     // Not connected: the channel refuses before any frame leaves.
     expect(await outcomeOf(new JsonRpcRequestChannel({ requestTimeoutMs: 60_000 }))).toBe('not-sent')
 
+    // The pipeline retries on its own (timeout → resume → resubmit). An
+    // earlier frame that LEFT may be running even if the retry is refused.
+    {
+      const channel = new JsonRpcRequestChannel({ requestTimeoutMs: 60_000 })
+      channel.attach({ send: () => undefined } as never)
+      let submits = 0
+
+      requestGatewayMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+        if (method === 'session.resume') {
+          return { session_id: RECOVERED_SESSION_ID }
+        }
+
+        if (method !== 'prompt.submit') {
+          return {}
+        }
+
+        submits += 1
+
+        if (submits === 1) {
+          return await channel.request(method, params, 5) // frame left; the reply times out
+        }
+
+        throw new JsonRpcGatewayError('session already has a live owner', { code: 4090 })
+      })
+
+      const retried = queueTileKickoff(STORED_SESSION_ID, 'fix it').sent
+      const tile = renderHook(useKickoffTile)
+
+      await act(async () => {
+        await expect(retried).resolves.toBe('unknown')
+      })
+      tile.unmount()
+      expect(submits).toBe(2)
+    }
+
+    // Each send starts clean: a lost frame of an EARLIER send must not make a
+    // later, plainly refused one look in flight. (Same tile, two sends.)
+    {
+      const channel = new JsonRpcRequestChannel({ requestTimeoutMs: 60_000 })
+      channel.attach({ send: () => undefined } as never)
+      let submits = 0
+
+      requestGatewayMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+        if (method !== 'prompt.submit') {
+          return {}
+        }
+
+        submits += 1
+
+        if (submits === 1) {
+          const call = channel.request(method, params)
+          channel.detach(new Error('gateway connection closed'))
+
+          return await call
+        }
+
+        throw new JsonRpcGatewayError('session busy', { code: 4009 })
+      })
+
+      const tile = renderHook(() =>
+        useSessionTileActions({
+          requestGateway: requestGatewayMock,
+          runtimeId: RUNTIME_SESSION_ID,
+          scope: MAIN_COMPOSER_SCOPE,
+          storedSessionId: STORED_SESSION_ID
+        })
+      )
+
+      await act(async () => {
+        await expect(tile.result.current.submitLiteralText('first')).resolves.toBe('unknown')
+      })
+      await act(async () => {
+        await expect(tile.result.current.submitLiteralText('second')).resolves.toBe('not-sent')
+      })
+      tile.unmount()
+    }
+
     // A secondary backend reconnecting refuses before sending: not sent.
     requestGatewayMock.mockImplementation(async (method: string) => {
       if (method === 'prompt.submit') {

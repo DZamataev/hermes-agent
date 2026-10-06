@@ -187,9 +187,10 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
   // Tile session RPCs must follow the tile's composite owner even when the
   // active gateway has moved to a same-named profile on another source.
-  // Last `prompt.submit` this tile sent, and how its reply ended: `lost` =
-  // the frame left but no reply came (socket drop, timeout), so the turn may
-  // be running; anything else is a definite answer or never left at all.
+  // How this tile's `prompt.submit` attempts for ONE send ended: `lost` = a
+  // frame left but no reply came (socket drop, timeout), so the turn may be
+  // running — and it stays `lost` across the pipeline's own retries. Reset
+  // per send by `submitLiteralText`.
   const lastSubmitRef = useRef<'answered' | 'lost' | 'none'>('none')
 
   const requestSessionGateway = useCallback(
@@ -206,10 +207,18 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
       if (method === 'prompt.submit') {
         request.then(
-          () => (lastSubmitRef.current = 'answered'),
+          () => undefined, // a success returns `sent` without reading the ref
           // Only a frame that LEFT can be running: a refusal before sending
           // (not connected, a secondary reconnecting, no route) is not-sent.
-          error => (lastSubmitRef.current = isRequestInFlightError(error) ? 'lost' : 'answered')
+          // Sticky: the submit pipeline retries (resume, reconnect), and a
+          // later definite refusal does not un-send an earlier lost frame.
+          error => {
+            if (isRequestInFlightError(error)) {
+              lastSubmitRef.current = 'lost'
+            } else if (lastSubmitRef.current !== 'lost') {
+              lastSubmitRef.current = 'answered'
+            }
+          }
         )
       }
 

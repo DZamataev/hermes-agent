@@ -74,27 +74,24 @@ export class JsonRpcGatewayError extends Error {
   }
 }
 
-const IN_FLIGHT = Symbol.for('hermes.jsonrpc.inFlight')
+// Errors that rejected a request whose frame had already left. A side table,
+// not a property or a copy: the error object a caller receives keeps its exact
+// identity, class, own properties and `cause`. Sharing is sound — one detach
+// error rejects only calls that were all in flight; a never-sent rejection is
+// always a fresh error.
+const inFlightErrors = new WeakSet<object>()
 
 /** True for a failure of a request whose frame was already handed to the
  *  transport (socket dropped before the reply, or the reply timed out): the
  *  peer may have acted on it. A rejection before sending is never in flight. */
 export function isRequestInFlightError(error: unknown): boolean {
-  return Boolean(error && typeof error === 'object' && (error as Record<symbol, unknown>)[IN_FLIGHT])
+  return typeof error === 'object' && error !== null && inFlightErrors.has(error)
 }
 
-/** A per-call copy (same message/name/cause), so a shared `detach` error
- *  object is never mutated for other holders. */
-function markInFlight(error: Error): Error {
-  const copy = Object.assign(Object.create(Object.getPrototypeOf(error) as object) as Error, error, {
-    message: error.message,
-    name: error.name,
-    stack: error.stack
-  })
+function markInFlight<E extends Error>(error: E): E {
+  inFlightErrors.add(error)
 
-  Object.defineProperty(copy, IN_FLIGHT, { value: true })
-
-  return copy
+  return error
 }
 
 /** JSON-RPC "method not found" (tui_gateway/server.py::dispatch `_err(rid, -32601, …)`). */

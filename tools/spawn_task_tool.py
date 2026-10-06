@@ -29,6 +29,9 @@ def spawn_task_tool(title: str, prompt: str, tldr: str = "") -> str:
     # or "… #followup" would hijack the user's "Refactor auth". Keep the
     # suffix text, drop the " #" lineage shape.
     title = re.sub(r" #(\S*)", lambda m: f" ({m.group(1)})" if m.group(1) else "", title).strip()
+    # The rewrite adds a character per " #x": cut again, so the receipt never
+    # exceeds what the store accepts (an over-long title is refused there).
+    title = title[:limit].rstrip()
     prompt = (prompt or "").strip()
     if not title:
         return tool_error("spawn_task needs a short title for the chip.")
