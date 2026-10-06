@@ -41,10 +41,28 @@ def test_title_cannot_claim_a_reserved_session_name_or_overflow():
 
 
 def test_delegated_children_never_get_it():
-    """A child's chip would render as a bare row; it must not be told the user sees one."""
-    from tools.delegate_tool_toolsets import DELEGATE_BLOCKED_TOOLS
+    """A child's chip would render nowhere; the model must not be told the user
+    sees one. Checked through the real schema assembly, not the deny list —
+    a name in DELEGATE_BLOCKED_TOOLS alone does not strip a tool out of a
+    mixed toolset like ``desktop_ui``."""
+    from agent.delegation_context import delegated_child_context
+    from model_tools import _clear_tool_defs_cache, get_tool_definitions
+    from tools.registry import invalidate_check_fn_cache
 
-    assert "spawn_task" in DELEGATE_BLOCKED_TOOLS
+    def names():
+        invalidate_check_fn_cache()
+        _clear_tool_defs_cache()
+        return {
+            row["function"]["name"]
+            for row in get_tool_definitions(
+                enabled_toolsets=["desktop_ui"], quiet_mode=True, skip_tool_search_assembly=True)
+        }
+
+    assert "spawn_task" in names()
+    with delegated_child_context():
+        child = names()
+    assert "spawn_task" not in child
+    assert "focus_pane" in child  # only the offer tool is withdrawn, not the toolset
 
 
 def test_lives_only_in_the_desktop_surface_toolset():

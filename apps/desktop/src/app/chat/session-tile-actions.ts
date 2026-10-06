@@ -10,7 +10,7 @@
 
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { SLASH_COMMAND_RE } from '@hermes/shared'
-import { useCallback, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import type { ClientSessionState } from '@/app/types'
 import type { WorkspaceMode } from '@/contrib/types'
@@ -38,6 +38,7 @@ import {
   sessionTileOwnerRoute
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
+import { takeTileKickoff } from '@/store/spawn-task'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
@@ -726,4 +727,28 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       submitText
     ]
   )
+}
+
+/**
+ * A spawn-task chip opened this tile with a task to run: send it once, as a
+ * prompt, and report back whether it went out. Literal on purpose — the text
+ * is model-written, and a leading `/` must never run a slash command
+ * (`/yolo …`) in the new session.
+ */
+export function useTileKickoff(
+  storedSessionId: string,
+  actions: Pick<ReturnType<typeof useSessionTileActions>, 'submitLiteralText'>
+): void {
+  const submitLiteralText = actions.submitLiteralText
+
+  useEffect(() => {
+    const kickoff = takeTileKickoff(storedSessionId)
+
+    if (kickoff) {
+      void submitLiteralText(kickoff.text).then(
+        sent => kickoff.settle(sent !== false),
+        () => kickoff.settle(false)
+      )
+    }
+  }, [storedSessionId, submitLiteralText])
 }

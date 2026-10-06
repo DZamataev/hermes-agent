@@ -201,6 +201,22 @@ describe('the spawn-task chip', () => {
     await waitFor(() => expect(start.disabled).toBe(false))
   })
 
+  // The tool cleans and cuts the title to the store's limit; the chip must
+  // launch with THAT title, not the raw model argument the store would refuse.
+  it('launches with the title the tool validated, not the raw argument', async () => {
+    renderChip({
+      ...PROPS,
+      args: { ...ARGS, title: `  ${'x'.repeat(212)}  ` },
+      result: { success: true, title: 'x'.repeat(100) }
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start in new tab' }))
+
+    await waitFor(() =>
+      expect(launcher).toHaveBeenCalledWith(expect.objectContaining({ title: 'x'.repeat(100) }), expect.anything())
+    )
+  })
+
   it('a dismissed chip stays dismissed and never launches', () => {
     renderChip()
 

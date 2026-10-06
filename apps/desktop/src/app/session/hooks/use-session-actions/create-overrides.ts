@@ -19,6 +19,9 @@ export interface SessionCreateOverrides {
   ownSelection?: boolean
   reasoningEffort?: string
   title?: string
+  /** The title is a proposal (model-written): if another session holds it,
+   *  keep it as `<title> #N` instead of dropping it for an auto-title. */
+  titleDedupe?: boolean
 }
 
 export type CreateBackendSessionForSend = (
@@ -40,6 +43,7 @@ export interface SessionCreateOverrideParams {
   provider?: string
   reasoning_effort?: string
   title?: string
+  title_dedupe?: boolean
 }
 
 export function sessionCreateOverrideParams(
@@ -50,6 +54,10 @@ export function sessionCreateOverrideParams(
 
   if (overrides?.title) {
     params.title = overrides.title
+
+    if (overrides.titleDedupe) {
+      params.title_dedupe = true
+    }
   }
 
   const model = overrides?.model?.model.trim()

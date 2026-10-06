@@ -4107,7 +4107,9 @@ export const ru = defineLocale({
       showPrompt: 'Показать промпт',
       hidePrompt: 'Скрыть промпт',
       launchFailed: 'Не удалось запустить побочную задачу',
-      worktreeNeedsRepo: 'Для worktree нужен git-репозиторий. Запустите во вкладке.'
+      kickoffFailed: 'Задача не дошла до новой сессии; чип можно запустить снова',
+      worktreeNeedsRepo: 'Для worktree нужен git-репозиторий. Запустите во вкладке.',
+      worktreeOtherBackend: 'Worktree можно создать только для чата на бэкенде этого окна; запустите задачу в новой вкладке'
     },
     mcpSetup: {
       installTitle: 'Добавить MCP-серверы',

@@ -294,3 +294,72 @@ class TestFinalizeOrphanedCompressionSessions:
 
 
 
+
+
+class TestPendingTitleDedupe:
+    """A client that asks for ``title_dedupe`` (a spawn-task chip: the title is
+    model-proposed and two chips may share it) keeps the name as ``<title> #N``
+    when another session already holds it, instead of losing it to auto-title."""
+
+    def _run_first_turn(self, monkeypatch, db, session):
+        from tui_gateway import server
+
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+        monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+        monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+        monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None, **kw):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        server._sessions["sid"] = session
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        try:
+            server.handle_request({
+                "id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hello"},
+            })
+        finally:
+            server._sessions.pop("sid", None)
+
+    def _agent(self):
+        class _Agent:
+            session_id = "new-session"
+            _cached_system_prompt = ""
+
+            def run_conversation(self, prompt, **kw):
+                return {"final_response": "ok", "messages": [{"role": "assistant", "content": "ok"}]}
+
+        return _Agent()
+
+    def _db(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("older", source="desktop")
+        db.set_session_title("older", "Flaky login")
+        db.create_session("new-session", source="desktop")
+        return db
+
+    def test_dedupe_requested_keeps_the_name_with_a_suffix(self, monkeypatch, tmp_path):
+        db = self._db(tmp_path)
+        session = _tui_session(agent=self._agent(), session_key="new-session",
+                               pending_title="Flaky login", pending_title_dedupe=True)
+
+        self._run_first_turn(monkeypatch, db, session)
+
+        assert db.get_session_title("new-session") == "Flaky login #2"
+        assert session.get("pending_title") is None
+
+    def test_without_dedupe_a_taken_title_is_still_dropped(self, monkeypatch, tmp_path):
+        db = self._db(tmp_path)
+        session = _tui_session(agent=self._agent(), session_key="new-session", pending_title="Flaky login")
+
+        self._run_first_turn(monkeypatch, db, session)
+
+        assert db.get_session_title("new-session") is None
+        assert session.get("pending_title") is None

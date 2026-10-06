@@ -86,6 +86,7 @@ import {
   type SessionProfileRoute
 } from './session-request-router'
 import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
+import { dropSpawnTaskChoicesForProfile, migrateSpawnTaskChoicesForProfile } from './spawn-task'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
@@ -2806,6 +2807,7 @@ export function dropTilesForProfile(
   const name = normalizeProfileKey(profile)
   dropPreviewArtifactsForProfile(name, route)
   dropStatusDrawersForProfile(name, route)
+  dropSpawnTaskChoicesForProfile(name, route?.connectionId)
   // Route fields go through the SAME canonicalization as `name` below — a
   // source-scoped delete must not be defeated by stray whitespace around a
   // profile name that a non-route delete trims away.
@@ -2952,6 +2954,7 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
   migrateSessionOwnerHintsForProfile(from, to)
   migratePreviewArtifactsForProfile(from, to)
   migrateStatusDrawersForProfile(from, to)
+  migrateSpawnTaskChoicesForProfile(from, to)
   // Sibling family: the rail's profile-keyed buckets move with the rename, or
   // the renamed profile opens with an empty rail and the old name keeps them.
   migratePreviewTabsForProfile(from, to)

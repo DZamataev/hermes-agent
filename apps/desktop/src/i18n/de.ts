@@ -5764,7 +5764,9 @@ export const deOverrides = {
       showPrompt: 'Prompt anzeigen',
       hidePrompt: 'Prompt ausblenden',
       launchFailed: 'Die Nebenaufgabe konnte nicht gestartet werden',
-      worktreeNeedsRepo: 'Ein Worktree braucht ein Git-Repository. Starte sie stattdessen in einem neuen Tab.'
+      kickoffFailed: 'Die Nebenaufgabe hat ihre neue Sitzung nicht erreicht; der Chip bleibt verfügbar',
+      worktreeNeedsRepo: 'Ein Worktree braucht ein Git-Repository. Starte sie stattdessen in einem neuen Tab.',
+      worktreeOtherBackend: 'Ein Worktree geht nur für einen Chat auf dem Backend dieses Fensters; starte sie in einem neuen Tab'
     },
     mcpSetup: {
       installTitle: 'MCP-Server hinzufügen',

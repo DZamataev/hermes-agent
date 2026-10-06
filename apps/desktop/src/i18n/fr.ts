@@ -5778,7 +5778,9 @@ export const frOverrides = {
       showPrompt: 'Afficher le prompt',
       hidePrompt: 'Masquer le prompt',
       launchFailed: 'Impossible de lancer la tâche annexe',
-      worktreeNeedsRepo: 'Un worktree nécessite un dépôt git. Lancez-la plutôt dans un nouvel onglet.'
+      kickoffFailed: 'La tâche annexe n’a pas atteint sa nouvelle session ; la puce reste disponible',
+      worktreeNeedsRepo: 'Un worktree nécessite un dépôt git. Lancez-la plutôt dans un nouvel onglet.',
+      worktreeOtherBackend: 'Un worktree ne peut être créé que pour un chat sur le backend de cette fenêtre ; lancez-la dans un nouvel onglet'
     },
     mcpSetup: {
       installTitle: 'Ajouter des serveurs MCP',

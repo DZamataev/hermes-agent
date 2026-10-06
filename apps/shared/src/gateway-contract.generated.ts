@@ -2938,6 +2938,7 @@ export interface SessionCreateParams {
   messages?: SeedMessage[] | null
   parent_session_id?: string | null
   title?: string | null
+  title_dedupe?: boolean
   model?: string | null
   provider?: string | null
   reasoning_effort?: string | null

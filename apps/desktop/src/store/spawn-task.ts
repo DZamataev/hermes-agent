@@ -105,6 +105,66 @@ export function spawnTaskChoiceScope(connectionId: null | string | undefined, pr
   return `${connectionId ?? ''}::${profile || 'default'}`
 }
 
+function splitChoiceScope(scope: string): { connection: string; profile: string } | null {
+  const split = scope.lastIndexOf('::')
+
+  return split < 0 ? null : { connection: scope.slice(0, split), profile: scope.slice(split + 2) }
+}
+
+/** A scope on THIS machine's backend: the only one a local profile rename or
+ *  delete speaks for (a same-named profile on a remote is a different one). */
+function isLocalChoiceScope(scope: string): { connection: string; profile: string } | null {
+  const parts = splitChoiceScope(scope)
+
+  return parts && (parts.connection === '' || parts.connection === 'local') ? parts : null
+}
+
+function rewriteChoices(next: Record<string, SpawnTaskChoice>): void {
+  $spawnTaskChoices.set(next)
+  writeJson(CHOICE_KEY, next)
+}
+
+/** Profile rename: the remembered choice moves with the profile. */
+export function migrateSpawnTaskChoicesForProfile(from: string, to: string): void {
+  const current = $spawnTaskChoices.get()
+  let changed = false
+  const next: Record<string, SpawnTaskChoice> = {}
+
+  for (const [scope, choice] of Object.entries(current)) {
+    const local = isLocalChoiceScope(scope)
+
+    if (local?.profile === from) {
+      next[`${scope.slice(0, scope.lastIndexOf('::'))}::${to}`] = choice
+      changed = true
+    } else {
+      next[scope] ??= choice
+    }
+  }
+
+  if (changed) {
+    rewriteChoices(next)
+  }
+}
+
+/** Profile delete: forget its remembered choice — on the named connection,
+ *  or this machine's backend when none is given. */
+export function dropSpawnTaskChoicesForProfile(profile: string, connectionId?: string): void {
+  const current = $spawnTaskChoices.get()
+  const connection = connectionId?.trim()
+
+  const removed = (scope: string) => {
+    const parts = connection ? splitChoiceScope(scope) : isLocalChoiceScope(scope)
+
+    return parts?.profile === profile && (!connection || parts.connection === connection)
+  }
+
+  const next = Object.fromEntries(Object.entries(current).filter(([scope]) => !removed(scope)))
+
+  if (Object.keys(next).length !== Object.keys(current).length) {
+    rewriteChoices(next)
+  }
+}
+
 export function spawnTaskChoiceFor(scope: string): SpawnTaskChoice {
   return $spawnTaskChoices.get()[scope] ?? DEFAULT_SPAWN_TASK_CHOICE
 }
@@ -122,20 +182,53 @@ export const $spawnTaskChips = atom<Record<string, SpawnTaskChipState>>(loadChip
 export const $spawnTaskLaunching = atom<ReadonlySet<string>>(new Set())
 
 // First prompt for a tile the chip just opened, keyed by its stored id. The
-// tile consumes it once on mount and sends it through its own submit pipeline,
-// so the task shows up as an ordinary user turn (optimistic bubble included).
-const tileKickoffs = new Map<string, string>()
-
-export function queueTileKickoff(storedSessionId: string, text: string): void {
-  tileKickoffs.set(storedSessionId, text)
+// tile consumes it once on mount, sends it, and SETTLES it with whether the
+// prompt really went out — the chip is "launched" only then. An unsettled
+// kickoff (the tile never mounted: an auxiliary window, a bot workspace) is
+// withdrawn after a deadline so a late mount cannot send a task the chip
+// already reported as failed.
+interface TileKickoff {
+  settle: (sent: boolean) => void
+  text: string
 }
 
-export function takeTileKickoff(storedSessionId: string): null | string {
-  const text = tileKickoffs.get(storedSessionId) ?? null
+const tileKickoffs = new Map<string, TileKickoff>()
+
+/** How long a launched chip waits for its tile to send the first prompt. */
+export const TILE_KICKOFF_DEADLINE_MS = 20_000
+
+export interface QueuedKickoff {
+  /** Resolves true once the tile sent the prompt; false on failure or deadline. */
+  sent: Promise<boolean>
+}
+
+export function queueTileKickoff(storedSessionId: string, text: string): QueuedKickoff {
+  let settle: (sent: boolean) => void = () => undefined
+
+  const sent = new Promise<boolean>(resolve => {
+    settle = resolve
+  })
+
+  tileKickoffs.set(storedSessionId, { settle, text })
+
+  const timer = setTimeout(() => {
+    if (tileKickoffs.get(storedSessionId)?.text === text) {
+      tileKickoffs.delete(storedSessionId)
+      settle(false)
+    }
+  }, TILE_KICKOFF_DEADLINE_MS)
+
+  void sent.then(() => clearTimeout(timer))
+
+  return { sent }
+}
+
+export function takeTileKickoff(storedSessionId: string): null | TileKickoff {
+  const kickoff = tileKickoffs.get(storedSessionId) ?? null
 
   tileKickoffs.delete(storedSessionId)
 
-  return text
+  return kickoff
 }
 
 let launcher: null | SpawnTaskLauncher = null
@@ -149,10 +242,7 @@ export function setSpawnTaskLauncher(next: null | SpawnTaskLauncher): void {
 }
 
 export function setSpawnTaskChoice(scope: string, choice: SpawnTaskChoice): void {
-  const next = { ...$spawnTaskChoices.get(), [scope]: choice }
-
-  $spawnTaskChoices.set(next)
-  writeJson(CHOICE_KEY, next)
+  rewriteChoices({ ...$spawnTaskChoices.get(), [scope]: choice })
 }
 
 /** A chip's identity: tool-call ids are unique per response, not per app —

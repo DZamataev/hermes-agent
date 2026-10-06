@@ -4476,7 +4476,9 @@ export interface Translations {
       showPrompt: string
       hidePrompt: string
       launchFailed: string
+      kickoffFailed: string
       worktreeNeedsRepo: string
+      worktreeOtherBackend: string
     }
     mcpSetup: {
       installTitle: string

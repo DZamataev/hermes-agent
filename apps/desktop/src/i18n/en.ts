@@ -5370,7 +5370,9 @@ export const en: Translations = {
       showPrompt: 'Show prompt',
       hidePrompt: 'Hide prompt',
       launchFailed: 'Could not start the side task',
-      worktreeNeedsRepo: 'A worktree needs a git repository. Start it in a new tab instead.'
+      kickoffFailed: 'The side task did not reach its new session; the chip stays available',
+      worktreeNeedsRepo: 'A worktree needs a git repository. Start it in a new tab instead.',
+      worktreeOtherBackend: 'A worktree can only be made for a chat on this window’s backend; start it in a new tab instead'
     },
     mcpSetup: {
       installTitle: 'Add MCP servers',

@@ -5,7 +5,9 @@ import {
   $spawnTaskChips,
   $spawnTaskLauncherReady,
   dismissSpawnTask,
+  dropSpawnTaskChoicesForProfile,
   launchSpawnTask,
+  migrateSpawnTaskChoicesForProfile,
   resetSpawnTaskStoreForTests,
   setSpawnTaskChoice,
   setSpawnTaskLauncher,
@@ -59,6 +61,26 @@ describe('spawn-task store', () => {
 
     expect(spawnTaskChoiceFor(spawnTaskChoiceScope('local', 'work')).model).toBe('')
     expect(spawnTaskChoiceFor(spawnTaskChoiceScope('remote-1', 'default')).model).toBe('')
+  })
+
+  // A profile rename moves the remembered pick; a delete forgets it. Only this
+  // machine's profile of that name is meant — a remote's same-named one is not.
+  it('follows a local profile rename and delete, leaving remotes alone', () => {
+    setSpawnTaskChoice(spawnTaskChoiceScope('local', 'work'), CHOICE)
+    setSpawnTaskChoice(spawnTaskChoiceScope('remote-1', 'work'), { ...CHOICE, model: 'remote-model' })
+
+    migrateSpawnTaskChoicesForProfile('work', 'job')
+    resetSpawnTaskStoreForTests()
+
+    expect(spawnTaskChoiceFor(spawnTaskChoiceScope('local', 'job'))).toEqual(CHOICE)
+    expect(spawnTaskChoiceFor(spawnTaskChoiceScope('local', 'work')).model).toBe('')
+    expect(spawnTaskChoiceFor(spawnTaskChoiceScope('remote-1', 'work')).model).toBe('remote-model')
+
+    setSpawnTaskChoice(spawnTaskChoiceScope('remote-1', 'job'), { ...CHOICE, model: 'remote-job' })
+    dropSpawnTaskChoicesForProfile('job')
+    expect(spawnTaskChoiceFor(spawnTaskChoiceScope('local', 'job')).model).toBe('')
+    expect(spawnTaskChoiceFor(spawnTaskChoiceScope('remote-1', 'job')).model).toBe('remote-job')
+    expect(spawnTaskChoiceFor(spawnTaskChoiceScope('remote-1', 'work')).model).toBe('remote-model')
   })
 
   it('tells the chip when a launcher appears, so it never stays disabled', () => {

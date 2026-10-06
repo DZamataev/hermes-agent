@@ -408,6 +408,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id, "pending_title": _str_param(params, "title") or None,
+            "pending_title_dedupe": _flag(params, "title_dedupe"),
             "pending_hidden": _flag(params, "hidden"), "room_plumbing": _flag(params, "room_plumbing"),
             "follow_profile_config": _flag(params, "follow_profile_config"),
             "profile_home": str(profile_home) if profile_home is not None else None,

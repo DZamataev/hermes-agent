@@ -5449,6 +5449,51 @@ describe('openNewSessionTile workspace target', () => {
     expect(createParams).toMatchObject({ fast: false, title: 'Default pick' })
   })
 
+  // The other half of the contract: an ordinary new tab (no own selection)
+  // still opens on the composer's sticky manual pick.
+  it('an ordinary new tile still carries the composer’s manual pick', async () => {
+    // A known window owner: with none, the composer selection is not
+    // persisted at all and there would be nothing to carry.
+    setConnection({ mode: 'local' } as never)
+    setCurrentModel('ambient-model')
+    setCurrentProvider('ambient-provider')
+    setCurrentModelSource('manual')
+    setCurrentReasoningEffort('low')
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return {
+          info: { cwd: '/repo', model: 'ambient-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'stored-plain-tile'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    try {
+      await act(async () => {
+        await handle!.openNewSessionTile('center', { cwd: '/repo', listed: true })
+      })
+    } finally {
+      setCurrentModelSource('')
+      setCurrentModel('')
+      setCurrentProvider('')
+      setCurrentReasoningEffort('')
+    }
+
+    expect(createParams).toMatchObject({ model: 'ambient-model', provider: 'ambient-provider' })
+  })
+
   it('omits the manual ambient composer selection from a Bot-workspace tile so the bot profile defaults apply', async () => {
     setCurrentModel('ambient-model')
     setCurrentProvider('ambient-provider')

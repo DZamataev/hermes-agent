@@ -4,6 +4,7 @@ import type { SessionCreateOverrides } from '@/app/session/hooks/use-session-act
 import { translateNow } from '@/i18n'
 import { desktopGit } from '@/lib/desktop-git'
 import { isGitRepoPath } from '@/store/coding-status'
+import { $activeConnectionId } from '@/store/connections'
 import { notify, notifyError } from '@/store/notifications'
 import type { AgentProfileRoute } from '@/store/profile'
 import { startWorkInRepo } from '@/store/projects'
@@ -11,6 +12,7 @@ import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
 import { sessionTileOwnerRoute } from '@/store/session-states'
 import {
+  type QueuedKickoff,
   queueTileKickoff,
   setSpawnTaskLauncher,
   type SpawnTaskChoice,
@@ -31,11 +33,21 @@ type OpenNewSessionTile = (
 
 /** The spawned session runs where the offering one does: same connection and
  *  profile. A bare profile name is all an older row may know. */
-function ownerOptions(offer: SpawnTaskOffer): { profile?: string; route?: AgentProfileRoute } {
-  const owner = offer.ownerStoredSessionId
+function ownerFor(offer: SpawnTaskOffer) {
+  return offer.ownerStoredSessionId
     ? (sessionTileOwnerRoute(offer.ownerStoredSessionId) ??
-      knownSessionOwner(ownerLookupSessionRows(), offer.ownerStoredSessionId))
+        knownSessionOwner(ownerLookupSessionRows(), offer.ownerStoredSessionId))
     : undefined
+}
+
+function ownerRouteFor(offer: SpawnTaskOffer): AgentProfileRoute | undefined {
+  const owner = ownerFor(offer)
+
+  return isSessionOwnerRoute(owner) ? owner : undefined
+}
+
+function ownerOptions(offer: SpawnTaskOffer): { profile?: string; route?: AgentProfileRoute } {
+  const owner = ownerFor(offer)
 
   if (isSessionOwnerRoute(owner)) {
     return { route: owner }
@@ -44,14 +56,21 @@ function ownerOptions(offer: SpawnTaskOffer): { profile?: string; route?: AgentP
   return typeof owner === 'string' && owner ? { profile: owner } : {}
 }
 
-function createOverrides(offer: SpawnTaskOffer, choice: SpawnTaskChoice): SessionCreateOverrides {
+/** "Default model" means the profile's default for EVERYTHING — fast tier
+ *  included: `fast: false` is not "unset", it forces the normal tier over a
+ *  profile configured for priority. Fast rides only with a picked model. */
+export function createOverrides(
+  offer: SpawnTaskOffer,
+  choice: SpawnTaskChoice,
+  onKickoff: (kickoff: QueuedKickoff) => void = () => undefined
+): SessionCreateOverrides {
   return {
-    fast: choice.fast,
-    ...(choice.model ? { model: { model: choice.model, provider: choice.provider } } : {}),
+    ...(choice.model ? { fast: choice.fast, model: { model: choice.model, provider: choice.provider } } : {}),
     ...(choice.effort ? { reasoningEffort: choice.effort } : {}),
-    onComposerScopeAssigned: stored => queueTileKickoff(stored, offer.prompt),
+    onComposerScopeAssigned: stored => onKickoff(queueTileKickoff(stored, offer.prompt)),
     ownSelection: true,
-    title: offer.title
+    title: offer.title,
+    titleDedupe: true
   }
 }
 
@@ -78,6 +97,17 @@ export function spawnTaskWorktreeName(title: string, now = Date.now()): string {
 async function launchCwd(offer: SpawnTaskOffer, choice: SpawnTaskChoice): Promise<null | string | undefined> {
   if (choice.mode !== 'worktree') {
     return offer.cwd || undefined
+  }
+
+  // The git facade acts on the WINDOW's connection; a chat routed to another
+  // backend has its checkout on that machine. Refuse rather than probe (or
+  // create a worktree in) a same-named path on the wrong filesystem.
+  const ownerConnection = ownerRouteFor(offer)?.connectionId
+
+  if (ownerConnection && ownerConnection !== $activeConnectionId.get()) {
+    notify({ kind: 'error', message: translateNow('assistant.spawnTask.worktreeOtherBackend') })
+
+    return null
   }
 
   if (!offer.cwd || !(await isGitRepoPath(offer.cwd))) {
@@ -107,14 +137,30 @@ export function useSpawnTaskLauncher(openNewSessionTile: OpenNewSessionTile): vo
           return null
         }
 
+        let kickoff: null | QueuedKickoff = null
+
         const stored = await openRef.current('center', {
           ...ownerOptions(offer),
-          createOverrides: createOverrides(offer, choice),
+          createOverrides: createOverrides(offer, choice, queued => (kickoff = queued)),
           ...(cwd ? { cwd } : {}),
           listed: true
         })
 
-        return stored ? { storedSessionId: stored } : null
+        if (!stored) {
+          return null
+        }
+
+        // "Launched" means the task reached the new session, not just that a
+        // tab opened: the tile's first submit can be refused or never happen.
+        const sent = kickoff ? await (kickoff as QueuedKickoff).sent : false
+
+        if (!sent) {
+          notify({ kind: 'error', message: translateNow('assistant.spawnTask.kickoffFailed') })
+
+          return null
+        }
+
+        return { storedSessionId: stored }
       } catch (error) {
         notifyError(error, translateNow('assistant.spawnTask.launchFailed'))
 

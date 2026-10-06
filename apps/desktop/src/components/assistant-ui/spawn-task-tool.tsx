@@ -7,7 +7,7 @@ import { useMemo, useState } from 'react'
 import { useSessionView } from '@/app/chat/session-view'
 import { ModelCatalogMenu, ModelMenuCloseContext, type ModelMenuController } from '@/app/shell/model-catalog-menu'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
-import { toolCallFailed } from '@/components/assistant-ui/tool/fallback-model/format'
+import { parseMaybeObject, toolCallFailed } from '@/components/assistant-ui/tool/fallback-model/format'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -71,7 +71,9 @@ function chipController(choice: SpawnTaskChoice, onChange: (next: SpawnTaskChoic
  *  picks a model and a launch mode here; the chip then opens the task as its
  *  own session (a new tab, optionally in a fresh worktree). */
 export function SpawnTaskTool(props: ToolCallMessagePartProps) {
-  const title = text(props.args?.title)
+  // The tool's reply carries the title it validated (cleaned, cut to the
+  // store's limit); the raw argument is only a fallback for older replies.
+  const title = text(parseMaybeObject(props.result).title) || text(props.args?.title)
   const prompt = text(props.args?.prompt)
 
   // A refused call (no title/prompt, a tool error) has nothing to launch —

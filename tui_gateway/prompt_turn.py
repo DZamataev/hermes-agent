@@ -396,9 +396,21 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
                 if _pdb and _pdb.set_session_title(_session_key, _pending):
                     session["pending_title"] = None
         except ValueError as exc:
-            # Invalid/duplicate title — non-retryable, drop it; auto-title takes over.
+            # Invalid/duplicate title — non-retryable, drop it; auto-title takes over. A client that
+            # asked for ``title_dedupe`` (a model-proposed title, e.g. a spawn-task chip) keeps its
+            # name with a ``#N`` suffix instead of losing it to an unrelated session holding it.
+            deduped = None
+            if session.get("pending_title_dedupe"):
+                try:
+                    with _session_db(session) as _pdb:
+                        candidate = _pdb.get_next_title_in_lineage(_pending) if _pdb else None
+                        if candidate and candidate != _pending and _pdb.set_session_title(_session_key, candidate):
+                            deduped = candidate
+                except Exception:
+                    deduped = None
             session["pending_title"] = None
-            logger.info("Dropping pending title for session %s: %s", _session_key, exc)
+            if not deduped:
+                logger.info("Dropping pending title for session %s: %s", _session_key, exc)
         except Exception:
             pass  # transient DB failure — keep pending_title for retry
     # Voice fallback when the streaming pipeline couldn't start (tts_queue already spoke

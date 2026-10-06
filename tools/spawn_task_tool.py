@@ -70,10 +70,22 @@ SPAWN_TASK_SCHEMA = {
 }
 
 
+def check_spawn_task_available() -> bool:
+    """Withdrawn for delegate_task children. Their offer renders no chip that
+    anyone could launch, and the success reply would tell the model the user saw
+    one. Listing the name in DELEGATE_BLOCKED_TOOLS is not enough, because it
+    only strips toolsets made up entirely of blocked tools, and ``desktop_ui``
+    is a mixed toolset."""
+    from agent.delegation_context import is_delegated_child_context
+
+    return not is_delegated_child_context()
+
+
 registry.register(
     name="spawn_task",
     toolset="desktop_ui",
     schema=SPAWN_TASK_SCHEMA,
+    check_fn=check_spawn_task_available,
     handler=lambda args, **kw: spawn_task_tool(
         title=args.get("title", ""), prompt=args.get("prompt", ""), tldr=args.get("tldr", "")),
     emoji="🧩",

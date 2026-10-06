@@ -14,7 +14,9 @@ const { $activeSessionId, $sessions, setSessions } = await import('@/store/sessi
 const { $sessionStates, $sessionTiles, clearAllSessionStates, publishSessionState, setSessionTileDelegate } =
   await import('@/store/session-states')
 
-const { listTileSessionRow, useSessionTileActions } = await import('./session-tile-actions')
+const { listTileSessionRow, useSessionTileActions, useTileKickoff } = await import('./session-tile-actions')
+
+const { queueTileKickoff } = await import('@/store/spawn-task')
 
 const RUNTIME_SESSION_ID = 'rt-tile-current'
 const STORED_SESSION_ID = 'stored-tile-db'
@@ -251,6 +253,41 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     expect(calls.find(c => c.method === 'prompt.submit')?.params).toMatchObject({
       text: '/yolo then fix the flaky login test'
     })
+  })
+
+  // The tile consumes a chip's queued first prompt through the LITERAL path,
+  // once, and settles it with whether the prompt really went out.
+  it('a tile sends its queued spawn-task prompt literally, once, and reports it sent', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    requestGatewayMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {}
+    })
+
+    const { sent } = queueTileKickoff(STORED_SESSION_ID, '/yolo then fix the flaky login test')
+
+    const { rerender } = renderHook(() => {
+      const actions = useSessionTileActions({
+        requestGateway: requestGatewayMock,
+        runtimeId: RUNTIME_SESSION_ID,
+        scope: MAIN_COMPOSER_SCOPE,
+        storedSessionId: STORED_SESSION_ID
+      })
+
+      useTileKickoff(STORED_SESSION_ID, actions)
+    })
+
+    await act(async () => {
+      await expect(sent).resolves.toBe(true)
+    })
+    rerender()
+
+    expect(sessionTileDelegateExecuteSlash).not.toHaveBeenCalled()
+    expect(calls.filter(c => c.method === 'prompt.submit').map(c => c.params?.text)).toEqual([
+      '/yolo then fix the flaky login test'
+    ])
   })
 })
 

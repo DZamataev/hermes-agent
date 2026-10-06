@@ -71,7 +71,6 @@ import {
   type SessionTile,
   sessionTileDelegate
 } from '@/store/session-states'
-import { takeTileKickoff } from '@/store/spawn-task'
 import type { SessionInfo } from '@/types/hermes'
 
 import type { SessionDragPayload } from './composer/inline-refs'
@@ -81,7 +80,7 @@ import { paneMirror } from './pane-mirror'
 import { SessionDraftTitle } from './session-draft-title'
 import { startSessionDrag } from './session-drag'
 import { SessionStatusDot } from './session-status-dot'
-import { useSessionTileActions } from './session-tile-actions'
+import { useSessionTileActions, useTileKickoff } from './session-tile-actions'
 import { tileOwnerRoute } from './session-tile-owner'
 import { reasoningEffortPending, type SessionView, SessionViewProvider } from './session-view'
 import { SessionContextMenu } from './sidebar/session-actions-menu'
@@ -312,18 +311,7 @@ function TileChat({
   // reconnect, which turns a recoverable stale runtime into "session not found".
   const actions = useSessionTileActions({ requestGateway: requestTileGateway, runtimeId, scope, storedSessionId })
 
-  // A spawn-task chip opened this tile with a task to run: send it once, as a
-  // prompt. Literal on purpose — the text is model-written, and a leading `/`
-  // must never run a slash command (`/yolo …`) in the new session.
-  const submitTileText = actions.submitLiteralText
-
-  useEffect(() => {
-    const kickoff = takeTileKickoff(storedSessionId)
-
-    if (kickoff) {
-      void submitTileText(kickoff)
-    }
-  }, [storedSessionId, submitTileText])
+  useTileKickoff(storedSessionId, actions)
 
   // The same attach/pick/paste/drop pipeline the primary composer uses,
   // pointed at this tile's chips + session.
