@@ -394,7 +394,7 @@ def _unit_model_label(unit: _Batch) -> Optional[str]:
         return unit.creds.get("model")
     models = list(dict.fromkeys(
         str(per_task[i] or getattr(c, "model", "") or "") for (i, _, c) in unit.children))
-    return ", ".join(m for m in models if m) or unit.creds.get("model")
+    return ", ".join(m for m in models if m) or None  # "?" rather than another unit's models
 
 
 def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str], routing: dict) -> dict:

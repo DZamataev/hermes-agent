@@ -42,6 +42,12 @@ def test_without_per_task_routes_falls_back_to_the_call_label():
     assert _unit_model_label(_unit([0], None, creds_model="m")) == "m"
 
 
+def test_a_unit_with_no_known_model_never_borrows_the_call_summary():
+    unit = _unit([3], ["easy-model", "hard-model", None, None], creds_model="easy-model, hard-model")
+    unit.children[0][2].model = ""
+    assert _unit_model_label(unit) is None
+
+
 def test_dispatch_registers_the_unit_label_not_the_call_summary():
     """The async registry gets THIS unit's label (what the parent model reads in the completion block)."""
     from unittest.mock import patch
