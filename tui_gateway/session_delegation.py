@@ -9,7 +9,6 @@ tier routes live in the ``delegation`` block and stay untouched by a per-chat pi
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Optional
 
@@ -24,6 +23,8 @@ def normalize_delegation_pick(value: Any) -> Optional[dict]:
     """A validated pick, or None when *value* is not one (no model / unknown effort / not a mapping)."""
     if not isinstance(value, dict):
         return None
+    if any(value.get(k) is not None and not isinstance(value.get(k), str) for k in _FIELDS):
+        return None  # {"model": 5} is a malformed frame/RPC value, not a model named "5"
     pick = {k: str(value.get(k) or "").strip() for k in _FIELDS}
     if not pick["model"]:
         return None
@@ -81,13 +82,9 @@ def persist_delegation_pick(session: dict) -> None:
         if db is None:
             return
         try:
-            row = db.get_session(key)
-            if not row:
-                return
-            raw = row.get("model_config")
-            model_config = raw if isinstance(raw, dict) else (json.loads(raw) if raw else {})
-            if not isinstance(model_config, dict):
-                model_config = {}
-            db.update_session_meta(key, json.dumps(stamp_model_config(model_config, session)), None)
+            # One atomic merge (None removes the key): a read-modify-write here raced other model_config
+            # writers on the same row (yolo, model switch, runtime lock) and silently dropped their keys.
+            pick = session.get("delegation_override")
+            db.patch_session_model_config(key, {MODEL_CONFIG_KEY: dict(pick) if isinstance(pick, dict) else None})
         except Exception:
-            logger.debug("failed to persist subagent pick for %s", key, exc_info=True)
+            logger.warning("failed to persist subagent pick for %s", key, exc_info=True)

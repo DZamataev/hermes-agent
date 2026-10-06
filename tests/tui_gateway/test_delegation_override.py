@@ -133,6 +133,8 @@ class TestPersistAndResume:
     def test_malformed_stored_pick_is_ignored(self):
         assert delegation_override_from_model_config({"delegation_override": {"model": ""}}) is None
         assert delegation_override_from_model_config({"delegation_override": "x"}) is None
+        assert delegation_override_from_model_config({"delegation_override": {"model": 5}}) is None
+        assert delegation_override_from_model_config({"delegation_override": {"model": "m", "provider": []}}) is None
         assert delegation_override_from_model_config({}) is None
 
 

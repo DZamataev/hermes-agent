@@ -50,23 +50,15 @@ def test_agent_init_model_config_carries_the_pick_for_lazy_row_and_compression()
     assert "delegation_override" not in agent._session_init_model_config
 
 
-class _Db:
-    def __init__(self, model_config):
-        import json
-        self.row = {"model_config": json.dumps(model_config)}
-
-    def get_session(self, _key):
-        return self.row
-
-    def update_session_meta(self, _key, model_config_json, _model):
-        self.row["model_config"] = model_config_json
+def _real_db(tmp_path, model_config):
+    from hermes_state import SessionDB
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("k1", source="desktop", model="row-model", model_config=model_config)
+    return db
 
 
-def test_clearing_a_pick_on_a_lazy_session_reaches_the_row():
+def _config_set_lazy(session, db, value):
     import contextlib
-    import json
-    db = _Db({"delegation_override": dict(PICK), "reasoning_config": {"effort": "low"}})
-    session = {"session_key": "k1", "agent": None, "delegation_override": dict(PICK)}
 
     @contextlib.contextmanager
     def _db(_session):
@@ -74,11 +66,104 @@ def test_clearing_a_pick_on_a_lazy_session_reaches_the_row():
 
     with patch.dict(server._sessions, {"s1": session}), patch.object(server, "_session_db", _db), \
             patch.object(server, "_emit"):
-        resp = server._methods["config.set"]("r", {"key": "delegation", "session_id": "s1", "value": "auto"})
+        return server._methods["config.set"]("r", {"key": "delegation", "session_id": "s1", "value": value})
+
+
+def _stored(db):
+    from hermes_state_sessions import _parse_model_config
+    row = db.get_session("k1")
+    return row["model"], _parse_model_config(row.get("model_config"))
+
+
+def test_clearing_a_pick_on_a_lazy_session_reaches_the_row(tmp_path):
+    db = _real_db(tmp_path, {"delegation_override": dict(PICK), "reasoning_config": {"effort": "low"}})
+    session = {"session_key": "k1", "agent": None, "delegation_override": dict(PICK)}
+    resp = _config_set_lazy(session, db, "auto")
     assert resp["result"]["delegation_override"] == {}
-    stored = json.loads(db.row["model_config"])
+    model, stored = _stored(db)
     assert "delegation_override" not in stored
     assert stored["reasoning_config"] == {"effort": "low"}  # the rest of the row is untouched
+    assert model == "row-model"  # the model column is not the pick's to write
+
+
+def test_lazy_pick_write_does_not_clobber_a_concurrent_row_writer(tmp_path):
+    """The pick write must be one atomic merge: whatever another writer stored in between must survive.
+
+    The racer runs on the first read of the row the pick write performs (if any); an atomic merge never
+    reads stale state, so the racer's key is still there afterwards."""
+    db = _real_db(tmp_path, {"reasoning_config": {"effort": "low"}})
+    real_get = db.get_session
+    raced = []
+
+    def _get_then_race(key):
+        row = real_get(key)
+        if not raced:
+            raced.append(True)
+            db.patch_session_model_config(key, {"yolo_mode": True})
+        return row
+
+    session = {"session_key": "k1", "agent": None}
+    with patch.object(db, "get_session", side_effect=_get_then_race):
+        _config_set_lazy(session, db, dict(PICK))
+    if not raced:  # no read at all: race the next write directly
+        db.patch_session_model_config("k1", {"yolo_mode": True})
+    _, stored = _stored(db)
+    assert stored["delegation_override"] == PICK
+    assert stored["yolo_mode"] is True
+    assert stored["reasoning_config"] == {"effort": "low"}
+
+
+def test_malformed_row_config_is_repaired_not_reported_as_saved(tmp_path):
+    db = _real_db(tmp_path, None)
+    db._execute_write(lambda c: c.execute("UPDATE sessions SET model_config = '{broken' WHERE id = 'k1'"))
+    session = {"session_key": "k1", "agent": None}
+    _config_set_lazy(session, db, dict(PICK))
+    assert _stored(db)[1]["delegation_override"] == PICK
+
+
+def test_pick_is_session_scoped_a_stale_session_id_is_not_a_global_write():
+    """config.set with an unknown session_id must be 4001 (stale session), never fall through to config.yaml."""
+    with patch.object(server, "_write_config_key") as write_key, patch.object(server, "_save_cfg") as save_cfg:
+        resp = server._methods["config.set"]("r", {"key": "delegation", "session_id": "gone", "value": dict(PICK)})
+    assert resp["error"]["code"] == 4001
+    write_key.assert_not_called()
+    save_cfg.assert_not_called()
+
+
+def test_eager_resume_puts_the_stored_pick_on_the_agent(tmp_path, monkeypatch):
+    """Resume that builds the agent immediately must arm it with the row's pick before any turn runs."""
+    from hermes_state import SessionDB
+    from tui_gateway.transport import bind_transport, reset_transport
+
+    class _Socket:
+        def write(self, frame):
+            return True
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("k-eager", source="desktop", model="m", model_config={"delegation_override": dict(PICK)})
+    db.append_message("k-eager", "user", "hi")
+    built = {}
+
+    def _make_agent(sid, key, **kw):
+        agent = _agent()
+        built["agent"] = agent
+        return agent
+
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_make_agent", _make_agent)
+    monkeypatch.setattr(server, "_make_agent_in_context", lambda *a, **k: _make_agent(*a, **k), raising=False)
+    token = bind_transport(_Socket())
+    try:
+        resp = server.handle_request({"id": "1", "method": "session.resume", "params": {
+            "session_id": "k-eager", "cols": 80, "source": "desktop", "eager_build": True}})
+        assert "result" in resp, resp
+        live = server._sessions[resp["result"]["session_id"]]
+        assert live["agent"] is built["agent"]  # the eager branch really built it
+        assert live["delegation_override"] == PICK
+        assert built["agent"]._delegation_override == PICK
+        server._sessions.pop(resp["result"]["session_id"], None)
+    finally:
+        reset_transport(token)
 
 
 def test_fallback_info_reports_the_pick():
