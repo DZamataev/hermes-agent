@@ -4095,6 +4095,19 @@ export const ru = defineLocale({
       requirementsLabel: 'Требования',
       credentialsHeading: 'Учётные данные'
     },
+    spawnTask: {
+      defaultModel: 'Модель по умолчанию',
+      modelLabel: 'Модель для новой сессии',
+      mode: { tab: 'Запустить во вкладке', worktree: 'Запустить в worktree' },
+      dismiss: 'Скрыть',
+      dismissed: title => `Побочная задача скрыта: ${title}`,
+      launched: 'Запущено в новой сессии',
+      openSession: 'Открыть',
+      showPrompt: 'Показать промпт',
+      hidePrompt: 'Скрыть промпт',
+      launchFailed: 'Не удалось запустить побочную задачу',
+      worktreeNeedsRepo: 'Для worktree нужен git-репозиторий. Запустите во вкладке.'
+    },
     mcpSetup: {
       installTitle: 'Добавить MCP-серверы',
       enableTitle: 'Включить MCP-серверы',

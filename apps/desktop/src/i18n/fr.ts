@@ -5766,6 +5766,19 @@ export const frOverrides = {
       requirementsLabel: 'Nécessite',
       credentialsHeading: 'Identifiants'
     },
+    spawnTask: {
+      defaultModel: 'Modèle par défaut',
+      modelLabel: 'Modèle pour la nouvelle session',
+      mode: { tab: 'Lancer dans un nouvel onglet', worktree: 'Lancer dans un worktree' },
+      dismiss: 'Ignorer',
+      dismissed: title => `Tâche annexe ignorée : ${title}`,
+      launched: 'Lancée dans une nouvelle session',
+      openSession: 'Ouvrir',
+      showPrompt: 'Afficher le prompt',
+      hidePrompt: 'Masquer le prompt',
+      launchFailed: 'Impossible de lancer la tâche annexe',
+      worktreeNeedsRepo: 'Un worktree nécessite un dépôt git. Lancez-la plutôt dans un nouvel onglet.'
+    },
     mcpSetup: {
       installTitle: 'Ajouter des serveurs MCP',
       enableTitle: 'Activer des serveurs MCP',

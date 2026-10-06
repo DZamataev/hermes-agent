@@ -5752,6 +5752,19 @@ export const deOverrides = {
       requirementsLabel: 'Erfordert',
       credentialsHeading: 'Zugangsdaten'
     },
+    spawnTask: {
+      defaultModel: 'Standardmodell',
+      modelLabel: 'Modell für die neue Sitzung',
+      mode: { tab: 'In neuem Tab starten', worktree: 'In Worktree starten' },
+      dismiss: 'Verwerfen',
+      dismissed: title => `Nebenaufgabe verworfen: ${title}`,
+      launched: 'In einer neuen Sitzung gestartet',
+      openSession: 'Öffnen',
+      showPrompt: 'Prompt anzeigen',
+      hidePrompt: 'Prompt ausblenden',
+      launchFailed: 'Die Nebenaufgabe konnte nicht gestartet werden',
+      worktreeNeedsRepo: 'Ein Worktree braucht ein Git-Repository. Starte sie stattdessen in einem neuen Tab.'
+    },
     mcpSetup: {
       installTitle: 'MCP-Server hinzufügen',
       enableTitle: 'MCP-Server aktivieren',

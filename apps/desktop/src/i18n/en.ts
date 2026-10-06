@@ -5358,6 +5358,19 @@ export const en: Translations = {
       requirementsLabel: 'Requires',
       credentialsHeading: 'Credentials'
     },
+    spawnTask: {
+      defaultModel: 'Default model',
+      modelLabel: 'Model for the new session',
+      mode: { tab: 'Start in new tab', worktree: 'Start in worktree' },
+      dismiss: 'Dismiss',
+      dismissed: title => `Dismissed side task: ${title}`,
+      launched: 'Started in a new session',
+      openSession: 'Open',
+      showPrompt: 'Show prompt',
+      hidePrompt: 'Hide prompt',
+      launchFailed: 'Could not start the side task',
+      worktreeNeedsRepo: 'A worktree needs a git repository. Start it in a new tab instead.'
+    },
     mcpSetup: {
       installTitle: 'Add MCP servers',
       enableTitle: 'Enable MCP servers',

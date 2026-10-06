@@ -5745,6 +5745,19 @@ export const esOverrides = {
       requirementsLabel: 'Requiere',
       credentialsHeading: 'Credenciales'
     },
+    spawnTask: {
+      defaultModel: 'Modelo predeterminado',
+      modelLabel: 'Modelo para la nueva sesión',
+      mode: { tab: 'Iniciar en pestaña nueva', worktree: 'Iniciar en worktree' },
+      dismiss: 'Descartar',
+      dismissed: title => `Tarea secundaria descartada: ${title}`,
+      launched: 'Iniciada en una sesión nueva',
+      openSession: 'Abrir',
+      showPrompt: 'Mostrar prompt',
+      hidePrompt: 'Ocultar prompt',
+      launchFailed: 'No se pudo iniciar la tarea secundaria',
+      worktreeNeedsRepo: 'Un worktree necesita un repositorio git. Iníciala en una pestaña nueva.'
+    },
     mcpSetup: {
       installTitle: 'Añadir servidores MCP',
       enableTitle: 'Activar servidores MCP',

@@ -4464,6 +4464,19 @@ export interface Translations {
       requirementsLabel: string
       credentialsHeading: string
     }
+    spawnTask: {
+      defaultModel: string
+      modelLabel: string
+      mode: { tab: string; worktree: string }
+      dismiss: string
+      dismissed: (title: string) => string
+      launched: string
+      openSession: string
+      showPrompt: string
+      hidePrompt: string
+      launchFailed: string
+      worktreeNeedsRepo: string
+    }
     mcpSetup: {
       installTitle: string
       enableTitle: string

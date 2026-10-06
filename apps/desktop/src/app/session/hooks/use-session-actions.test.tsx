@@ -5335,6 +5335,69 @@ describe('openNewSessionTile workspace target', () => {
     expect(createParams).not.toHaveProperty('cwd')
   })
 
+  // The spawn-task chip opens its tile on the model the user picked ON THE
+  // CHIP, not the composer's sticky pick, and needs the stored id back to
+  // hand the task to the tile.
+  it('pins the caller-picked model over the composer selection and returns the stored id', async () => {
+    setCurrentModel('ambient-model')
+    setCurrentProvider('ambient-provider')
+    setCurrentModelSource('manual')
+    setCurrentReasoningEffort('low')
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return {
+          info: { cwd: '/repo', model: 'chip-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'stored-chip-tile'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    let stored: null | string | undefined
+
+    try {
+      await act(async () => {
+        stored = await handle!.openNewSessionTile('center', {
+          createOverrides: {
+            fast: false,
+            model: { model: 'chip-model', provider: 'chip-provider' },
+            reasoningEffort: 'high',
+            title: 'Flaky login'
+          },
+          cwd: '/repo',
+          listed: true
+        })
+      })
+    } finally {
+      setCurrentModelSource('')
+      setCurrentModel('')
+      setCurrentProvider('')
+      setCurrentReasoningEffort('')
+    }
+
+    expect(stored).toBe('stored-chip-tile')
+    // The sidebar row and the tab name the task from the first paint.
+    expect($sessions.get().find(session => session.id === 'stored-chip-tile')?.title).toBe('Flaky login')
+    expect(createParams).toMatchObject({
+      fast: false,
+      model: 'chip-model',
+      provider: 'chip-provider',
+      reasoning_effort: 'high',
+      title: 'Flaky login'
+    })
+  })
+
   it('omits the manual ambient composer selection from a Bot-workspace tile so the bot profile defaults apply', async () => {
     setCurrentModel('ambient-model')
     setCurrentProvider('ambient-provider')

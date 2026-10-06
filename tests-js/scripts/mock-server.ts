@@ -383,6 +383,21 @@ const BLOCKING_CLARIFY_TURN: ScriptedTurn = {
 }
 
 /**
+ * A marker that makes the mock offer a side task through `spawn_task`, then
+ * answer normally once the tool result is in. The chip that renders it is what
+ * the spawn-task e2e drives; SPAWN_TASK_PROMPT is the new session's first user
+ * message, so the mock can prove the launched session received it.
+ */
+export const SPAWN_TASK_TRIGGER = 'E2E_SPAWN_TASK_TRIGGER'
+export const SPAWN_TASK_TITLE = 'Investigate the flaky e2e login test'
+export const SPAWN_TASK_PROMPT = 'E2E_SPAWNED_TASK_PROMPT: find why the login test flakes and fix it.'
+
+const SPAWN_TASK_TURN: ScriptedTurn = {
+  text: 'I noticed a separate problem worth its own session.',
+  toolCalls: [{ name: 'spawn_task', args: { prompt: SPAWN_TASK_PROMPT, title: SPAWN_TASK_TITLE, tldr: 'Fails one run in five' } }],
+}
+
+/**
  * A marker that makes the mock emit a blocking BATCH clarify tool call
  * (multi-question form). Regression coverage for the duplicated-card bug:
  * the tool.start row and the clarify.request row carry different ids and a
@@ -821,6 +836,16 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
               streamScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
             } else {
               nonStreamingScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
+            }
+
+            return
+          }
+
+          if (userText.includes(SPAWN_TASK_TRIGGER) && !messages.some(message => message?.role === 'tool')) {
+            if (stream) {
+              streamScriptedTurn(res, model, SPAWN_TASK_TURN)
+            } else {
+              nonStreamingScriptedTurn(res, model, SPAWN_TASK_TURN)
             }
 
             return
