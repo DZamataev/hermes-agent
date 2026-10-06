@@ -529,6 +529,49 @@ def _load_config() -> dict:
     except Exception:
         return {}
 
+# Difficulty tiers the model may name per task. Fixed and few on purpose: the schema enum never depends on config
+# (prompt cache), the model cannot invent a provider/model id, and the operator remaps tiers without re-teaching it.
+# ``normal`` IS the base ``delegation.*`` block; ``easy``/``hard`` live under ``delegation.tiers``.
+DELEGATION_TIERS = ("easy", "normal", "hard")
+_DEFAULT_TIER = "normal"
+# Keys that together address one route: a tier that switches provider or endpoint must not inherit the rest.
+_ROUTE_BUNDLE_KEYS = ("model", "provider", "base_url", "api_key", "api_mode", "command", "args")
+
+
+def _normalize_tier(value: Any) -> str:
+    """Blank → ``normal``; case-insensitive; an unknown name is a ValueError the model can act on."""
+    tier = str(value or "").strip().lower()
+    if not tier:
+        return _DEFAULT_TIER
+    if tier not in DELEGATION_TIERS:
+        raise ValueError(f"Invalid delegation tier {value!r}. Expected one of: {', '.join(DELEGATION_TIERS)}.")
+    return tier
+
+
+def _merge_tier_config(base: dict, tier_cfg: dict) -> dict:
+    """A tier block layered over the base delegation block (base untouched). Blank strings are absent overrides
+    (config writers persist "unset" as ""); a tier that changes ``provider`` or ``base_url`` drops the inherited
+    route bundle first, so the base route's key/endpoint/transport never leaks onto another provider."""
+    overrides = {k: v for k, v in tier_cfg.items() if not (isinstance(v, str) and not v.strip())}
+    merged = dict(base)
+    if any(k in overrides and overrides[k] != base.get(k) for k in ("provider", "base_url")):
+        for key in _ROUTE_BUNDLE_KEYS:
+            merged.pop(key, None)
+    merged.update(overrides)
+    return merged
+
+
+def _routing_cfg_for_tier(cfg: dict, tier: str) -> dict:
+    """The routing block for *tier*: the base block itself for ``normal`` or an empty/malformed tier entry."""
+    if tier == _DEFAULT_TIER:
+        return cfg
+    tiers = cfg.get("tiers")
+    tier_cfg = tiers.get(tier) if isinstance(tiers, dict) else None
+    if not isinstance(tier_cfg, dict) or not tier_cfg:
+        return cfg
+    return _merge_tier_config(cfg, tier_cfg)
+
+
 # OpenRouter routing filters: inherited from the parent, but reset to these defaults under a pinned provider — parent
 # filters (e.g. only=["Anthropic"]) would silently force the child back onto the parent's provider.
 # openrouter_min_coding_score stays inherited: model-gated, no-op elsewhere.
