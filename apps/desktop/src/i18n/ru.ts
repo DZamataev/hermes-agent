@@ -4108,7 +4108,9 @@ export const ru = defineLocale({
       hidePrompt: 'Скрыть промпт',
       launchFailed: 'Не удалось запустить побочную задачу',
       kickoffFailed: 'Задача не дошла до новой сессии; чип можно запустить снова',
+      kickoffUnknown: 'Связь оборвалась при отправке задачи; возможно, она уже выполняется в новой вкладке',
       worktreeNeedsRepo: 'Для worktree нужен git-репозиторий. Запустите во вкладке.',
+      worktreeNoBase: 'Не удалось прочитать текущий коммит этого checkout, worktree не создан',
       worktreeOtherBackend: 'Worktree можно создать только для чата на бэкенде этого окна; запустите задачу в новой вкладке'
     },
     mcpSetup: {

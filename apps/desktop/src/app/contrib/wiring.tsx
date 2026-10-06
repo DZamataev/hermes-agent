@@ -813,7 +813,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // SAME submit machinery the normal composer uses (current chat / picked
   // session / new session), and it hears gateway truth from this window.
   useQuickEntryBridge({ startFreshSessionDraft, submitText })
-  useSpawnTaskLauncher(openNewSessionTile)
+  // Tiles mount only where the pane tree does (see controller's watchSessionTiles).
+  useSpawnTaskLauncher(openNewSessionTile, !isHudWindow() && !isBrowserWindow())
 
   // Leaving HUD mode hands this window the session back (see hud/handoff).
   useHudHandoff({ navigate, resumeSession })

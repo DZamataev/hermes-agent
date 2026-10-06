@@ -199,8 +199,12 @@ export const $spawnTaskLaunching = atom<ReadonlySet<string>>(new Set())
 // kickoff (the tile never mounted: an auxiliary window, a bot workspace) is
 // withdrawn after a deadline so a late mount cannot send a task the chip
 // already reported as failed.
+/** How the first prompt fared: `unknown` = it left, but the reply was lost
+ *  (a socket drop mid-request) — the turn may be running on the backend. */
+export type KickoffOutcome = 'not-sent' | 'sent' | 'unknown'
+
 interface TileKickoff {
-  settle: (sent: boolean) => void
+  settle: (outcome: KickoffOutcome) => void
   text: string
 }
 
@@ -210,14 +214,14 @@ const tileKickoffs = new Map<string, TileKickoff>()
 export const TILE_KICKOFF_DEADLINE_MS = 20_000
 
 export interface QueuedKickoff {
-  /** Resolves true once the tile sent the prompt; false on failure or deadline. */
-  sent: Promise<boolean>
+  /** Settles once the tile tried the prompt; `not-sent` on refusal or deadline. */
+  sent: Promise<KickoffOutcome>
 }
 
 export function queueTileKickoff(storedSessionId: string, text: string): QueuedKickoff {
-  let settle: (sent: boolean) => void = () => undefined
+  let settle: (outcome: KickoffOutcome) => void = () => undefined
 
-  const sent = new Promise<boolean>(resolve => {
+  const sent = new Promise<KickoffOutcome>(resolve => {
     settle = resolve
   })
 
@@ -226,7 +230,7 @@ export function queueTileKickoff(storedSessionId: string, text: string): QueuedK
   const timer = setTimeout(() => {
     if (tileKickoffs.get(storedSessionId)?.text === text) {
       tileKickoffs.delete(storedSessionId)
-      settle(false)
+      settle('not-sent')
     }
   }, TILE_KICKOFF_DEADLINE_MS)
 
@@ -304,32 +308,49 @@ export async function launchSpawnTask(
 ): Promise<boolean> {
   const key = spawnTaskChipKey(offer)
 
-  // Re-read storage: the same transcript may be open in another window that
-  // already launched (or dismissed) this chip.
-  if (!launcher || $spawnTaskLaunching.get().has(key) || $spawnTaskChips.get()[key] || loadChips()[key]) {
+  if (!launcher || $spawnTaskLaunching.get().has(key) || $spawnTaskChips.get()[key]) {
     return false
   }
 
-  setSpawnTaskChoice(scope, choice)
   setLaunching(key, true)
 
   try {
-    const launched = await launcher(offer, choice)
+    return await withChipLaunchClaim(key, async () => {
+      // Re-read storage under the claim: the same transcript may be open in
+      // another window that launched (or dismissed) this chip meanwhile.
+      if (loadChips()[key] || !launcher) {
+        return false
+      }
 
-    if (!launched) {
-      return false
-    }
+      setSpawnTaskChoice(scope, choice)
+      const launched = await launcher(offer, choice)
 
-    recordChip(key, { state: 'launched', storedSessionId: launched.storedSessionId })
+      if (!launched) {
+        return false
+      }
 
-    if (choice.pin) {
-      pinSession(launched.storedSessionId)
-    }
+      recordChip(key, { state: 'launched', storedSessionId: launched.storedSessionId })
 
-    return true
+      if (choice.pin) {
+        pinSession(launched.storedSessionId)
+      }
+
+      return true
+    })
   } finally {
     setLaunching(key, false)
   }
+}
+
+/** One launch of a chip at a time ACROSS windows: a launch takes seconds
+ *  (session create + first prompt), and a click in a second window during
+ *  that span would otherwise start the task twice. Web Locks are arbitrated
+ *  by the browser and freed if the holder closes; the waiter then finds the
+ *  holder's outcome in storage. Without Web Locks there is no other window. */
+function withChipLaunchClaim<T>(key: string, task: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator === 'undefined' ? undefined : navigator.locks
+
+  return locks ? locks.request(`${CHIPS_KEY}.launch.${key}`, task) : task()
 }
 
 /** Re-read persisted state, as a fresh window would. Tests only. */

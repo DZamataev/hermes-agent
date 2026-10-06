@@ -9,8 +9,9 @@ import type { AgentProfileRoute } from '@/store/profile'
 import { removeWorktreePath, startWorkInRepo } from '@/store/projects'
 import { $connection, knownSessionOwner, ownerLookupSessionRows, setSessions } from '@/store/session'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
-import { closeSessionTile, sessionTileOwnerRoute } from '@/store/session-states'
+import { discardSessionTile, sessionTileOwnerRoute } from '@/store/session-states'
 import {
+  type KickoffOutcome,
   type QueuedKickoff,
   queueTileKickoff,
   setSpawnTaskLauncher,
@@ -132,18 +133,30 @@ async function launchCwd(
     return null
   }
 
-  const base = (await desktopGit()?.review?.revParse(offer.cwd, 'HEAD').catch(() => null)) || undefined
-  const tree = await startWorkInRepo(offer.cwd, { ...(base ? { base } : {}), name: spawnTaskWorktreeName(offer.title) })
+  const base = await desktopGit()?.review?.revParse(offer.cwd, 'HEAD').catch(() => null)
+
+  // Without the offering checkout's HEAD the backend would branch from the
+  // MAIN checkout — the wrong base, silently. Refuse instead.
+  if (!base) {
+    notify({ kind: 'error', message: translateNow('assistant.spawnTask.worktreeNoBase') })
+
+    return null
+  }
+
+  const tree = await startWorkInRepo(offer.cwd, { base, name: spawnTaskWorktreeName(offer.title) })
 
   return tree ? { cwd: tree.path, worktree: { path: tree.path, repo: offer.cwd } } : null
 }
 
-/** Undo what a failed launch left behind, so a retry starts clean: the tab
- *  and its sidebar row (a session whose first prompt never went out has no
- *  stored row yet) and the fresh worktree with its branch. Best effort. */
+/** Undo what a launch left behind when its task provably never reached the
+ *  backend, so a retry starts clean: the tab (discarded — ⌘⇧T must not bring
+ *  back a tab declared dead), its sidebar row, and the fresh worktree. The
+ *  branch stays (`worktree remove` keeps it); names never collide. Best effort.
+ *  NOT for an outcome-unknown send (see `KickoffOutcome`): the turn may be
+ *  running there, in that worktree. */
 async function rollbackLaunch(stored: null | string, worktree?: { path: string; repo: string }): Promise<void> {
   if (stored) {
-    closeSessionTile(stored)
+    discardSessionTile(stored)
     setSessions(prev => prev.filter(session => session.id !== stored))
   }
 
@@ -154,11 +167,18 @@ async function rollbackLaunch(stored: null | string, worktree?: { path: string; 
 
 /** Registers how a spawn-task chip starts its session: open a listed tab on
  *  the chip's model and hand it the task as its first prompt. */
-export function useSpawnTaskLauncher(openNewSessionTile: OpenNewSessionTile): void {
+export function useSpawnTaskLauncher(openNewSessionTile: OpenNewSessionTile, canHostTiles = true): void {
   const openRef = useRef(openNewSessionTile)
   openRef.current = openNewSessionTile
 
   useEffect(() => {
+    // A window that mounts no tile tree (HUD, popped-out browser) could open
+    // the session but never send its task: register nothing, so the chip
+    // shows as unavailable instead of failing 20 s after a click.
+    if (!canHostTiles) {
+      return
+    }
+
     const launch: SpawnTaskLauncher = async (offer, choice) => {
       let start: Awaited<ReturnType<typeof launchCwd>> = null
       let stored: null | string = null
@@ -181,9 +201,18 @@ export function useSpawnTaskLauncher(openNewSessionTile: OpenNewSessionTile): vo
 
         // "Launched" means the task reached the new session, not just that a
         // tab opened: the tile's first submit can be refused or never happen.
-        const sent = stored && kickoff ? await (kickoff as QueuedKickoff).sent : false
+        const outcome: KickoffOutcome = stored && kickoff ? await (kickoff as QueuedKickoff).sent : 'not-sent'
 
-        if (!sent) {
+        if (outcome === 'unknown') {
+          // The prompt left but the reply was lost (socket drop): the turn may
+          // be running. Keep everything and count the chip as launched — a
+          // retry would run the task twice.
+          notify({ kind: 'warning', message: translateNow('assistant.spawnTask.kickoffUnknown') })
+
+          return { storedSessionId: stored! }
+        }
+
+        if (outcome !== 'sent') {
           if (stored) {
             notify({ kind: 'error', message: translateNow('assistant.spawnTask.kickoffFailed') })
           }
@@ -205,5 +234,5 @@ export function useSpawnTaskLauncher(openNewSessionTile: OpenNewSessionTile): vo
     setSpawnTaskLauncher(launch)
 
     return () => setSpawnTaskLauncher(null)
-  }, [])
+  }, [canHostTiles])
 }

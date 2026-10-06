@@ -79,3 +79,14 @@ it('moves the spawn-task chip choice on rename and forgets it on delete', () => 
   dropTilesForProfile('after-rename')
   expect(spawnTaskChoiceFor(spawnTaskChoiceScope('local', 'after-rename')).model).toBe('')
 })
+
+// The chip keys a routed owner by its backend profile; an SDK delete that
+// names both must forget the choice under that key too.
+it('forgets a routed owner’s spawn-task choice on a source-scoped delete', () => {
+  const choice = { effort: '', fast: false, mode: 'tab' as const, model: 'm', pin: false, provider: 'p' }
+
+  setSpawnTaskChoice(spawnTaskChoiceScope('homelab', 'backend-name'), choice)
+  dropTilesForProfile('desktop-name', { connectionId: 'homelab', profile: 'desktop-name', targetProfile: 'backend-name' })
+
+  expect(spawnTaskChoiceFor(spawnTaskChoiceScope('homelab', 'backend-name')).model).toBe('')
+})

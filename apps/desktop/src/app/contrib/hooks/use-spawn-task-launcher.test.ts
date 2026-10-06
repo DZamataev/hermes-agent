@@ -3,9 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionCreateOverrides } from '@/app/session/hooks/use-session-actions/create-overrides'
 import { $connection, $sessions } from '@/store/session'
-import { $sessionTiles } from '@/store/session-states'
+import { $sessionTiles, reopenLastClosedTile } from '@/store/session-states'
 import {
   $spawnTaskChips,
+  $spawnTaskLauncherReady,
+  type KickoffOutcome,
   launchSpawnTask,
   resetSpawnTaskStoreForTests,
   setSpawnTaskLauncher,
@@ -52,7 +54,7 @@ type OpenOptions = { createOverrides: SessionCreateOverrides; cwd?: string }
 
 /** Mirrors `openNewSessionTile` + the mounted tile: assign the stored id (which
  *  queues the kickoff), then the tile takes it and settles it as its submit did. */
-function tileThatSends(sent: 'never' | boolean) {
+function tileThatSends(sent: 'never' | KickoffOutcome) {
   return vi.fn(async (_dir: 'center', options: OpenOptions) => {
     options.createOverrides.onComposerScopeAssigned?.('stored-new')
 
@@ -65,9 +67,9 @@ function tileThatSends(sent: 'never' | boolean) {
 }
 
 describe('spawn-task launcher', () => {
-  let open = tileThatSends(true)
+  let open = tileThatSends('sent')
 
-  function mountLauncher(next = tileThatSends(true)) {
+  function mountLauncher(next = tileThatSends('sent')) {
     open = next
     renderHook(() => useSpawnTaskLauncher(open))
   }
@@ -132,7 +134,7 @@ describe('spawn-task launcher', () => {
         options.createOverrides.onComposerScopeAssigned?.('stored-new')
         const kickoff = takeTileKickoff('stored-new')
         queued = kickoff?.text ?? null
-        kickoff?.settle(true)
+        kickoff?.settle('sent')
 
         return 'stored-new'
       })
@@ -146,7 +148,7 @@ describe('spawn-task launcher', () => {
   // A tab that opened but never sent the task is not a launched chip: the
   // user must be told, and the chip must stay launchable.
   it('leaves the chip launchable when the tile refuses the first prompt', async () => {
-    mountLauncher(tileThatSends(false))
+    mountLauncher(tileThatSends('not-sent'))
 
     await expect(launchSpawnTask(OFFER, CHOICE, 'scope')).resolves.toBe(false)
 
@@ -221,7 +223,7 @@ describe('spawn-task launcher', () => {
       vi.fn(async (_dir: 'center', options: OpenOptions) => {
         $sessions.set([{ id: 'stored-new' } as never])
         options.createOverrides.onComposerScopeAssigned?.('stored-new')
-        takeTileKickoff('stored-new')?.settle(false)
+        takeTileKickoff('stored-new')?.settle('not-sent')
 
         return 'stored-new'
       })
@@ -233,6 +235,55 @@ describe('spawn-task launcher', () => {
     expect(removeWorktreePath).toHaveBeenCalledWith(OFFER.cwd, '/repo/.worktrees/x', { force: true })
     expect($sessions.get().some(session => session.id === 'stored-new')).toBe(false)
     expect($sessionTiles.get().some(tile => tile.storedSessionId === 'stored-new')).toBe(false)
+    // Discarded, not closed: ⌘⇧T must not bring back a tab declared dead.
+    reopenLastClosedTile()
+    expect($sessionTiles.get().some(tile => tile.storedSessionId === 'stored-new')).toBe(false)
+  })
+
+  // The prompt left but its reply was lost (socket drop): the turn may be
+  // running in that worktree. Nothing is rolled back and the chip counts as
+  // launched, so a retry cannot run the task twice.
+  it('keeps everything when the first prompt’s outcome is unknown', async () => {
+    mountLauncher(tileThatSends('unknown'))
+    $sessions.set([{ id: 'stored-new' } as never])
+
+    await expect(launchSpawnTask(OFFER, { ...CHOICE, mode: 'worktree' }, 'scope')).resolves.toBe(true)
+
+    expect(removeWorktreePath).not.toHaveBeenCalled()
+    expect($sessions.get().some(session => session.id === 'stored-new')).toBe(true)
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'warning' }))
+  })
+
+  // Without the offering checkout's HEAD the backend would branch off the
+  // main checkout — refuse rather than silently use the wrong base.
+  it('refuses a worktree when the offering checkout’s HEAD cannot be read', async () => {
+    mountLauncher()
+    revParse.mockResolvedValueOnce(null as never)
+
+    await expect(launchSpawnTask(OFFER, { ...CHOICE, mode: 'worktree' }, 'scope')).resolves.toBe(false)
+
+    expect(startWorkInRepo).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  // A remote window: a chat routed to THIS machine (`local`) is on another
+  // backend from the window's point of view.
+  it('refuses a worktree for a local-routed chat in a remote window', async () => {
+    mountLauncher()
+    $connection.set({ connectionId: 'remote-1', mode: 'remote' } as never)
+    $sessionTiles.set([{ ownerRoute: { connectionId: 'local', profile: 'default' }, storedSessionId: 'owner' } as never])
+
+    await expect(launchSpawnTask(OFFER, { ...CHOICE, mode: 'worktree' }, 'scope')).resolves.toBe(false)
+
+    expect(startWorkInRepo).not.toHaveBeenCalled()
+  })
+
+  // A window with no tile tree (HUD) would open the session and never send
+  // the task: it registers no launcher at all.
+  it('registers no launcher in a window that cannot host tiles', () => {
+    renderHook(() => useSpawnTaskLauncher(open, false))
+
+    expect($spawnTaskLauncherReady.get()).toBe(false)
   })
 
   it('never reuses a worktree name, even for titles that slug to nothing', () => {

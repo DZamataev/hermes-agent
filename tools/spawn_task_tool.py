@@ -9,6 +9,7 @@ needs no event or round-trip; the result is only a receipt for the model.
 
 import json
 
+from hermes_state_titles import _NUMBERED_TITLE_RE
 from tools.registry import no_cache_check_fn, registry, tool_error
 
 
@@ -23,6 +24,11 @@ def spawn_task_tool(title: str, prompt: str, tldr: str = "") -> str:
     # (whitespace collapse never lengthens, so this only trims the tail).
     limit = SessionDB.MAX_TITLE_LENGTH
     title = (SessionDB.sanitize_title((title or "")[:limit]) or "")[:limit].strip()
+    # A trailing " #N" is the store's lineage form: name lookups (``-c "<t>"``,
+    # ``/resume <t>``) prefer "<t> #N" over "<t>" itself, so a model-written
+    # "Refactor auth #2" would hijack the user's "Refactor auth". Keep the
+    # number, drop the lineage shape.
+    title = _NUMBERED_TITLE_RE.sub(r"\1 (\2)", title)
     prompt = (prompt or "").strip()
     if not title:
         return tool_error("spawn_task needs a short title for the chip.")

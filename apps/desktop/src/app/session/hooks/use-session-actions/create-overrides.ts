@@ -20,7 +20,7 @@ export interface SessionCreateOverrides {
   reasoningEffort?: string
   title?: string
   /** The title is a proposal (model-written): if another session holds it,
-   *  keep it as `<title> #N` instead of dropping it for an auto-title. */
+   *  keep it as `<title> (N)` instead of dropping it for an auto-title. */
   titleDedupe?: boolean
 }
 

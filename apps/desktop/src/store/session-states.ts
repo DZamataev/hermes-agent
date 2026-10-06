@@ -2808,6 +2808,12 @@ export function dropTilesForProfile(
   dropPreviewArtifactsForProfile(name, route)
   dropStatusDrawersForProfile(name, route)
   dropSpawnTaskChoicesForProfile(name, route?.connectionId)
+
+  // The chip keys a routed owner by its BACKEND profile (targetProfile).
+  if (route?.targetProfile && normalizeProfileKey(route.targetProfile) !== name) {
+    dropSpawnTaskChoicesForProfile(normalizeProfileKey(route.targetProfile), route.connectionId)
+  }
+
   // Route fields go through the SAME canonicalization as `name` below — a
   // source-scoped delete must not be defeated by stray whitespace around a
   // profile name that a non-route delete trims away.

@@ -9,7 +9,7 @@
  */
 
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
-import { SLASH_COMMAND_RE } from '@hermes/shared'
+import { JsonRpcGatewayError, SLASH_COMMAND_RE } from '@hermes/shared'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import type { ClientSessionState } from '@/app/types'
@@ -38,7 +38,7 @@ import {
   sessionTileOwnerRoute
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
-import { takeTileKickoff } from '@/store/spawn-task'
+import { type KickoffOutcome, takeTileKickoff } from '@/store/spawn-task'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
@@ -187,6 +187,11 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
   // Tile session RPCs must follow the tile's composite owner even when the
   // active gateway has moved to a same-named profile on another source.
+  // Last `prompt.submit` this tile sent, and how its reply ended: a typed
+  // gateway answer is a definite refusal; any other failure (socket drop, a
+  // timeout) means the frame may have landed and the turn may be running.
+  const lastSubmitRef = useRef<'answered' | 'lost' | 'none'>('none')
+
   const requestSessionGateway = useCallback(
     <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
       const knownOwner: SessionOwnerScope =
@@ -197,7 +202,16 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       // across same-named sources.
       const owner: SessionOwnerScope = knownOwner && typeof knownOwner === 'object' ? knownOwner : undefined
 
-      return requestForSessionProfile<T>(owner, requestGateway, method, params ?? {}, timeoutMs, signal)
+      const request = requestForSessionProfile<T>(owner, requestGateway, method, params ?? {}, timeoutMs, signal)
+
+      if (method === 'prompt.submit') {
+        request.then(
+          () => (lastSubmitRef.current = 'answered'),
+          error => (lastSubmitRef.current = error instanceof JsonRpcGatewayError ? 'answered' : 'lost')
+        )
+      }
+
+      return request
     },
     [requestGateway]
   )
@@ -340,10 +354,16 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
   // Text that must reach the model verbatim — never a slash command, whatever
   // it starts with (a spawn-task chip's first prompt is model-written).
   const submitLiteralText = useCallback(
-    async (rawText: string) => {
+    async (rawText: string): Promise<KickoffOutcome> => {
       listTileSession(rawText.trim())
+      lastSubmitRef.current = 'none'
 
-      return await submitPromptText(rawText, { attachments: [] })
+      if (await submitPromptText(rawText, { attachments: [] })) {
+        return 'sent'
+      }
+
+      // Read through a widening cast: the await above may have updated it.
+      return (lastSubmitRef.current as 'answered' | 'lost' | 'none') === 'lost' ? 'unknown' : 'not-sent'
     },
     [listTileSession, submitPromptText]
   )
@@ -745,10 +765,7 @@ export function useTileKickoff(
     const kickoff = takeTileKickoff(storedSessionId)
 
     if (kickoff) {
-      void submitLiteralText(kickoff.text).then(
-        sent => kickoff.settle(sent !== false),
-        () => kickoff.settle(false)
-      )
+      void submitLiteralText(kickoff.text).then(kickoff.settle, () => kickoff.settle('not-sent'))
     }
   }, [storedSessionId, submitLiteralText])
 }

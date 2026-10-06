@@ -5396,6 +5396,7 @@ describe('openNewSessionTile workspace target', () => {
       reasoning_effort: 'high',
       title: 'Flaky login'
     })
+    expect(createParams).not.toHaveProperty('title_dedupe')
   })
 
   // The chip owns its whole selection: "Default model" and an unset effort
@@ -5430,7 +5431,7 @@ describe('openNewSessionTile workspace target', () => {
     try {
       await act(async () => {
         await handle!.openNewSessionTile('center', {
-          createOverrides: { fast: false, ownSelection: true, title: 'Default pick' },
+          createOverrides: { fast: false, ownSelection: true, title: 'Default pick', titleDedupe: true },
           cwd: '/repo',
           listed: true
         })
@@ -5446,7 +5447,8 @@ describe('openNewSessionTile workspace target', () => {
     expect(createParams).not.toHaveProperty('model')
     expect(createParams).not.toHaveProperty('provider')
     expect(createParams).not.toHaveProperty('reasoning_effort')
-    expect(createParams).toMatchObject({ fast: false, title: 'Default pick' })
+    // The model-proposed title rides with its dedupe flag onto the wire.
+    expect(createParams).toMatchObject({ fast: false, title: 'Default pick', title_dedupe: true })
   })
 
   // The other half of the contract: an ordinary new tab (no own selection)

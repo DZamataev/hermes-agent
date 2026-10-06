@@ -40,6 +40,22 @@ def test_title_cannot_claim_a_reserved_session_name_or_overflow():
     assert len(long["title"]) <= SessionDB.MAX_TITLE_LENGTH
 
 
+def test_a_lineage_shaped_title_cannot_hijack_name_lookups(tmp_path):
+    """"<t> #N" reads as a continuation of "<t>" and wins `-c "<t>"` / `/resume`;
+    a model-written one must not take over the user's own session."""
+    from hermes_state import SessionDB
+
+    out = json.loads(st.spawn_task_tool(title="Refactor auth #2", prompt="p"))
+    assert out["title"] == "Refactor auth (2)"
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("mine", source="desktop")
+    db.set_session_title("mine", "Refactor auth")
+    db.create_session("side", source="desktop")
+    db.set_session_title("side", out["title"])
+    assert db.resolve_session_by_title("Refactor auth") == "mine"
+
+
 def test_delegated_children_never_get_it():
     """A child's chip would render nowhere; the model must not be told the user
     sees one. Checked through the real schema assembly, not the deny list —

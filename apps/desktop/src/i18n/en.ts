@@ -5371,7 +5371,9 @@ export const en: Translations = {
       hidePrompt: 'Hide prompt',
       launchFailed: 'Could not start the side task',
       kickoffFailed: 'The side task did not reach its new session; the chip stays available',
+      kickoffUnknown: 'The connection dropped while the side task was being sent; it may be running in its new tab',
       worktreeNeedsRepo: 'A worktree needs a git repository. Start it in a new tab instead.',
+      worktreeNoBase: 'Could not read this checkout’s current commit, so no worktree was made',
       worktreeOtherBackend: 'A worktree can only be made for a chat on this window’s backend; start it in a new tab instead'
     },
     mcpSetup: {

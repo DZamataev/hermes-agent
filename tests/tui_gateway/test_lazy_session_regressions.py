@@ -298,7 +298,7 @@ class TestFinalizeOrphanedCompressionSessions:
 
 class TestPendingTitleDedupe:
     """A client that asks for ``title_dedupe`` (a spawn-task chip: the title is
-    model-proposed and two chips may share it) keeps the name as ``<title> #N``
+    model-proposed and two chips may share it) keeps the name as ``<title> (N)``
     when another session already holds it, instead of losing it to auto-title."""
 
     def _run_first_turn(self, monkeypatch, db, session):

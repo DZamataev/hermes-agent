@@ -4,6 +4,7 @@ import { $pinnedSessionIds } from './layout'
 import {
   $spawnTaskChips,
   $spawnTaskLauncherReady,
+  $spawnTaskLaunching,
   dismissSpawnTask,
   dropSpawnTaskChoicesForProfile,
   launchSpawnTask,
@@ -161,6 +162,59 @@ describe('spawn-task store', () => {
     expect($spawnTaskChips.get()[spawnTaskChipKey(other)]).toEqual({ state: 'launched', storedSessionId: 'from-b' })
     expect($spawnTaskChips.get()[KEY]).toEqual({ state: 'dismissed' })
     expect(launcher).not.toHaveBeenCalled()
+  })
+
+  // Two windows clicking the same chip while the first launch is in flight:
+  // the launch is claimed across windows, so the second sees the outcome.
+  it('serializes launches of one chip across windows', async () => {
+    const held: Array<() => void> = []
+    const queue: Array<() => Promise<unknown>> = []
+
+    // Minimal Web Locks: one holder per name, FIFO waiters.
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      locks: {
+        request: (_name: string, task: () => Promise<unknown>) =>
+          new Promise(resolve => {
+            const run = () => task().then(value => {
+              resolve(value)
+              queue.shift()
+              queue[0]?.()
+            })
+
+            queue.push(run)
+
+            if (queue.length === 1) {
+              void run()
+            }
+          })
+      }
+    })
+
+    let release: () => void = () => undefined
+
+    const launcher = vi.fn(
+      () =>
+        new Promise<{ storedSessionId: string }>(resolve => {
+          release = () => resolve({ storedSessionId: 'stored-9' })
+          held.push(release)
+        })
+    )
+
+    setSpawnTaskLauncher(launcher)
+
+    const first = launchSpawnTask(OFFER, CHOICE, SCOPE)
+    // Window B: its own in-memory state knows nothing of A's launch.
+    $spawnTaskLaunching.set(new Set())
+    const second = launchSpawnTask(OFFER, CHOICE, SCOPE)
+
+    await vi.waitFor(() => expect(held).toHaveLength(1))
+    release()
+
+    await expect(first).resolves.toBe(true)
+    await expect(second).resolves.toBe(false)
+    expect(launcher).toHaveBeenCalledTimes(1)
+    vi.unstubAllGlobals()
   })
 
   it('picks up another window’s chip outcomes live', () => {

@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { renderHook } from '@testing-library/react'
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -282,7 +283,7 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     })
 
     await act(async () => {
-      await expect(sent).resolves.toBe(true)
+      await expect(sent).resolves.toBe('sent')
     })
     rerender()
 
@@ -321,7 +322,7 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     const first = renderHook(useKickoffTile)
 
     await act(async () => {
-      await expect(sent).resolves.toBe(false)
+      await expect(sent).resolves.toBe('not-sent')
     })
     first.unmount()
 
@@ -333,6 +334,52 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     })
 
     expect(calls).not.toContain('prompt.submit')
+  })
+  // The prompt frame left, but the socket dropped before the reply: the
+  // backend may be running the turn. That is NOT a refusal — the launcher
+  // must not roll back (and delete the worktree under) a live turn.
+  it('reports a first prompt whose reply was lost as unknown, a gateway refusal as not sent', async () => {
+    const useKickoffTile = () => {
+      const actions = useSessionTileActions({
+        requestGateway: requestGatewayMock,
+        runtimeId: RUNTIME_SESSION_ID,
+        scope: MAIN_COMPOSER_SCOPE,
+        storedSessionId: STORED_SESSION_ID
+      })
+
+      useTileKickoff(STORED_SESSION_ID, actions)
+    }
+
+    requestGatewayMock.mockImplementation(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new Error('gateway connection closed')
+      }
+
+      return {}
+    })
+
+    const lost = queueTileKickoff(STORED_SESSION_ID, 'fix it').sent
+    const first = renderHook(useKickoffTile)
+
+    await act(async () => {
+      await expect(lost).resolves.toBe('unknown')
+    })
+    first.unmount()
+
+    requestGatewayMock.mockImplementation(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new JsonRpcGatewayError('session busy', { code: 4009 })
+      }
+
+      return {}
+    })
+
+    const refused = queueTileKickoff(STORED_SESSION_ID, 'fix it').sent
+    renderHook(useKickoffTile)
+
+    await act(async () => {
+      await expect(refused).resolves.toBe('not-sent')
+    })
   })
 })
 
