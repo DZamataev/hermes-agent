@@ -101,7 +101,7 @@ function SpawnTaskChip({ prompt, title, tldr, toolCallId }: SpawnTaskChipProps) 
   const cwd = useStore(view.$cwd)
   const ownerStoredSessionId = useStore(view.$storedId)
   const owner = useChipOwner(ownerStoredSessionId)
-  const chipKey = spawnTaskChipKey({ lineageId: owner.lineageId, ownerStoredSessionId, toolCallId })
+  const chipKey = spawnTaskChipKey({ prompt, title, toolCallId })
   const outcome = useStore($spawnTaskChips)[chipKey]
   const launching = useStore($spawnTaskLaunching).has(chipKey)
   const launcherReady = useStore($spawnTaskLauncherReady)
@@ -124,7 +124,7 @@ function SpawnTaskChip({ prompt, title, tldr, toolCallId }: SpawnTaskChipProps) 
 
   const launch = (mode: SpawnTaskMode) =>
     void launchSpawnTask(
-      { cwd, lineageId: owner.lineageId, ownerStoredSessionId, prompt, title, toolCallId },
+      { cwd, ownerStoredSessionId, prompt, title, toolCallId },
       { ...choice, mode },
       owner.choiceScope
     )

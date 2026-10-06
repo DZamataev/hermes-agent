@@ -1,4 +1,4 @@
-import { isGatewayReauthRequired } from '@hermes/shared'
+import { carryRequestInFlight, isGatewayReauthRequired } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
@@ -158,13 +158,19 @@ export function useGatewayRequest() {
           reauthErrorRef.current = null
 
           if (reauthError) {
-            throw reauthError
+            throw carryRequestInFlight(error, reauthError)
           }
 
           throw error
         }
 
-        return recovered.request<T>(method, params, timeoutMs, signal)
+        // The resend is the same logical request: if the first frame left,
+        // the caller must still learn that, whatever the resend ends with.
+        try {
+          return await recovered.request<T>(method, params, timeoutMs, signal)
+        } catch (retryError) {
+          throw carryRequestInFlight(error, retryError)
+        }
       }
     },
     [ensureGatewayOpen]

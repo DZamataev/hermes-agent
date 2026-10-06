@@ -40,8 +40,6 @@ export interface SpawnTaskChoice {
 export interface SpawnTaskOffer {
   /** Workspace the offering session runs in; a worktree branches off it. */
   cwd: string
-  /** The offering conversation's stable identity (lineage root), keys the chip. */
-  lineageId?: null | string
   /** The offering session: the spawned one runs on the same backend + profile. */
   ownerStoredSessionId?: null | string
   prompt: string
@@ -261,15 +259,26 @@ export function setSpawnTaskChoice(scope: string, choice: SpawnTaskChoice): void
   rewriteChoices({ ...$spawnTaskChoices.get(), [scope]: choice })
 }
 
-/** A chip's identity: tool-call ids are unique per response, not per app —
- *  some providers number them per reply (`functions.spawn_task:0`), so two
- *  conversations can hold chips with the same id. Scope it by the offering
- *  conversation's lineage root, which survives compression (the live stored
- *  id rotates on compression and would re-arm every chip in the transcript). */
-export function spawnTaskChipKey(
-  offer: Pick<SpawnTaskOffer, 'lineageId' | 'ownerStoredSessionId' | 'toolCallId'>
-): string {
-  return `${offer.lineageId || offer.ownerStoredSessionId || ''}::${offer.toolCallId}`
+/** A chip's identity, from the offer ITSELF: the tool-call id plus a digest
+ *  of the task text. Tool-call ids are unique per reply, not per app (some
+ *  providers number them `functions.spawn_task:0`), so the text separates two
+ *  conversations' chips. Nothing here depends on the session's identity —
+ *  stored ids rotate on compression, and the lineage root is only known while
+ *  the session's row is loaded — so every window and every load state of the
+ *  same transcript agrees on the key (and on its cross-window launch lock). */
+export function spawnTaskChipKey(offer: Pick<SpawnTaskOffer, 'prompt' | 'title' | 'toolCallId'>): string {
+  return `${offer.toolCallId}::${fnv1a(`${offer.title}\u0000${offer.prompt}`)}`
+}
+
+function fnv1a(text: string): string {
+  let hash = 0x811c9dc5
+
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
+  }
+
+  return (hash >>> 0).toString(36)
 }
 
 /** Another window may have recorded chips since this one loaded: merge onto

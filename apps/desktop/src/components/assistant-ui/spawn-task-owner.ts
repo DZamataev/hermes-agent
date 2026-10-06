@@ -3,7 +3,7 @@ import { useMemo } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $connection, $sessions, knownSessionOwner, ownerLookupSessionRows, sessionMatchesStoredId, sessionPinId } from '@/store/session'
+import { $connection, $sessions, knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import { isSessionOwnerRoute, requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
 import { $sessionTiles, sessionTileOwnerRoute, tileConnectionScopeId } from '@/store/session-states'
 import { spawnTaskChoiceScope } from '@/store/spawn-task'
@@ -16,8 +16,6 @@ export interface ChipOwner {
   /** The owner route's connection, as a tile passes it to its model menu
    *  (undefined = the window's own connection). */
   connectionId?: string
-  /** Lineage root of the offering conversation; survives compression. */
-  lineageId: null | string
   profile: string
   /** Owner-routed RPC for a routed owner (a tile on another profile or
    *  connection), so the catalog is that backend's; undefined = the window's
@@ -39,7 +37,6 @@ export function useChipOwner(storedId: null | string): ChipOwner {
 
   return useMemo(() => {
     const rows = ownerLookupSessionRows()
-    const row = storedId ? rows.find(candidate => sessionMatchesStoredId(candidate, storedId)) : undefined
 
     const owner: SessionOwnerScope = storedId
       ? (sessionTileOwnerRoute(storedId) ?? knownSessionOwner(rows, storedId))
@@ -56,7 +53,6 @@ export function useChipOwner(storedId: null | string): ChipOwner {
       // direct remote is `url:<base>` — never merged with local.
       choiceScope: spawnTaskChoiceScope(connectionId || tileConnectionScopeId(windowConnection), profile),
       connectionId,
-      lineageId: row ? sessionPinId(row) : storedId,
       profile,
       request: owner
         ? <T,>(method: string, params?: Record<string, unknown>) =>

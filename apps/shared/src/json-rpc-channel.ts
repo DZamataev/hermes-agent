@@ -94,6 +94,17 @@ function markInFlight<E extends Error>(error: E): E {
   return error
 }
 
+/** For a layer that RETRIES a request on its own (reconnect-and-resend): if an
+ *  earlier attempt's frame left, the logical request is in flight whatever the
+ *  retry ends with — carry that onto the error the caller finally sees. */
+export function carryRequestInFlight<E>(earlier: unknown, error: E): E {
+  if (isRequestInFlightError(earlier) && typeof error === 'object' && error !== null) {
+    inFlightErrors.add(error)
+  }
+
+  return error
+}
+
 /** JSON-RPC "method not found" (tui_gateway/server.py::dispatch `_err(rid, -32601, …)`). */
 export const JSON_RPC_METHOD_NOT_FOUND = -32601
 

@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { $connection, $sessions } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 import { spawnTaskChoiceScope } from '@/store/spawn-task'
-import type { SessionInfo } from '@/types/hermes'
 
 import { useChipOwner } from './spawn-task-owner'
 
@@ -55,11 +54,4 @@ describe('useChipOwner', () => {
     }
   })
 
-  it('keys by the lineage root once compression rotates the live id', () => {
-    $sessions.set([{ _lineage_root_id: 'root-1', id: 'tip-2' } as SessionInfo])
-
-    const { result } = renderHook(() => useChipOwner('tip-2'))
-
-    expect(result.current.lineageId).toBe('root-1')
-  })
 })

@@ -92,13 +92,15 @@ describe('spawn-task store', () => {
     expect($spawnTaskLauncherReady.get()).toBe(false)
   })
 
-  // Compression rotates the live stored id; a chip keyed by it would re-arm
-  // and could launch the same task twice.
-  it('keys a chip by the conversation lineage, so compression does not re-arm it', () => {
-    const before = spawnTaskChipKey({ lineageId: 'root', ownerStoredSessionId: 'root', toolCallId: 'call-1' })
-    const after = spawnTaskChipKey({ lineageId: 'root', ownerStoredSessionId: 'tip-2', toolCallId: 'call-1' })
+  // The key comes from the offer alone: compression rotating the stored id,
+  // or a window that has not loaded the session's row, must not change it —
+  // or a launched chip re-arms and the cross-window launch lock splits.
+  it('keys a chip by the offer, never by the session identity it sits in', () => {
+    const offer = { prompt: 'Fix it', title: 'Flaky', toolCallId: 'call-1' }
 
-    expect(after).toBe(before)
+    expect(spawnTaskChipKey({ ...offer, ownerStoredSessionId: 'root' } as never)).toBe(
+      spawnTaskChipKey({ ...offer, ownerStoredSessionId: 'tip-2' } as never)
+    )
   })
 
   it('launches through the registered launcher with the chosen model and records the session', async () => {
@@ -239,7 +241,8 @@ describe('spawn-task store', () => {
     setSpawnTaskLauncher(launcher)
 
     await launchSpawnTask(OFFER, CHOICE, SCOPE)
-    const other = { ...OFFER, ownerStoredSessionId: 'session-b' }
+    // Another conversation's reply numbered its call the same way, offering a different task.
+    const other = { ...OFFER, ownerStoredSessionId: 'session-b', prompt: 'Update the changelog' }
 
     expect($spawnTaskChips.get()[spawnTaskChipKey(other)]).toBeUndefined()
     await expect(launchSpawnTask(other, CHOICE, SCOPE)).resolves.toBe(true)

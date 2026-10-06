@@ -15,6 +15,7 @@ import {
   resetSpawnTaskStoreForTests,
   setSpawnTaskChoice,
   setSpawnTaskLauncher,
+  spawnTaskChipKey,
   spawnTaskChoiceScope
 } from '@/store/spawn-task'
 
@@ -156,7 +157,6 @@ describe('the spawn-task chip', () => {
     expect(launcher).toHaveBeenCalledWith(
       {
         cwd: '/repo',
-        lineageId: 'stored-parent',
         ownerStoredSessionId: 'stored-parent',
         prompt: ARGS.prompt,
         title: ARGS.title,
@@ -165,7 +165,7 @@ describe('the spawn-task chip', () => {
       { effort: 'low', fast: false, mode: 'tab', model: 'gpt-5.5-mini', pin: false, provider: 'openai' }
     )
     expect(await screen.findByText('Started in a new session')).toBeTruthy()
-    expect($spawnTaskChips.get()['stored-parent::spawn-call-1']).toEqual({
+    expect($spawnTaskChips.get()[spawnTaskChipKey({ prompt: ARGS.prompt, title: ARGS.title, toolCallId: 'spawn-call-1' })]).toEqual({
       state: 'launched',
       storedSessionId: 'stored-child'
     })
