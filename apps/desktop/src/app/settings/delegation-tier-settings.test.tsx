@@ -77,18 +77,26 @@ describe('tier config mapping', () => {
 })
 
 describe('DelegationTierSettings', () => {
-  function renderSettings() {
+  function renderSettings(config: Record<string, unknown> = CONFIG) {
     const onChange = vi.fn()
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
     render(
       <QueryClientProvider client={client}>
-        <DelegationTierSettings config={CONFIG} onChange={onChange} />
+        <DelegationTierSettings config={config} onChange={onChange} />
       </QueryClientProvider>
     )
 
     return onChange
   }
+
+  it('a configured base_url is named instead of the provider it overrides', () => {
+    renderSettings({ ...CONFIG, delegation: { ...CONFIG.delegation, base_url: 'http://localhost:9/v1' } })
+
+    expect(
+      within(screen.getByTestId('delegation-tier-normal')).getByText(/http:\/\/localhost:9\/v1: claude-sonnet-5/)
+    ).toBeTruthy()
+  })
 
   it('shows each tier and what an unset tier falls back to', () => {
     renderSettings()

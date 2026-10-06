@@ -979,12 +979,20 @@ describe('active stored-session id rotation routing', () => {
 async function createWith(
   profileSetup: () => void,
   beforeCreate?: (handle: HarnessHandle) => Promise<void> | void,
-  calls: [string, Record<string, unknown> | undefined][] = []
+  calls: [string, Record<string, unknown> | undefined][] = [],
+  override?: (method: string) => Promise<never> | undefined,
+  slices?: Map<string, ClientSessionState>
 ): Promise<Record<string, unknown> | undefined> {
   let createParams: Record<string, unknown> | undefined
 
   const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
     calls.push([method, params])
+
+    const forced = override?.(method)
+
+    if (forced) {
+      return forced
+    }
 
     if (method === 'session.create' || method === 'session.branch_stored') {
       createParams = params
@@ -999,8 +1007,18 @@ async function createWith(
   setNewChatWorkspaceTarget(undefined)
   profileSetup()
 
+  // Records slice updates like the real cache (ensure → updater → store) when the caller asks for it.
+  const updateSessionState = slices
+    ? (sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) => {
+        const next = updater(slices.get(sessionId) ?? createClientSessionState(null))
+        slices.set(sessionId, next)
+
+        return next
+      }
+    : undefined
+
   let handle: HarnessHandle | null = null
-  render(<Harness onReady={h => (handle = h)} requestGateway={requestGateway} />)
+  render(<Harness onReady={h => (handle = h)} requestGateway={requestGateway} updateSessionState={updateSessionState} />)
   await waitFor(() => expect(handle).not.toBeNull())
 
   if (beforeCreate) {
@@ -1171,11 +1189,14 @@ describe('createBackendSessionForSend profile routing', () => {
   it('hands a draft Subagents pick to the created session via config.set, never as a create param', async () => {
     // A create param would make an older backend reject the whole send; config.set degrades to Auto.
     const calls: [string, Record<string, unknown> | undefined][] = []
+    const slices = new Map<string, ClientSessionState>()
 
     const params = await createWith(
       () => $draftDelegationOverride.set({ effort: 'high', model: 'deepseek-v4', provider: 'deepseek' }),
       undefined,
-      calls
+      calls,
+      undefined,
+      slices
     )
 
     expect(params).not.toHaveProperty('delegation_override')
@@ -1188,6 +1209,29 @@ describe('createBackendSessionForSend profile routing', () => {
       }
     ])
     expect($draftDelegationOverride.get()).toEqual(EMPTY_ROUTE)
+    // The new chat's own pill paints the pick right away, before any session.info arrives.
+    expect(slices.get(RUNTIME_SESSION_ID)?.delegationOverride).toEqual({
+      effort: 'high',
+      model: 'deepseek-v4',
+      provider: 'deepseek'
+    })
+  })
+
+  it('a refused hand-off (older backend) still starts the chat on Auto and frees the draft', async () => {
+    const calls: [string, Record<string, unknown> | undefined][] = []
+    const slices = new Map<string, ClientSessionState>()
+
+    const params = await createWith(
+      () => $draftDelegationOverride.set({ effort: '', model: 'deepseek-v4', provider: '' }),
+      undefined,
+      calls,
+      method => (method === 'config.set' ? Promise.reject(new Error('unknown config key')) : undefined),
+      slices
+    )
+
+    expect(params).toBeDefined()
+    expect($draftDelegationOverride.get()).toEqual(EMPTY_ROUTE)
+    expect(slices.get(RUNTIME_SESSION_ID)?.delegationOverride ?? EMPTY_ROUTE).toEqual(EMPTY_ROUTE)
   })
 
   it('an Auto draft sends no delegation write at all', async () => {

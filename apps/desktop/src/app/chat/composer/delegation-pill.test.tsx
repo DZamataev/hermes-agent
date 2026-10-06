@@ -185,6 +185,7 @@ describe('DelegationMenuPanel', () => {
 
   it('a tile with no runtime yet never writes into the new-chat draft', async () => {
     renderPanel(null, undefined, { kind: 'tile', storedId: 'stored-tile' })
+    expect(screen.getByTestId('delegation-auto').getAttribute('data-disabled')).not.toBeNull()
     fireEvent.click(await screen.findByText(/Gemini 3\.1 Pro/i))
 
     expect($draftDelegationOverride.get()).toEqual(EMPTY_ROUTE)
