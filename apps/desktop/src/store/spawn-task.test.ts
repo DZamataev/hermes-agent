@@ -10,9 +10,9 @@ import {
   setSpawnTaskChoice,
   setSpawnTaskLauncher,
   spawnTaskChipKey,
+  type SpawnTaskChoice,
   spawnTaskChoiceFor,
-  spawnTaskChoiceScope,
-  type SpawnTaskChoice
+  spawnTaskChoiceScope
 } from './spawn-task'
 
 const SCOPE = spawnTaskChoiceScope('local', 'default')

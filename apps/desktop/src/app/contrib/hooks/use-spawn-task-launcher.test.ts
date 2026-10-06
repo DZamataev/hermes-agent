@@ -6,8 +6,8 @@ import { launchSpawnTask, resetSpawnTaskStoreForTests, setSpawnTaskLauncher, typ
 
 import { spawnTaskWorktreeName, useSpawnTaskLauncher } from './use-spawn-task-launcher'
 
-const isGitRepoPath = vi.fn(async () => true)
-const startWorkInRepo = vi.fn(async () => ({ branch: 'hermes/x', path: '/repo/.worktrees/x' }))
+const isGitRepoPath = vi.fn(async (_path: string) => true)
+const startWorkInRepo = vi.fn(async (_repo: string, _options: unknown) => ({ branch: 'hermes/x', path: '/repo/.worktrees/x' }))
 const revParse = vi.fn(async () => 'abc123')
 
 vi.mock('@/store/coding-status', () => ({ isGitRepoPath: (p: string) => isGitRepoPath(p) }))
