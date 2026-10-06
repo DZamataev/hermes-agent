@@ -166,6 +166,7 @@
     "assistant.spawnTask.mode.worktree",
     "assistant.spawnTask.modelLabel",
     "assistant.spawnTask.openSession",
+    "assistant.spawnTask.pin",
     "assistant.spawnTask.showPrompt",
     "assistant.spawnTask.worktreeNeedsRepo",
     "assistant.thread.attachingFile",

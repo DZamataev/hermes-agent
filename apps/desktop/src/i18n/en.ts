@@ -5363,6 +5363,7 @@ export const en: Translations = {
       modelLabel: 'Model for the new session',
       mode: { tab: 'Start in new tab', worktree: 'Start in worktree' },
       dismiss: 'Dismiss',
+      pin: 'Pin',
       dismissed: title => `Dismissed side task: ${title}`,
       launched: 'Started in a new session',
       openSession: 'Open',

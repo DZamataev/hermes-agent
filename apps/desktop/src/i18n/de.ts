@@ -5757,6 +5757,7 @@ export const deOverrides = {
       modelLabel: 'Modell für die neue Sitzung',
       mode: { tab: 'In neuem Tab starten', worktree: 'In Worktree starten' },
       dismiss: 'Verwerfen',
+      pin: 'Anpinnen',
       dismissed: title => `Nebenaufgabe verworfen: ${title}`,
       launched: 'In einer neuen Sitzung gestartet',
       openSession: 'Öffnen',

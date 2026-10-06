@@ -4469,6 +4469,7 @@ export interface Translations {
       modelLabel: string
       mode: { tab: string; worktree: string }
       dismiss: string
+      pin: string
       dismissed: (title: string) => string
       launched: string
       openSession: string

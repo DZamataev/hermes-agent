@@ -2,6 +2,8 @@ import { atom } from 'nanostores'
 
 import { readJson, writeJson } from '@/lib/storage'
 
+import { pinSession } from './layout'
+
 /**
  * Side-task chips (`spawn_task` tool calls). The agent only OFFERS a task; the
  * user picks a model + effort on the chip and decides how to run it. Two
@@ -26,6 +28,9 @@ export interface SpawnTaskChoice {
   mode: SpawnTaskMode
   /** '' = the profile's default model. */
   model: string
+  /** Pin the new session in the sidebar. Rides the sidebar's own pin store,
+   *  whose sync writes the same `sessions.pinned` flag `hermes sessions pin` does. */
+  pin: boolean
   provider: string
 }
 
@@ -57,6 +62,7 @@ export const DEFAULT_SPAWN_TASK_CHOICE: SpawnTaskChoice = {
   fast: false,
   mode: 'tab',
   model: '',
+  pin: false,
   provider: ''
 }
 
@@ -73,6 +79,7 @@ function loadChoice(): SpawnTaskChoice {
     effort: text(raw.effort),
     fast: raw.fast === true,
     mode: raw.mode === 'worktree' ? 'worktree' : 'tab',
+    pin: raw.pin === true,
     model: text(raw.model),
     provider: text(raw.provider)
   }
@@ -173,6 +180,10 @@ export async function launchSpawnTask(offer: SpawnTaskOffer, choice: SpawnTaskCh
     }
 
     recordChip(key, { state: 'launched', storedSessionId: launched.storedSessionId })
+
+    if (choice.pin) {
+      pinSession(launched.storedSessionId)
+    }
 
     return true
   } finally {

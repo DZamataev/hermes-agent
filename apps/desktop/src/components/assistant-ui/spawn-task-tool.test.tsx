@@ -7,6 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { I18nProvider } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
+import { $pinnedSessionIds } from '@/store/layout'
 import { setModelPreset } from '@/store/model-presets'
 import { $visibleModels } from '@/store/model-visibility'
 import {
@@ -87,6 +88,7 @@ const launcher = vi.fn()
 beforeEach(() => {
   window.localStorage.clear()
   resetSpawnTaskStoreForTests()
+  $pinnedSessionIds.set([])
   queryClient.clear()
   queryClient.setDefaultOptions({ queries: { ...queryClient.getDefaultOptions().queries, retry: false } })
   $visibleModels.set(null)
@@ -113,10 +115,18 @@ afterEach(() => {
 
 describe('the spawn-task chip', () => {
   it('opens on the model, effort and mode the user launched the previous chip with', () => {
-    setSpawnTaskChoice({ effort: 'high', fast: false, mode: 'worktree', model: 'gpt-5.5', provider: 'openai' })
+    setSpawnTaskChoice({
+      effort: 'high',
+      fast: false,
+      mode: 'worktree',
+      model: 'gpt-5.5',
+      pin: true,
+      provider: 'openai'
+    })
     renderChip()
 
     expect(screen.getByText('Flaky login test')).toBeTruthy()
+    expect(screen.getByRole('checkbox', { name: 'Pin' }).getAttribute('data-state')).toBe('checked')
     expect(screen.getByRole('button', { name: 'Model for the new session' }).textContent).toMatch(/GPT-5\.5.*High/i)
     expect(screen.getByRole('button', { name: 'Start in worktree' }).className).toMatch(/bg-primary/)
   })
@@ -146,13 +156,23 @@ describe('the spawn-task chip', () => {
         title: ARGS.title,
         toolCallId: 'spawn-call-1'
       },
-      { effort: 'low', fast: false, mode: 'tab', model: 'gpt-5.5-mini', provider: 'openai' }
+      { effort: 'low', fast: false, mode: 'tab', model: 'gpt-5.5-mini', pin: false, provider: 'openai' }
     )
     expect(await screen.findByText('Started in a new session')).toBeTruthy()
     expect($spawnTaskChips.get()['stored-parent::spawn-call-1']).toEqual({
       state: 'launched',
       storedSessionId: 'stored-child'
     })
+  })
+
+  it('ticking Pin pins the session the chip starts', async () => {
+    renderChip()
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Pin' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start in new tab' }))
+
+    await waitFor(() => expect($pinnedSessionIds.get()).toContain('stored-child'))
+    expect(launcher).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ pin: true }))
   })
 
   it('a dismissed chip stays dismissed and never launches', () => {

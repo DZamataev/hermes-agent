@@ -5750,6 +5750,7 @@ export const esOverrides = {
       modelLabel: 'Modelo para la nueva sesión',
       mode: { tab: 'Iniciar en pestaña nueva', worktree: 'Iniciar en worktree' },
       dismiss: 'Descartar',
+      pin: 'Fijar',
       dismissed: title => `Tarea secundaria descartada: ${title}`,
       launched: 'Iniciada en una sesión nueva',
       openSession: 'Abrir',

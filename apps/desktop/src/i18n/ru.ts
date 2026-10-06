@@ -4100,6 +4100,7 @@ export const ru = defineLocale({
       modelLabel: 'Модель для новой сессии',
       mode: { tab: 'Запустить во вкладке', worktree: 'Запустить в worktree' },
       dismiss: 'Скрыть',
+      pin: 'Закрепить',
       dismissed: title => `Побочная задача скрыта: ${title}`,
       launched: 'Запущено в новой сессии',
       openSession: 'Открыть',

@@ -5771,6 +5771,7 @@ export const frOverrides = {
       modelLabel: 'Modèle pour la nouvelle session',
       mode: { tab: 'Lancer dans un nouvel onglet', worktree: 'Lancer dans un worktree' },
       dismiss: 'Ignorer',
+      pin: 'Épingler',
       dismissed: title => `Tâche annexe ignorée : ${title}`,
       launched: 'Lancée dans une nouvelle session',
       openSession: 'Ouvrir',

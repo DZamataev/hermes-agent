@@ -9,6 +9,7 @@ import { ModelCatalogMenu, ModelMenuCloseContext, type ModelMenuController } fro
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Codicon } from '@/components/ui/codicon'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
@@ -173,6 +174,16 @@ function SpawnTaskChip({ prompt, title, tldr, toolCallId }: SpawnTaskChipProps) 
               </ModelMenuCloseContext.Provider>
             </DropdownMenuContent>
           </DropdownMenu>
+
+          <label className={cn(CAPTION, 'flex cursor-pointer items-center gap-1.5 text-(--ui-text-secondary)')}>
+            <Checkbox
+              checked={choice.pin}
+              className="size-3.5"
+              disabled={launching}
+              onCheckedChange={value => setDraft({ ...choice, pin: value === true })}
+            />
+            {copy.pin}
+          </label>
 
           {MODES.map(mode => (
             <Button

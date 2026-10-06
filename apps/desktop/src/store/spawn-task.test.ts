@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $pinnedSessionIds } from './layout'
 import {
   $spawnTaskChips,
   $spawnTaskChoice,
@@ -12,7 +13,14 @@ import {
   type SpawnTaskChoice
 } from './spawn-task'
 
-const CHOICE: SpawnTaskChoice = { effort: 'high', fast: false, mode: 'worktree', model: 'gpt-5.5', provider: 'openai' }
+const CHOICE: SpawnTaskChoice = {
+  effort: 'high',
+  fast: false,
+  mode: 'worktree',
+  model: 'gpt-5.5',
+  pin: false,
+  provider: 'openai'
+}
 
 const OFFER = {
   cwd: '/repo',
@@ -28,6 +36,7 @@ describe('spawn-task store', () => {
   beforeEach(() => {
     window.localStorage.clear()
     resetSpawnTaskStoreForTests()
+    $pinnedSessionIds.set([])
   })
 
   afterEach(() => setSpawnTaskLauncher(null))
@@ -67,6 +76,17 @@ describe('spawn-task store', () => {
     await Promise.all([launchSpawnTask(OFFER, CHOICE), launchSpawnTask(OFFER, CHOICE)])
 
     expect(launcher).toHaveBeenCalledTimes(1)
+  })
+
+  it('pins the launched session when the chip asked for it, and only then', async () => {
+    setSpawnTaskLauncher(async offer => ({ storedSessionId: `stored-${offer.toolCallId}` }))
+
+    await launchSpawnTask({ ...OFFER, toolCallId: 'pinned' }, { ...CHOICE, pin: true })
+    await launchSpawnTask({ ...OFFER, toolCallId: 'loose' }, CHOICE)
+
+    expect($pinnedSessionIds.get()).toContain('stored-pinned')
+    expect($pinnedSessionIds.get()).not.toContain('stored-loose')
+    expect($spawnTaskChoice.get().pin).toBe(false)
   })
 
   it('dismisses a chip for good', () => {
