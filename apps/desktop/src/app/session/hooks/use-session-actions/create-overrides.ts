@@ -14,6 +14,9 @@ export interface SessionCreateOverrides {
   model?: { model: string; provider: string }
   /** Renderer-only handoff, fired at the stored-id assignment before navigation. */
   onComposerScopeAssigned?: (scope: string) => void
+  /** The caller owns the WHOLE selection: the composer's sticky model / effort /
+   *  fast never ride along, so an unset field means the profile's default. */
+  ownSelection?: boolean
   reasoningEffort?: string
   title?: string
 }

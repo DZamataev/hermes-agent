@@ -336,6 +336,17 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     [listTileSession, scope.attachments.$attachments, submitPromptText]
   )
 
+  // Text that must reach the model verbatim — never a slash command, whatever
+  // it starts with (a spawn-task chip's first prompt is model-written).
+  const submitLiteralText = useCallback(
+    async (rawText: string) => {
+      listTileSession(rawText.trim())
+
+      return await submitPromptText(rawText, { attachments: [] })
+    },
+    [listTileSession, submitPromptText]
+  )
+
   const cancelRun = useCallback(async () => {
     const sessionId = runtimeIdRef.current
 
@@ -699,6 +710,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       reloadFromMessage,
       restoreToMessage,
       steerPrompt,
+      submitLiteralText,
       submitText
     }),
     [
@@ -710,6 +722,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       reloadFromMessage,
       restoreToMessage,
       steerPrompt,
+      submitLiteralText,
       submitText
     ]
   )

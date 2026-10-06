@@ -312,9 +312,10 @@ function TileChat({
   // reconnect, which turns a recoverable stale runtime into "session not found".
   const actions = useSessionTileActions({ requestGateway: requestTileGateway, runtimeId, scope, storedSessionId })
 
-  // A spawn-task chip opened this tile with a task to run: send it once,
-  // through the same submit the composer uses.
-  const submitTileText = actions.submitText
+  // A spawn-task chip opened this tile with a task to run: send it once, as a
+  // prompt. Literal on purpose — the text is model-written, and a leading `/`
+  // must never run a slash command (`/yolo …`) in the new session.
+  const submitTileText = actions.submitLiteralText
 
   useEffect(() => {
     const kickoff = takeTileKickoff(storedSessionId)

@@ -5398,6 +5398,57 @@ describe('openNewSessionTile workspace target', () => {
     })
   })
 
+  // The chip owns its whole selection: "Default model" and an unset effort
+  // mean the PROFILE's defaults, never the composer's sticky pick.
+  it('a create with its own selection ships none of the composer pick', async () => {
+    setCurrentModel('ambient-model')
+    setCurrentProvider('ambient-provider')
+    setCurrentModelSource('manual')
+    setCurrentReasoningEffort('low')
+    setCurrentFastMode(true)
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return {
+          info: { cwd: '/repo', model: 'profile-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'stored-chip-default'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    try {
+      await act(async () => {
+        await handle!.openNewSessionTile('center', {
+          createOverrides: { fast: false, ownSelection: true, title: 'Default pick' },
+          cwd: '/repo',
+          listed: true
+        })
+      })
+    } finally {
+      setCurrentModelSource('')
+      setCurrentModel('')
+      setCurrentProvider('')
+      setCurrentReasoningEffort('')
+      setCurrentFastMode(false)
+    }
+
+    expect(createParams).not.toHaveProperty('model')
+    expect(createParams).not.toHaveProperty('provider')
+    expect(createParams).not.toHaveProperty('reasoning_effort')
+    expect(createParams).toMatchObject({ fast: false, title: 'Default pick' })
+  })
+
   it('omits the manual ambient composer selection from a Bot-workspace tile so the bot profile defaults apply', async () => {
     setCurrentModel('ambient-model')
     setCurrentProvider('ambient-provider')

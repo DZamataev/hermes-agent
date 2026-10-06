@@ -7,6 +7,7 @@ import { useMemo, useState } from 'react'
 import { useSessionView } from '@/app/chat/session-view'
 import { ModelCatalogMenu, ModelMenuCloseContext, type ModelMenuController } from '@/app/shell/model-catalog-menu'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
+import { toolCallFailed } from '@/components/assistant-ui/tool/fallback-model/format'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -19,15 +20,18 @@ import { cn } from '@/lib/utils'
 import { getModelPreset } from '@/store/model-presets'
 import {
   $spawnTaskChips,
-  $spawnTaskChoice,
+  $spawnTaskChoices,
+  $spawnTaskLauncherReady,
   $spawnTaskLaunching,
+  DEFAULT_SPAWN_TASK_CHOICE,
   dismissSpawnTask,
   launchSpawnTask,
   spawnTaskChipKey,
   type SpawnTaskChoice,
-  spawnTaskLauncherReady,
   type SpawnTaskMode
 } from '@/store/spawn-task'
+
+import { useChipOwner } from './spawn-task-owner'
 
 const SHELL_CLASS = `${WIDGET_SHELL_CLASS} text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)`
 const CAPTION = 'text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height)'
@@ -70,8 +74,10 @@ export function SpawnTaskTool(props: ToolCallMessagePartProps) {
   const title = text(props.args?.title)
   const prompt = text(props.args?.prompt)
 
-  // A refused call (no title/prompt) has nothing to launch — show the error row.
-  if (props.isError || !title || !prompt) {
+  // A refused call (no title/prompt, a tool error) has nothing to launch —
+  // show the error row. `isError` alone is not enough: the gateway carries a
+  // tool's own refusal inside `result`.
+  if (toolCallFailed(props) || !title || !prompt) {
     return <ToolFallback {...props} />
   }
 
@@ -91,10 +97,12 @@ function SpawnTaskChip({ prompt, title, tldr, toolCallId }: SpawnTaskChipProps) 
   const view = useSessionView()
   const cwd = useStore(view.$cwd)
   const ownerStoredSessionId = useStore(view.$storedId)
-  const chipKey = spawnTaskChipKey({ ownerStoredSessionId, toolCallId })
+  const owner = useChipOwner(ownerStoredSessionId)
+  const chipKey = spawnTaskChipKey({ lineageId: owner.lineageId, ownerStoredSessionId, toolCallId })
   const outcome = useStore($spawnTaskChips)[chipKey]
   const launching = useStore($spawnTaskLaunching).has(chipKey)
-  const remembered = useStore($spawnTaskChoice)
+  const launcherReady = useStore($spawnTaskLauncherReady)
+  const remembered = useStore($spawnTaskChoices)[owner.choiceScope] ?? DEFAULT_SPAWN_TASK_CHOICE
   // The chip edits its own copy; the store remembers it only on launch, so
   // browsing models on one chip never rewrites what the next chip opens at.
   const [draft, setDraft] = useState<null | SpawnTaskChoice>(null)
@@ -112,7 +120,11 @@ function SpawnTaskChip({ prompt, title, tldr, toolCallId }: SpawnTaskChipProps) 
   }
 
   const launch = (mode: SpawnTaskMode) =>
-    void launchSpawnTask({ cwd, ownerStoredSessionId, prompt, title, toolCallId }, { ...choice, mode })
+    void launchSpawnTask(
+      { cwd, lineageId: owner.lineageId, ownerStoredSessionId, prompt, title, toolCallId },
+      { ...choice, mode },
+      owner.choiceScope
+    )
 
   const modelLabel = choice.model ? displayModelName(choice.model) : copy.defaultModel
   const effortLabel = choice.effort ? reasoningEffortLabel(choice.effort) : ''
@@ -170,7 +182,12 @@ function SpawnTaskChip({ prompt, title, tldr, toolCallId }: SpawnTaskChipProps) 
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-72 p-0">
               <ModelMenuCloseContext.Provider value={() => setMenuOpen(false)}>
-                <ModelCatalogMenu controller={controller} />
+                <ModelCatalogMenu
+                  controller={controller}
+                  ownerConnectionId={owner.connectionId}
+                  profile={owner.profile}
+                  request={owner.request}
+                />
               </ModelMenuCloseContext.Provider>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -187,7 +204,7 @@ function SpawnTaskChip({ prompt, title, tldr, toolCallId }: SpawnTaskChipProps) 
 
           {MODES.map(mode => (
             <Button
-              disabled={launching || !spawnTaskLauncherReady()}
+              disabled={launching || !launcherReady}
               key={mode}
               onClick={() => launch(mode)}
               size="xs"

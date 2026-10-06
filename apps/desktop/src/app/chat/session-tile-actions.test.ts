@@ -81,8 +81,11 @@ describe('session tile optimistic owner metadata', () => {
 // withSessionNotFoundResume) — see use-prompt-actions/index.test.tsx's
 // "sleep/wake session recovery" suite for the same regression on the
 // primary chat's own reloadFromMessage.
+const sessionTileDelegateExecuteSlash = vi.fn(async () => undefined)
+
 describe('useSessionTileActions sleep/wake session recovery', () => {
   beforeEach(() => {
+    sessionTileDelegateExecuteSlash.mockClear()
     $activeSessionId.set('foreground-runtime')
     setSessions([])
     $sessionTiles.set([{ runtimeId: RUNTIME_SESSION_ID, storedSessionId: STORED_SESSION_ID }])
@@ -90,7 +93,7 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
       archiveSession: vi.fn(async () => undefined),
       branchSession: vi.fn(async () => undefined),
       deleteSession: vi.fn(async () => undefined),
-      executeSlash: vi.fn(async () => undefined),
+      executeSlash: sessionTileDelegateExecuteSlash,
       interruptSession: vi.fn(async () => undefined),
       resumeTile: vi.fn(async () => RUNTIME_SESSION_ID),
       submitToSession: vi.fn(async () => undefined),
@@ -224,6 +227,30 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     expect(calls[2]?.params).toMatchObject({ session_id: RECOVERED_SESSION_ID })
     expect($sessionTiles.get()[0]?.runtimeId).toBe(RECOVERED_SESSION_ID)
     expect($activeSessionId.get()).toBe('foreground-runtime')
+  })
+
+  // A spawn-task chip's first prompt is model-written: a leading `/` must be
+  // sent as text, never dispatched as a slash command (`/yolo` would turn on
+  // auto-approval in the new session and the task itself would never run).
+  it('sends literal text as a prompt even when it looks like a slash command', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    requestGatewayMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {}
+    })
+
+    const { result } = renderTileActions()
+
+    await act(async () => {
+      await result.current.submitLiteralText('/yolo then fix the flaky login test')
+    })
+
+    expect(sessionTileDelegateExecuteSlash).not.toHaveBeenCalled()
+    expect(calls.find(c => c.method === 'prompt.submit')?.params).toMatchObject({
+      text: '/yolo then fix the flaky login test'
+    })
   })
 })
 

@@ -1004,7 +1004,7 @@ export function useSessionActions({
             capturedRoute,
             requestedProfile,
             options?.route === null || defaultTarget?.route === null,
-            workspaceScope.workspaceMode !== 'bots'
+            workspaceScope.workspaceMode !== 'bots' && !options?.createOverrides?.ownSelection
           )),
           ...sessionCreateOverrideParams(options?.createOverrides)
         }

@@ -14,10 +14,22 @@ from tools.registry import registry, tool_error
 
 def spawn_task_tool(title: str, prompt: str, tldr: str = "") -> str:
     """Validate the offer and acknowledge it. The user owns everything after."""
-    title = (title or "").strip()
+    from hermes_state import SessionDB
+
+    # The title becomes the new session's title: clean it the way the store
+    # will, and keep it inside the store's limit (an over-long title is dropped
+    # silently at the first turn, leaving the session to auto-title instead).
+    # Cut before sanitizing (sanitize raises past the limit), then again after
+    # (whitespace collapse never lengthens, so this only trims the tail).
+    limit = SessionDB.MAX_TITLE_LENGTH
+    title = (SessionDB.sanitize_title((title or "")[:limit]) or "")[:limit].strip()
     prompt = (prompt or "").strip()
     if not title:
         return tool_error("spawn_task needs a short title for the chip.")
+    # A registry name: a session titled like the canonical Bot Chat would be
+    # resolved as that profile's bot chat.
+    if title.casefold() == SessionDB.CANONICAL_BOT_CHAT_TITLE.casefold():
+        return tool_error(f"'{SessionDB.CANONICAL_BOT_CHAT_TITLE}' is reserved; pick a title naming the task.")
     if not prompt:
         return tool_error("spawn_task needs a self-contained prompt for the new session.")
     return json.dumps({

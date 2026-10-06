@@ -1,6 +1,6 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import { QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -14,7 +14,8 @@ import {
   $spawnTaskChips,
   resetSpawnTaskStoreForTests,
   setSpawnTaskChoice,
-  setSpawnTaskLauncher
+  setSpawnTaskLauncher,
+  spawnTaskChoiceScope
 } from '@/store/spawn-task'
 
 import { SpawnTaskTool } from './spawn-task-tool'
@@ -26,6 +27,10 @@ vi.mock('@/hermes', () => ({
   getLocalModelsJobs: vi.fn().mockResolvedValue({ jobs: [] }),
   getLocalModelsStatus: vi.fn().mockResolvedValue({ loading: {} }),
   setApiRequestProfile: vi.fn()
+}))
+
+vi.mock('@/components/assistant-ui/tool/fallback', () => ({
+  ToolFallback: () => <div data-testid="tool-fallback" />
 }))
 
 beforeAll(() => {
@@ -115,7 +120,7 @@ afterEach(() => {
 
 describe('the spawn-task chip', () => {
   it('opens on the model, effort and mode the user launched the previous chip with', () => {
-    setSpawnTaskChoice({
+    setSpawnTaskChoice(spawnTaskChoiceScope(null, 'default'), {
       effort: 'high',
       fast: false,
       mode: 'worktree',
@@ -151,6 +156,7 @@ describe('the spawn-task chip', () => {
     expect(launcher).toHaveBeenCalledWith(
       {
         cwd: '/repo',
+        lineageId: 'stored-parent',
         ownerStoredSessionId: 'stored-parent',
         prompt: ARGS.prompt,
         title: ARGS.title,
@@ -173,6 +179,26 @@ describe('the spawn-task chip', () => {
 
     await waitFor(() => expect($pinnedSessionIds.get()).toContain('stored-child'))
     expect(launcher).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ pin: true }))
+  })
+
+  // The gateway carries a tool's own refusal inside `result` with isError
+  // false; a refused offer must render as the failed row, never as a chip.
+  it('a refused offer renders as an error row, not a launchable chip', () => {
+    renderChip({ ...PROPS, result: { error: 'spawn_task needs a short title for the chip.' } })
+
+    expect(screen.getByTestId('tool-fallback')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Start in new tab' })).toBeNull()
+  })
+
+  it('a chip mounted before the launcher registers comes alive when it does', async () => {
+    setSpawnTaskLauncher(null)
+    renderChip()
+
+    const start = screen.getByRole('button', { name: 'Start in new tab' }) as HTMLButtonElement
+    expect(start.disabled).toBe(true)
+
+    act(() => setSpawnTaskLauncher(launcher))
+    await waitFor(() => expect(start.disabled).toBe(false))
   })
 
   it('a dismissed chip stays dismissed and never launches', () => {
