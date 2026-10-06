@@ -286,6 +286,22 @@ describe('spawn-task launcher', () => {
     expect($spawnTaskLauncherReady.get()).toBe(false)
   })
 
+  // The default comes from the window's own kind — what the app wiring uses.
+  it('registers no launcher by default in the HUD window', async () => {
+    window.history.replaceState(null, '', '/?win=hud')
+    vi.resetModules()
+
+    try {
+      const fresh = await import('./use-spawn-task-launcher')
+      const store = await import('@/store/spawn-task')
+      renderHook(() => fresh.useSpawnTaskLauncher(open))
+
+      expect(store.$spawnTaskLauncherReady.get()).toBe(false)
+    } finally {
+      window.history.replaceState(null, '', '/')
+    }
+  })
+
   it('never reuses a worktree name, even for titles that slug to nothing', () => {
     expect(spawnTaskWorktreeName('Задача', 1)).not.toBe(spawnTaskWorktreeName('Задача', 2))
     expect(spawnTaskWorktreeName('Задача', 1)).toMatch(/^task-/)

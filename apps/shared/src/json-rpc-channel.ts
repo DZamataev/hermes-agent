@@ -74,6 +74,29 @@ export class JsonRpcGatewayError extends Error {
   }
 }
 
+const IN_FLIGHT = Symbol.for('hermes.jsonrpc.inFlight')
+
+/** True for a failure of a request whose frame was already handed to the
+ *  transport (socket dropped before the reply, or the reply timed out): the
+ *  peer may have acted on it. A rejection before sending is never in flight. */
+export function isRequestInFlightError(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && (error as Record<symbol, unknown>)[IN_FLIGHT])
+}
+
+/** A per-call copy (same message/name/cause), so a shared `detach` error
+ *  object is never mutated for other holders. */
+function markInFlight(error: Error): Error {
+  const copy = Object.assign(Object.create(Object.getPrototypeOf(error) as object) as Error, error, {
+    message: error.message,
+    name: error.name,
+    stack: error.stack
+  })
+
+  Object.defineProperty(copy, IN_FLIGHT, { value: true })
+
+  return copy
+}
+
 /** JSON-RPC "method not found" (tui_gateway/server.py::dispatch `_err(rid, -32601, …)`). */
 export const JSON_RPC_METHOD_NOT_FOUND = -32601
 
@@ -292,7 +315,7 @@ export class JsonRpcRequestChannel {
             // at an error toast) can tell whether the default window fired
             // or a per-call override — e.g. /compress opts into 120s.
             const seconds = Math.round(timeoutMs / 1000)
-            reject(new Error(`request timed out after ${seconds}s: ${method}`))
+            reject(markInFlight(new Error(`request timed out after ${seconds}s: ${method}`)))
           }
         }, timeoutMs)
 
@@ -597,7 +620,7 @@ export class JsonRpcRequestChannel {
       }
 
       this.pending.delete(id)
-      call.reject(error)
+      call.reject(markInFlight(error))
     }
   }
 }

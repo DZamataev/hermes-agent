@@ -97,7 +97,7 @@ import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
-import { isBrowserWindow, isHudWindow } from '@/store/windows'
+import { canHostSessionTiles, isBrowserWindow, isHudWindow } from '@/store/windows'
 
 import { BrowserPopoutShell } from '../chat/browser-popout-shell'
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
@@ -482,7 +482,7 @@ hydrateContributedPanes()
 // tiles there would still run, and preview-tile watching would try to dock
 // into a tree this window never renders (and, in the HUD, paint a webview
 // into the transparent overlay).
-if (!isBrowserWindow() && !isHudWindow()) {
+if (canHostSessionTiles()) {
   watchSessionTiles()
   startUnrestoredTileTitleBackfill()
   startTileBackendIdentityGuard()

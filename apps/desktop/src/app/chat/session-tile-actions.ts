@@ -9,7 +9,7 @@
  */
 
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
-import { JsonRpcGatewayError, SLASH_COMMAND_RE } from '@hermes/shared'
+import { isRequestInFlightError, SLASH_COMMAND_RE } from '@hermes/shared'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import type { ClientSessionState } from '@/app/types'
@@ -187,9 +187,9 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
   // Tile session RPCs must follow the tile's composite owner even when the
   // active gateway has moved to a same-named profile on another source.
-  // Last `prompt.submit` this tile sent, and how its reply ended: a typed
-  // gateway answer is a definite refusal; any other failure (socket drop, a
-  // timeout) means the frame may have landed and the turn may be running.
+  // Last `prompt.submit` this tile sent, and how its reply ended: `lost` =
+  // the frame left but no reply came (socket drop, timeout), so the turn may
+  // be running; anything else is a definite answer or never left at all.
   const lastSubmitRef = useRef<'answered' | 'lost' | 'none'>('none')
 
   const requestSessionGateway = useCallback(
@@ -207,7 +207,9 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       if (method === 'prompt.submit') {
         request.then(
           () => (lastSubmitRef.current = 'answered'),
-          error => (lastSubmitRef.current = error instanceof JsonRpcGatewayError ? 'answered' : 'lost')
+          // Only a frame that LEFT can be running: a refusal before sending
+          // (not connected, a secondary reconnecting, no route) is not-sent.
+          error => (lastSubmitRef.current = isRequestInFlightError(error) ? 'lost' : 'answered')
         )
       }
 

@@ -45,15 +45,22 @@ def test_a_lineage_shaped_title_cannot_hijack_name_lookups(tmp_path):
     a model-written one must not take over the user's own session."""
     from hermes_state import SessionDB
 
-    out = json.loads(st.spawn_task_tool(title="Refactor auth #2", prompt="p"))
-    assert out["title"] == "Refactor auth (2)"
-
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("mine", source="desktop")
     db.set_session_title("mine", "Refactor auth")
-    db.create_session("side", source="desktop")
-    db.set_session_title("side", out["title"])
-    assert db.resolve_session_by_title("Refactor auth") == "mine"
+
+    for i, proposed in enumerate(["Refactor auth #2", "Refactor auth #followup", "Refactor auth #2b",
+                                  "Refactor auth #", "Refactor auth #a #b"]):
+        out = json.loads(st.spawn_task_tool(title=proposed, prompt="p"))
+        assert " #" not in out["title"], out["title"]
+        db.create_session(f"side-{i}", source="desktop")
+        try:
+            db.set_session_title(f"side-{i}", out["title"])
+        except ValueError:
+            pass  # taken: the dedupe path renames it; either way it is not a "#" continuation
+        assert db.resolve_session_by_title("Refactor auth") == "mine", proposed
+
+    assert json.loads(st.spawn_task_tool(title="Refactor auth #2", prompt="p"))["title"] == "Refactor auth (2)"
 
 
 def test_delegated_children_never_get_it():

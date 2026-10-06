@@ -5,6 +5,7 @@ import { useI18n } from '@/i18n'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey, selectProfile, setActiveProfile } from '@/store/profile'
 import { dropTilesForProfile } from '@/store/session-states'
+import { dropSpawnTaskChoicesForProfile } from '@/store/spawn-task'
 
 // Thin wrapper over ConfirmDialog: owns the deleteProfile call, inherits
 // Enter-to-confirm + busy/done/error from the shared dialog. The single choke
@@ -75,6 +76,15 @@ export function DeleteProfileDialog({
         // profile's backend, whose ensure_hermes_home() re-creates the
         // directory the delete just removed (hermes-agent#94235).
         dropTilesForProfile(profile.name)
+
+        // The route-less drop above speaks for local profiles only; the chip's
+        // remembered pick for a REMOTE profile is keyed by its connection.
+        const remoteConnection = remote && typeof scope === 'object' ? scope.connectionId?.trim() : ''
+
+        if (remoteConnection) {
+          dropSpawnTaskChoicesForProfile(normalizeProfileKey(profile.name), remoteConnection)
+        }
+
         await onDeleted?.()
 
         if (wasActive) {

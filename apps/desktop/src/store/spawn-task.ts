@@ -102,7 +102,7 @@ function loadChoices(): Record<string, SpawnTaskChoice> {
 /** The backend scope a choice belongs to: the same pair the model catalog is
  *  keyed by, so a remembered model always comes from the catalog it is offered in. */
 export function spawnTaskChoiceScope(connectionId: null | string | undefined, profile: string): string {
-  return `${connectionId ?? ''}::${profile || 'default'}`
+  return `${connectionId?.trim() || 'local'}::${profile || 'default'}`
 }
 
 function splitChoiceScope(scope: string): { connection: string; profile: string } | null {

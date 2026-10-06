@@ -71,14 +71,15 @@ function chipController(choice: SpawnTaskChoice, onChange: (next: SpawnTaskChoic
  *  picks a model and a launch mode here; the chip then opens the task as its
  *  own session (a new tab, optionally in a fresh worktree). */
 export function SpawnTaskTool(props: ToolCallMessagePartProps) {
-  // The tool's reply carries the title it validated (cleaned, cut to the
-  // store's limit); the raw argument is only a fallback for older replies.
-  const title = text(parseMaybeObject(props.result).title) || text(props.args?.title)
+  // Only the tool's own success receipt makes a chip: a pending call, a
+  // cancelled / timed-out / refused one, or a plain-text error all carry no
+  // `success: true`. The receipt's title is the one the tool validated
+  // (cleaned, length-capped, lineage-safe, never the reserved Bot Chat) —
+  // never the raw model argument.
+  const receipt = parseMaybeObject(props.result)
+  const title = receipt.success === true ? text(receipt.title) : ''
   const prompt = text(props.args?.prompt)
 
-  // A refused call (no title/prompt, a tool error) has nothing to launch —
-  // show the error row. `isError` alone is not enough: the gateway carries a
-  // tool's own refusal inside `result`.
   if (toolCallFailed(props) || !title || !prompt) {
     return <ToolFallback {...props} />
   }

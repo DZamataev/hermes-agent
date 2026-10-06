@@ -52,6 +52,8 @@ export function useChipOwner(storedId: null | string): ChipOwner {
     const connectionId = route?.connectionId || undefined
 
     return {
+      // `spawnTaskChoiceScope` maps an unqualified local window to `local`,
+      // so one local profile has one remembered pick wherever the chip sits.
       choiceScope: spawnTaskChoiceScope(connectionId || activeConnectionId, profile),
       connectionId,
       lineageId: row ? sessionPinId(row) : storedId,

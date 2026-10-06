@@ -5339,6 +5339,8 @@ describe('openNewSessionTile workspace target', () => {
   // CHIP, not the composer's sticky pick, and needs the stored id back to
   // hand the task to the tile.
   it('pins the caller-picked model over the composer selection and returns the stored id', async () => {
+    const assigned: { scope: string; tileMounted: boolean }[] = []
+
     setCurrentModel('ambient-model')
     setCurrentProvider('ambient-provider')
     setCurrentModelSource('manual')
@@ -5372,6 +5374,10 @@ describe('openNewSessionTile workspace target', () => {
           createOverrides: {
             fast: false,
             model: { model: 'chip-model', provider: 'chip-provider' },
+            // The tile must find its first prompt waiting on its first render:
+            // the handoff fires with the stored id BEFORE the tile exists.
+            onComposerScopeAssigned: scope =>
+              assigned.push({ scope, tileMounted: $sessionTiles.get().some(t => t.storedSessionId === scope) }),
             reasoningEffort: 'high',
             title: 'Flaky login'
           },
@@ -5387,6 +5393,7 @@ describe('openNewSessionTile workspace target', () => {
     }
 
     expect(stored).toBe('stored-chip-tile')
+    expect(assigned).toEqual([{ scope: 'stored-chip-tile', tileMounted: false }])
     // The sidebar row and the tab name the task from the first paint.
     expect($sessions.get().find(session => session.id === 'stored-chip-tile')?.title).toBe('Flaky login')
     expect(createParams).toMatchObject({

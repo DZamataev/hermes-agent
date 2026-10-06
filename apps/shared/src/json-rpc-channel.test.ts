@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { JSON_RPC_SESSION_NOT_SHOWN, JsonRpcGatewayError, JsonRpcRequestChannel, type JsonRpcTransport } from './json-rpc-channel.js'
+import {
+  isRequestInFlightError,
+  JSON_RPC_SESSION_NOT_SHOWN,
+  JsonRpcGatewayError,
+  JsonRpcRequestChannel,
+  type JsonRpcTransport
+} from './json-rpc-channel.js'
 
 const spyTransport = () => {
   const sent: string[] = []
@@ -67,15 +73,32 @@ describe('JsonRpcRequestChannel', () => {
 
       channel.attach(transport)
 
-      const slow = expect(channel.request('a.slow', {}, 1_000)).rejects.toThrow('request timed out after 1s: a.slow')
+      const slowCall = channel.request('a.slow', {}, 1_000).catch((error: unknown) => error)
+
+      const slow = slowCall.then(error => {
+        expect((error as Error).message).toBe('request timed out after 1s: a.slow')
+        expect(isRequestInFlightError(error)).toBe(true)
+      })
+
       const untilDetach = channel.request('b.wait')
 
       await vi.advanceTimersByTimeAsync(1_000)
       await slow
 
-      channel.detach(new Error('gateway exited (1)'))
-      await expect(untilDetach).rejects.toThrow('gateway exited (1)')
-      await expect(channel.request('c.after')).rejects.toThrow('gateway not connected')
+      const exited = new Error('gateway exited (1)')
+      channel.detach(exited)
+      const inFlight = await untilDetach.catch((error: unknown) => error)
+      expect(inFlight).toBeInstanceOf(Error)
+      expect((inFlight as Error).message).toBe('gateway exited (1)')
+      const notSent = await channel.request('c.after').catch((error: unknown) => error)
+      expect((notSent as Error).message).toBe('gateway not connected')
+
+      // A caller must tell "the frame left, the reply was lost" (the peer may
+      // have acted) from "never sent" — and the shared detach error is copied,
+      // never tagged in place for its other holders.
+      expect(isRequestInFlightError(inFlight)).toBe(true)
+      expect(isRequestInFlightError(notSent)).toBe(false)
+      expect(isRequestInFlightError(exited)).toBe(false)
     } finally {
       vi.useRealTimers()
     }

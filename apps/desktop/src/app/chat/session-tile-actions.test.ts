@@ -1,4 +1,4 @@
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { JsonRpcGatewayError, JsonRpcRequestChannel } from '@hermes/shared'
 import { renderHook } from '@testing-library/react'
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -350,22 +350,57 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
       useTileKickoff(STORED_SESSION_ID, actions)
     }
 
+    // Through a REAL channel, so "in flight" is decided by the transport.
+    const outcomeOf = async (channel: JsonRpcRequestChannel, afterSend?: () => void) => {
+      requestGatewayMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+        if (method !== 'prompt.submit') {
+          return {}
+        }
+
+        const call = channel.request(method, params)
+        afterSend?.()
+
+        return await call
+      })
+
+      const outcome = queueTileKickoff(STORED_SESSION_ID, 'fix it').sent
+      const tile = renderHook(useKickoffTile)
+      let result: unknown
+
+      await act(async () => {
+        result = await outcome
+      })
+      tile.unmount()
+
+      return result
+    }
+
+    // The socket dropped after the frame left: the turn may be running.
+    const live = new JsonRpcRequestChannel({ requestTimeoutMs: 60_000 })
+    live.attach({ send: () => undefined } as never)
+    expect(await outcomeOf(live, () => live.detach(new Error('gateway connection closed')))).toBe('unknown')
+
+    // Not connected: the channel refuses before any frame leaves.
+    expect(await outcomeOf(new JsonRpcRequestChannel({ requestTimeoutMs: 60_000 }))).toBe('not-sent')
+
+    // A secondary backend reconnecting refuses before sending: not sent.
     requestGatewayMock.mockImplementation(async (method: string) => {
       if (method === 'prompt.submit') {
-        throw new Error('gateway connection closed')
+        throw new Error('Backend for "x" is reconnecting; retry after it settles.')
       }
 
       return {}
     })
 
-    const lost = queueTileKickoff(STORED_SESSION_ID, 'fix it').sent
-    const first = renderHook(useKickoffTile)
+    const reconnecting = queueTileKickoff(STORED_SESSION_ID, 'fix it').sent
+    const tile = renderHook(useKickoffTile)
 
     await act(async () => {
-      await expect(lost).resolves.toBe('unknown')
+      await expect(reconnecting).resolves.toBe('not-sent')
     })
-    first.unmount()
+    tile.unmount()
 
+    // A typed gateway refusal: definite answer, not sent.
     requestGatewayMock.mockImplementation(async (method: string) => {
       if (method === 'prompt.submit') {
         throw new JsonRpcGatewayError('session busy', { code: 4009 })

@@ -29,6 +29,17 @@ describe('useChipOwner', () => {
     expect(result.current.request).toBeTypeOf('function')
   })
 
+  // One local profile, one remembered pick: the main chat in an unqualified
+  // local window and a tile routed `local` must share it.
+  it('scopes an unqualified local window and a local-routed tile alike', () => {
+    $sessionTiles.set([{ ownerRoute: { connectionId: 'local', profile: 'default' }, storedSessionId: 'tile' } as never])
+
+    const main = renderHook(() => useChipOwner('main-session')).result.current.choiceScope
+    const tile = renderHook(() => useChipOwner('tile')).result.current.choiceScope
+
+    expect(main).toBe(tile)
+  })
+
   it('keys by the lineage root once compression rotates the live id', () => {
     $sessions.set([{ _lineage_root_id: 'root-1', id: 'tip-2' } as SessionInfo])
 

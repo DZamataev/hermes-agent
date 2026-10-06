@@ -48,7 +48,7 @@ const PROPS: ToolCallMessagePartProps = {
   isError: false,
   respondToApproval: vi.fn(),
   resume: vi.fn(),
-  result: { status: 'offered', success: true },
+  result: { status: 'offered', success: true, title: 'Flaky login test' },
   status: { type: 'complete' },
   toolCallId: 'spawn-call-1',
   toolName: 'spawn_task',
@@ -179,6 +179,22 @@ describe('the spawn-task chip', () => {
 
     await waitFor(() => expect($pinnedSessionIds.get()).toContain('stored-child'))
     expect(launcher).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ pin: true }))
+  })
+
+  // Only a success receipt makes a chip. A cancelled / timed-out call (the
+  // model was told it was skipped), a pending one, or a receipt without a
+  // validated title must never become launchable — and never with the raw
+  // argument title, which skips every tool-side check (e.g. "Bot Chat").
+  it.each([
+    ['cancelled', '[Tool execution cancelled — spawn_task was skipped due to user interrupt]'],
+    ['timed out', "Error executing tool 'spawn_task': timed out"],
+    ['pending', undefined],
+    ['no validated title', { status: 'offered', success: true }],
+    ['not a success receipt', { status: 'offered', title: 'Flaky login test' }]
+  ])('a %s call renders no launchable chip', (_label, result) => {
+    renderChip({ ...PROPS, args: { ...ARGS, title: 'Bot Chat' }, result })
+
+    expect(screen.queryByRole('button', { name: 'Start in new tab' })).toBeNull()
   })
 
   // The gateway carries a tool's own refusal inside `result` with isError

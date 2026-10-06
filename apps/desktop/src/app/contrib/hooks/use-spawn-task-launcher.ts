@@ -19,6 +19,7 @@ import {
   type SpawnTaskLauncher,
   type SpawnTaskOffer
 } from '@/store/spawn-task'
+import { canHostSessionTiles } from '@/store/windows'
 
 type OpenNewSessionTile = (
   dir: 'center',
@@ -167,7 +168,12 @@ async function rollbackLaunch(stored: null | string, worktree?: { path: string; 
 
 /** Registers how a spawn-task chip starts its session: open a listed tab on
  *  the chip's model and hand it the task as its first prompt. */
-export function useSpawnTaskLauncher(openNewSessionTile: OpenNewSessionTile, canHostTiles = true): void {
+/** `canHostTiles` defaults to this window's kind: tiles mount only where the
+ *  pane tree does (see the controller's `watchSessionTiles`). */
+export function useSpawnTaskLauncher(
+  openNewSessionTile: OpenNewSessionTile,
+  canHostTiles: boolean = canHostSessionTiles()
+): void {
   const openRef = useRef(openNewSessionTile)
   openRef.current = openNewSessionTile
 
