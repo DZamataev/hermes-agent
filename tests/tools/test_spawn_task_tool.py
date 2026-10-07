@@ -29,6 +29,22 @@ def test_refuses_a_chip_with_nothing_to_run():
         assert "error" in out
 
 
+def test_bot_mode_names_are_refused():
+    """Bot Mode sweeps "Agent Inbox" / "Group: …" rows out of a bot profile's
+    sidebar; a side task titled so would vanish five minutes after launch."""
+    for title in ("Agent Inbox", " agent inbox ", "Group: release", "GROUP: x"):
+        assert "error" in json.loads(st.spawn_task_tool(title=title, prompt="p")), title
+    assert json.loads(st.spawn_task_tool(title="Grouping fix", prompt="p"))["success"] is True
+
+
+def test_non_string_arguments_get_a_clear_refusal():
+    """The model may send a number or a list; it must hear what is missing,
+    not a stack trace."""
+    for title, prompt in ((123, "p"), ("Title", ["a"]), (None, None)):
+        out = json.loads(st.spawn_task_tool(title=title, prompt=prompt))
+        assert "spawn_task needs" in out["error"], out
+
+
 def test_title_cannot_claim_a_reserved_session_name_or_overflow():
     """The title becomes the new session's title: the canonical Bot Chat name
     is a registry key, and the store silently drops titles over its limit."""
@@ -132,3 +148,26 @@ def test_the_compact_history_projection_keeps_the_receipt():
 
     tool_row = next(m for m in _history_to_messages(history) if m["role"] == "tool")
     assert json.loads(tool_row["content"])["success"] is True
+
+
+def test_compression_keeps_the_receipt_a_chip_renders_from():
+    """`/compress` demotes tool results over the prune floor to one-line text
+    summaries. A spawn_task receipt with a realistic title crosses that floor;
+    demoted to text, the chip would vanish from the compacted transcript."""
+    from agent.context_compressor import _summarize_tool_result
+
+    title = "Investigate the flaky login test in the auth integration suite"
+    receipt = st.spawn_task_tool(title=title, prompt="p")
+    assert len(receipt) > 200  # over the prune floor: this receipt WOULD be demoted
+
+    args = json.dumps({"title": title, "prompt": "p"})
+    summary = _summarize_tool_result("spawn_task", args, receipt)
+
+    kept = json.loads(summary)
+    assert kept["success"] is True and kept["title"] == title
+    # Short enough that later prune passes leave it alone.
+    assert len(summary) <= 200
+
+    # A refusal is not a receipt: it must not turn into a launchable one.
+    refusal = json.dumps({"error": "spawn_task needs a self-contained prompt " + "x" * 200})
+    assert "success" not in _summarize_tool_result("spawn_task", args, refusal)

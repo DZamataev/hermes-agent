@@ -362,8 +362,10 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     [listTileSession, scope.attachments.$attachments, submitPromptText]
   )
 
-  // Text that must reach the model verbatim — never a slash command, whatever
-  // it starts with (a spawn-task chip's first prompt is model-written).
+  // Text sent as a PROMPT — never parsed as a slash command, whatever it starts
+  // with (a spawn-task chip's first prompt is model-written). It is an
+  // ordinary prompt otherwise: the gateway still expands `@file:` / `@url:` /
+  // `@diff` references in it, as for any typed prompt.
   const submitLiteralText = useCallback(
     async (rawText: string): Promise<KickoffOutcome> => {
       listTileSession(rawText.trim())

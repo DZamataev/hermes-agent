@@ -13,6 +13,11 @@ import re
 from tools.registry import no_cache_check_fn, registry, tool_error
 
 
+# Lower-cased. Mirrors the Desktop's Bot Mode sweep (`BOT_MODE_SWEEP_TITLES` +
+# the "Group: " prefix in plugins/hermes-bots/session-sweep.ts).
+_RESERVED_TITLES = frozenset({"bot chat", "agent inbox"})
+
+
 def spawn_task_tool(title: str, prompt: str, tldr: str = "") -> str:
     """Validate the offer and acknowledge it. The user owns everything after."""
     from hermes_state import SessionDB
@@ -22,8 +27,11 @@ def spawn_task_tool(title: str, prompt: str, tldr: str = "") -> str:
     # silently at the first turn, leaving the session to auto-title instead).
     # Cut before sanitizing (sanitize raises past the limit), then again after
     # (whitespace collapse never lengthens, so this only trims the tail).
+    # Model-supplied: anything but a string is "missing", not a crash.
+    title = title if isinstance(title, str) else ""
+    prompt = prompt if isinstance(prompt, str) else ""
     limit = SessionDB.MAX_TITLE_LENGTH
-    title = (SessionDB.sanitize_title((title or "")[:limit]) or "")[:limit].strip()
+    title = (SessionDB.sanitize_title(title[:limit]) or "")[:limit].strip()
     # Name lookups (``-c "<t>"``, ``/resume <t>``) prefer ANY "<t> #…" over
     # "<t>" itself (``LIKE '<t> #%'``), so a model-written "Refactor auth #2"
     # or "… #followup" would hijack the user's "Refactor auth". Keep the
@@ -32,13 +40,15 @@ def spawn_task_tool(title: str, prompt: str, tldr: str = "") -> str:
     # The rewrite adds a character per " #x": cut again, so the receipt never
     # exceeds what the store accepts (an over-long title is refused there).
     title = title[:limit].rstrip()
-    prompt = (prompt or "").strip()
+    prompt = prompt.strip()
     if not title:
         return tool_error("spawn_task needs a short title for the chip.")
-    # A registry name: a session titled like the canonical Bot Chat would be
-    # resolved as that profile's bot chat.
-    if title.casefold() == SessionDB.CANONICAL_BOT_CHAT_TITLE.casefold():
-        return tool_error(f"'{SessionDB.CANONICAL_BOT_CHAT_TITLE}' is reserved; pick a title naming the task.")
+    # Bot Mode's own names: "Bot Chat" is a registry key (resolved as the
+    # profile's bot chat), and "Agent Inbox" / "Group: …" rows in a bot profile
+    # are swept out of the sidebar by the Desktop. A side task must not wear them.
+    folded = title.casefold()
+    if folded in _RESERVED_TITLES or folded.startswith("group:"):
+        return tool_error(f"'{title}' is a reserved Bot Mode name; pick a title naming the task.")
     if not prompt:
         return tool_error("spawn_task needs a self-contained prompt for the new session.")
     return json.dumps({
