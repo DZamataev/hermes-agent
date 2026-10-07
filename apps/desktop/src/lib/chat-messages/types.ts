@@ -117,6 +117,8 @@ export type GatewayEventPayload = {
   provider?: string
   reasoning_effort?: string
   reasoning_effort_wire?: string
+  /** The session's forced subagent route ({} = Auto). */
+  delegation_override?: { provider?: string; model?: string; reasoning_effort?: string }
   service_tier?: string
   fast?: boolean
   approval_mode?: string

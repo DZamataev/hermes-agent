@@ -1394,6 +1394,11 @@ DEFAULT_CONFIG = {
         # notifications to the PARENT; false suppresses them (the child's result is the
         # deliverable). Async-delegation results are NEVER suppressed.
         "surface_child_process_notifications": False,
+        # Difficulty-tier routes the model names per task (delegate_task tasks[].tier = easy|normal|hard).
+        # "normal" IS this block's provider/model/reasoning_effort; easy/hard merge over it, e.g.
+        # {"easy": {"model": "...", "reasoning_effort": "low"}, "hard": {"provider": "...", "model": "..."}}.
+        # A tier that switches provider/base_url drops the inherited key/endpoint. Unset tier = normal.
+        "tiers": {},
     },
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.

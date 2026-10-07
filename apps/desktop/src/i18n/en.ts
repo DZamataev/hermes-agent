@@ -1809,6 +1809,21 @@ export const en: Translations = {
       deepLinkErrorUrl: 'Only http:// and https:// server URLs are allowed.',
       deepLinkErrorTooLarge: 'The config payload exceeds the 32KB limit.'
     },
+    delegationTiers: {
+      description:
+        'Subagents pick a tier per task by difficulty; choose the model each tier runs on. A chat can still force one model for all its subagents from the composer.',
+      tiers: { easy: 'Easy', normal: 'Normal', hard: 'Hard' },
+      hints: {
+        easy: 'Search, lookups, mechanical edits',
+        normal: 'Ordinary implementation and debugging — also the default',
+        hard: 'Review, design, subtle bugs'
+      },
+      defaultPill: 'default',
+      inheritParent: 'Same as the chat model',
+      inheritNormal: 'Same as Normal',
+      thinkingOff: 'Thinking off',
+      clear: 'Clear'
+    },
     model: {
       setupProviderFallback: 'provider',
       setUpProvider: name => `Set up ${name}`,
@@ -4654,6 +4669,13 @@ export const en: Translations = {
       cacheRead: 'cached read',
       priceTitle: (input: string, output: string, cache: string) =>
         `Input ${input}/Mtok · Output ${output}/Mtok` + (cache ? ` · Cached read ${cache}/Mtok` : '')
+    },
+    delegation: {
+      pillPrefix: 'Subagents:',
+      auto: 'Auto',
+      autoTitle: "Subagents pick a model by each task's difficulty (Settings → Subagent models)",
+      forcedTitle: (model: string) => `Every subagent in this chat runs on ${model}`,
+      updateFailed: 'Subagent model update failed'
     },
     modelOptions: {
       noOptions: 'No options for this model',

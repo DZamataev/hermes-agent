@@ -318,6 +318,16 @@ class ComputeHost:
             session = self._build_server_session(server, frame, sid)
         if isinstance(frame.get("attached_images"), list):
             session["attached_images"] = list(frame.get("attached_images") or [])
+        # The parent's Subagents pick rides every frame (it can change between turns); a missing key means
+        # an older parent — keep whatever the child has.
+        if "delegation_override" in frame:
+            from tui_gateway.session_delegation import apply_delegation_override, normalize_delegation_pick
+            pick = normalize_delegation_pick(frame.get("delegation_override"))
+            if pick is None:
+                session.pop("delegation_override", None)
+            else:
+                session["delegation_override"] = pick
+            apply_delegation_override(session, session.get("agent"))
         # A model switch queued on the host side while this session was busy rides
         # the turn frame; adopt it here so the child's turn thread applies it via
         # _apply_pending_model_switch — in the child the live agent exists.

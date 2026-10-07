@@ -1521,6 +1521,21 @@ export const ru = defineLocale({
       deepLinkErrorUrl: 'Разрешены только URL серверов http:// и https://.',
       deepLinkErrorTooLarge: 'Пакет конфигурации превышает лимит 32 КБ.'
     },
+    delegationTiers: {
+      description:
+        'Субагенты выбирают уровень по сложности задачи; задайте модель для каждого уровня. Чат по-прежнему может принудительно задать одну модель всем своим субагентам из композера.',
+      tiers: { easy: 'Простой', normal: 'Обычный', hard: 'Сложный' },
+      hints: {
+        easy: 'Поиск, справки, механические правки',
+        normal: 'Обычная реализация и отладка — и по умолчанию',
+        hard: 'Ревью, дизайн, тонкие баги'
+      },
+      defaultPill: 'по умолчанию',
+      inheritParent: 'Как модель чата',
+      inheritNormal: 'Как «Обычный»',
+      thinkingOff: 'Без размышлений',
+      clear: 'Сбросить'
+    },
     model: {
       moaPreset: 'Пресет',
       moaDescription:
@@ -3623,6 +3638,13 @@ export const ru = defineLocale({
       cacheRead: 'чтение из кэша',
       priceTitle: (input: string, output: string, cache: string) =>
         `Вход ${input}/Mtok · Выход ${output}/Mtok` + (cache ? ` · Чтение из кэша ${cache}/Mtok` : '')
+    },
+    delegation: {
+      pillPrefix: 'Субагенты:',
+      auto: 'Авто',
+      autoTitle: 'Субагенты выбирают модель по сложности задачи (Настройки → Модели субагентов)',
+      forcedTitle: (model: string) => `Все субагенты этого чата работают на ${model}`,
+      updateFailed: 'Не удалось сменить модель субагентов'
     },
     modelOptions: {
       noOptions: 'Для этой модели нет опций',

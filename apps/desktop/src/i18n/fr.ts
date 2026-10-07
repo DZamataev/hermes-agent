@@ -2073,6 +2073,21 @@ export const frOverrides = {
       deepLinkErrorUrl: 'Seules les URL de serveur http:// et https:// sont autorisées.',
       deepLinkErrorTooLarge: 'La configuration dépasse la limite de 32 Ko.'
     },
+    delegationTiers: {
+      description:
+        'Les sous-agents choisissent un niveau par tâche selon sa difficulté ; choisissez le modèle de chaque niveau. Une discussion peut toujours imposer un modèle à tous ses sous-agents depuis le compositeur.',
+      tiers: { easy: 'Facile', normal: 'Normal', hard: 'Difficile' },
+      hints: {
+        easy: 'Recherche, consultations, modifications mécaniques',
+        normal: 'Implémentation et débogage courants — aussi par défaut',
+        hard: 'Revue, conception, bugs subtils'
+      },
+      defaultPill: 'par défaut',
+      inheritParent: 'Comme le modèle de la discussion',
+      inheritNormal: 'Comme Normal',
+      thinkingOff: 'Réflexion désactivée',
+      clear: 'Effacer'
+    },
     model: {
       setupProviderFallback: 'fournisseur',
       setUpProvider: name => `Configurer ${name}`,
@@ -5060,6 +5075,14 @@ export const frOverrides = {
       cacheRead: 'lecture en cache',
       priceTitle: (input: string, output: string, cache: string) =>
         `Entrée ${input}/Mtok · Sortie ${output}/Mtok` + (cache ? ` · Lecture en cache ${cache}/Mtok` : '')
+    },
+    delegation: {
+      pillPrefix: 'Sous-agents :',
+      auto: 'Auto',
+      autoTitle:
+        'Les sous-agents choisissent un modèle selon la difficulté de chaque tâche (Réglages → Modèles des sous-agents)',
+      forcedTitle: (model: string) => `Chaque sous-agent de cette discussion utilise ${model}`,
+      updateFailed: 'Échec de la mise à jour du modèle des sous-agents'
     },
     modelOptions: {
       noOptions: 'Aucune option pour ce modèle',

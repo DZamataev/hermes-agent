@@ -2069,6 +2069,21 @@ export const deOverrides = {
       deepLinkErrorUrl: 'Nur http:// und https:// Server-URLs sind erlaubt.',
       deepLinkErrorTooLarge: 'Die Config-Payload überschreitet das 32-KB-Limit.'
     },
+    delegationTiers: {
+      description:
+        'Subagenten wählen pro Aufgabe eine Stufe nach Schwierigkeit; lege fest, welches Modell jede Stufe nutzt. Ein Chat kann im Eingabefeld weiterhin ein Modell für alle seine Subagenten erzwingen.',
+      tiers: { easy: 'Leicht', normal: 'Normal', hard: 'Schwer' },
+      hints: {
+        easy: 'Suche, Nachschlagen, mechanische Änderungen',
+        normal: 'Normale Implementierung und Fehlersuche — auch Standard',
+        hard: 'Review, Design, subtile Fehler'
+      },
+      defaultPill: 'Standard',
+      inheritParent: 'Wie das Chat-Modell',
+      inheritNormal: 'Wie Normal',
+      thinkingOff: 'Denken aus',
+      clear: 'Zurücksetzen'
+    },
     model: {
       setupProviderFallback: 'Anbieter',
       setUpProvider: name => `${name} einrichten`,
@@ -5046,6 +5061,14 @@ export const deOverrides = {
       cacheRead: 'Cache-Lesung',
       priceTitle: (input: string, output: string, cache: string) =>
         `Eingabe ${input}/Mtok · Ausgabe ${output}/Mtok` + (cache ? ` · Cache-Lesung ${cache}/Mtok` : '')
+    },
+    delegation: {
+      pillPrefix: 'Subagenten:',
+      auto: 'Auto',
+      autoTitle:
+        'Subagenten wählen ihr Modell nach der Schwierigkeit jeder Aufgabe (Einstellungen → Subagenten-Modelle)',
+      forcedTitle: (model: string) => `Jeder Subagent in diesem Chat nutzt ${model}`,
+      updateFailed: 'Subagenten-Modell konnte nicht aktualisiert werden'
     },
     modelOptions: {
       noOptions: 'Keine Optionen für dieses Modell',

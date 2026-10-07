@@ -8,8 +8,8 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage,
-                     Usage)
+from .common import (DelegationOverride, OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams,
+                     TranscriptMessage, Usage)
 from .connectors_operation import ConnectionRequestPayload
 from .registry import method
 
@@ -129,6 +129,8 @@ class SessionCreateParams(ProfileParams):
     provider: str | None = None
     reasoning_effort: str | None = None
     fast: bool | None = None  # presence is the contract: omitted inherits, true pins priority, false pins normal
+    # The draft composer's "Subagents" pick ({provider, model, reasoning_effort}); omitted = Auto (tier routes).
+    delegation_override: DelegationOverride | None = None
     close_on_disconnect: bool = False
     hidden: bool = False
     room_plumbing: bool = False

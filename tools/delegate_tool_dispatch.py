@@ -49,6 +49,9 @@ class _Batch:
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
     unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
+    # Per task (call-wide index): the model its resolved route names, None = inherit the parent. Labels a
+    # split unit with ITS tasks' routes rather than the whole call's summary.
+    task_route_models: Optional[List[Optional[str]]] = None
 
     def owner_kwargs(self) -> Dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -383,6 +386,17 @@ def _units_of(batch: _Batch) -> List[_Batch]:
         members.setdefault(key, []).append((i, t, c))
     return [replace(batch, children=ch, group=(key[1] if key[0] == "g" else None)) for key, ch in members.items()]
 
+def _unit_model_label(unit: _Batch) -> Optional[str]:
+    """The models THIS unit's children run on, for the async registry. With no route on any task (nothing
+    configured) the label stays what it always was — the call's route model (None → "?")."""
+    per_task = unit.task_route_models
+    if not per_task or not any(per_task):
+        return unit.creds.get("model")
+    models = list(dict.fromkeys(
+        str(per_task[i] or getattr(c, "model", "") or "") for (i, _, c) in unit.children))
+    return ", ".join(m for m in models if m) or None  # "?" rather than another unit's models
+
+
 def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str], routing: dict) -> dict:
     """Hand ONE unit to the async registry; the runner joins on that unit's children only."""
     from tools.async_delegation import dispatch_async_delegation_batch
@@ -396,7 +410,7 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         # Call-wide goals: completion formatting indexes them by task_index.
         goals=[t["goal"] for t in unit.task_list], context=unit.context,
         toolsets=None,  # metadata for the completion block only; subagents inherit the parent's toolsets
-        role=unit.top_role, model=unit.creds["model"],
+        role=unit.top_role, model=_unit_model_label(unit),
         runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
         interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
         task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,

@@ -1536,6 +1536,16 @@ export interface Translations {
       deepLinkErrorUrl: string
       deepLinkErrorTooLarge: string
     }
+    delegationTiers: {
+      description: string
+      tiers: { easy: string; normal: string; hard: string }
+      hints: { easy: string; normal: string; hard: string }
+      defaultPill: string
+      inheritParent: string
+      inheritNormal: string
+      thinkingOff: string
+      clear: string
+    }
     model: {
       setupProviderFallback: string
       setUpProvider: (name: string) => string
@@ -3906,6 +3916,13 @@ export interface Translations {
       free: string
       cacheRead: string
       priceTitle: (input: string, output: string, cache: string) => string
+    }
+    delegation: {
+      pillPrefix: string
+      auto: string
+      autoTitle: string
+      forcedTitle: (model: string) => string
+      updateFailed: string
     }
     modelOptions: {
       noOptions: string

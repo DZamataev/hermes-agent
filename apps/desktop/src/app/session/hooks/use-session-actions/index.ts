@@ -9,6 +9,7 @@ import {
   olderPageReader
 } from '@/app/chat/transcript-backfill'
 import { defaultNewSessionTarget, prepareDefaultNewSession } from '@/app/session/new-session-route'
+import { EMPTY_ROUTE } from '@/app/shell/detached-model-controller'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import {
@@ -36,6 +37,7 @@ import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import { $connectionRequests } from '@/store/connection-request'
+import { $draftDelegationOverride, routeFromWire, routeToWire, setDraftDelegationOverride } from '@/store/delegation-override'
 import {
   $gateway,
   openGatewayForAgent,
@@ -832,6 +834,8 @@ export function useSessionActions({
         const runtimeStartedAt = Date.now()
         setSessionStartedAt(runtimeStartedAt)
         const yoloArmed = $yoloActive.get()
+        // The draft's Subagents pick, captured at the send linearization point like YOLO above.
+        const draftDelegationPick = routeToWire($draftDelegationOverride.get())
         const runtimeInfo = applyRuntimeInfo(created.info)
 
         updateSessionState(
@@ -844,6 +848,28 @@ export function useSessionActions({
         // session existed — apply it to the freshly created session.
         if (yoloArmed) {
           await setSessionYolo(requestGateway, created.session_id, true).catch(() => undefined)
+        }
+
+        // Same for a draft Subagents pick. A separate config.set rather than a session.create param on
+        // purpose: an older backend rejects unknown create params (the whole send would fail), but only
+        // answers 4002 here — the chat still starts, on Auto. The draft returns to Auto either way: the
+        // pick belongs to the chat it was made for.
+        if (draftDelegationPick !== 'auto') {
+          setDraftDelegationOverride(EMPTY_ROUTE)
+
+          await requestGateway('config.set', {
+            key: 'delegation',
+            session_id: created.session_id,
+            value: draftDelegationPick
+          })
+            .then(() =>
+              updateSessionState(
+                created.session_id,
+                state => ({ ...state, delegationOverride: routeFromWire(draftDelegationPick) }),
+                stored
+              )
+            )
+            .catch(() => undefined)
         }
 
         return created.session_id

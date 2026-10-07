@@ -1,8 +1,10 @@
 import { computed, type ReadableAtom } from 'nanostores'
 import { createContext, useContext } from 'react'
 
+import { EMPTY_ROUTE, type ModelRoute } from '@/app/shell/detached-model-controller'
 import type { ClientSessionState } from '@/app/types'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { $draftDelegationOverride } from '@/store/delegation-override'
 import {
   $activeSessionId,
   $awaitingResponse,
@@ -65,6 +67,9 @@ export interface SessionView {
   $reasoningEffortPending: ReadableAtom<boolean>
   /** Gateway-reported level the route sends for `$reasoningEffort` ('' = unknown). */
   $reasoningEffortWire: ReadableAtom<string>
+  /** Composer "Subagents" pick (empty model = Auto: per-task tiers from Settings). Optional so detached test
+   *  views need not stub it; a surface without one reads as Auto. */
+  $delegationOverride?: ReadableAtom<ModelRoute>
 }
 
 /** The active session's own slice, or `undefined` while it's a draft. */
@@ -119,6 +124,11 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $awaitingResponse: primaryField<boolean>(state => state.awaitingResponse, $awaitingResponse),
   $busy: $primaryBusy,
   $cwd: primaryField<string>(state => state.cwd, $currentCwd),
+  // A stored session whose slice is not built yet shows Auto, never the new-chat draft's pick.
+  $delegationOverride: computed(
+    [$primaryState, $draftDelegationOverride, $selectedStoredSessionId],
+    (state, draft, storedId): ModelRoute => (state ? (state.delegationOverride ?? EMPTY_ROUTE) : storedId ? EMPTY_ROUTE : draft)
+  ),
   $fast: primaryField<boolean>(state => state.fast, $currentFastMode),
   $lastVisibleIsUser: computed($primaryMessages, lastVisibleMessageIsUser),
   $messages: $primaryMessages,

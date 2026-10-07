@@ -831,6 +831,8 @@ export interface SessionRuntimeInfo {
   reasoning_effort?: string
   /** What the route actually sends for `reasoning_effort` (empty when unset; equal when verbatim). */
   reasoning_effort_wire?: string
+  /** The session's forced subagent route (composer "Subagents" pick); {} = Auto. */
+  delegation_override?: { provider?: string; model?: string; reasoning_effort?: string }
   running?: boolean
   service_tier?: string
   skills?: Record<string, string[]> | string[]

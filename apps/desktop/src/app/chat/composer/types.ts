@@ -28,6 +28,8 @@ export interface ChatBarState {
     modelMenuContent?: ReactNode
     /** The reasoning pill's dropdown (same host + controller as the model menu). */
     reasoningMenuContent?: ReactNode
+    /** The Subagents pill's dropdown (session-scoped subagent model pick). */
+    delegationMenuContent?: ReactNode
     /** False when the catalog says the active model has no reasoning control;
      *  undefined while unknown (loading) so the pill stays put. */
     supportsReasoning?: boolean

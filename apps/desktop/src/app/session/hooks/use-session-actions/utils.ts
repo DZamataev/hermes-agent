@@ -16,6 +16,7 @@ import { parseErrorSurface } from '@/lib/error-surface'
 import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
+import { routeFromWire } from '@/store/delegation-override'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
@@ -2254,6 +2255,7 @@ type SessionRuntimeStatePatch = Partial<
     ClientSessionState,
     | 'branch'
     | 'cwd'
+    | 'delegationOverride'
     | 'fast'
     | 'model'
     | 'personality'
@@ -2390,6 +2392,10 @@ export function applyRuntimeInfo(
 
   if (typeof info.reasoning_effort_wire === 'string') {
     sessionState.reasoningEffortWire = info.reasoning_effort_wire
+  }
+
+  if (info.delegation_override && typeof info.delegation_override === 'object') {
+    sessionState.delegationOverride = routeFromWire(info.delegation_override)
   }
 
   if (typeof info.service_tier === 'string') {
