@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from typing import Any, Dict, List, Optional, Tuple, Union
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunparse, urlunsplit
 
 
 def normalize_route_base_url(base_url: Any) -> str:
@@ -62,22 +62,42 @@ def _same_query(own_url: str, target_url: str) -> bool:
 
 
 def _query_params(url: str) -> Dict[str, List[str]]:
+    return _query_lists(urlsplit(url).query)
+
+
+def _query_lists(query: str) -> Dict[str, List[str]]:
     params: Dict[str, List[str]] = {}
-    for key, value in parse_qsl(urlsplit(url).query, keep_blank_values=True):
+    for key, value in parse_qsl(query, keep_blank_values=True):
         params.setdefault(key, []).append(value)
     return params
+
+
+def split_url_query(url: str) -> Tuple[str, Optional[Dict[str, Union[str, List[str]]]]]:
+    """``(url without its query, SDK default_query or None)`` — the inverse of ``url_with_query``.
+
+    The SDKs join the request path onto ``base_url`` as text, so a query-bearing endpoint is handed
+    to them split. Nothing of the query is dropped: a repeated key keeps every value in order (as a
+    list) and a blank value stays ``""``. ``agent.sdk_query`` sends exactly these pairs."""
+    parsed = urlparse(url)
+    if not parsed.query:
+        return url, None
+    query = {k: v[0] if len(v) == 1 else v for k, v in _query_lists(parsed.query).items()}
+    return urlunparse(parsed._replace(query="")), query
 
 
 def url_with_query(url: Any, default_query: Any) -> str:
     """*url* with an SDK ``default_query`` put back into it, for identity decisions.
 
     OpenAI-wire clients carry a query-bearing base URL as a clean ``base_url`` plus
-    ``default_query``; comparing the clean half alone would drop the tenant choice. A URL that
-    already has a query is returned unchanged."""
+    ``default_query``; comparing the clean half alone would drop the tenant choice. A list value is
+    a repeated key (``split_url_query``), one pair per value. A URL that already has a query is
+    returned unchanged."""
     text = str(url or "")
     if not text or not isinstance(default_query, dict) or not default_query or urlsplit(text).query:
         return text
-    return f"{text}?{urlencode({str(k): str(v) for k, v in default_query.items()})}"
+    pairs = [(str(key), str(value)) for key, values in default_query.items()
+             for value in (values if isinstance(values, (list, tuple)) else [values])]
+    return f"{text}?{urlencode(pairs)}"
 
 
 def same_provider_endpoint(own: Any, target: Any) -> bool:
@@ -116,7 +136,7 @@ def named_provider_owns_endpoint(provider: Any, base_url: Any) -> bool:
     try:
         from hermes_cli.runtime_provider_custom import named_custom_provider_endpoint
         own = named_custom_provider_endpoint(str(provider or ""))
-    except Exception:  # noqa: BLE001 — a malformed entry must not break client construction
+    except AttributeError:  # a malformed entry (a non-string endpoint) owns no endpoint
         return False
     return same_provider_endpoint(own, base_url)
 

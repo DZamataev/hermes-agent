@@ -32,6 +32,7 @@ from agent.error_classifier import (
     is_reasoning_required_rejection,
 )
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
+from agent.auxiliary_oauth import affinity_capabilities, auto_route_model, cached_route_policy, client_route_url as _client_route_url, named_route_identity, runtime_oauth_proxy
 from agent.auxiliary_structured_output import remember_structured_output_rejection
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
@@ -65,7 +66,8 @@ class _OpenAIProxy:
     __slots__ = ()
 
     def __call__(self, *args, **kwargs):
-        return _load_openai_cls()(*args, **kwargs)
+        from agent.sdk_query import declared_query_class  # a split URL query goes out as declared
+        return declared_query_class(_load_openai_cls(), kwargs)(*args, **kwargs)
 
     def __instancecheck__(self, obj):
         return isinstance(obj, _load_openai_cls())
@@ -518,16 +520,8 @@ def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
 
 def _extract_url_query_params(url: str):
     """Extract query params from URL, return (clean_url, default_query dict or None)."""
-    parsed = urlparse(url)
-    if parsed.query:
-        return urlunparse(parsed._replace(query="")), {k: v[0] for k, v in parse_qs(parsed.query).items()}
-    return url, None
-
-
-def _client_route_url(client: Any, base_url: Any) -> str:
-    """``auxiliary_oauth.client_route_url``: *base_url* plus the query the SDK split off."""
-    from agent.auxiliary_oauth import client_route_url
-    return client_route_url(client, base_url)
+    from hermes_cli.route_identity import split_url_query
+    return split_url_query(url)
 
 
 # Warn only once per process about stale OPENAI_BASE_URL.
@@ -4703,11 +4697,12 @@ def _try_discovery_chain() -> Tuple[Optional[OpenAI], Optional[str], str]:
 
 
 def _resolve_auto_route(
-    main_runtime: Optional[Dict[str, Any]] = None, task: Optional[str] = None
+    main_runtime: Optional[Dict[str, Any]] = None, task: Optional[str] = None, model: Optional[str] = None,
 ) -> Tuple[Optional[OpenAI], Optional[str], str]:
     """Full auto-detection chain, including the selected provider identity. Priority: (1) main provider +
     main model, regardless of provider type ("auto" means "my main model for side tasks too"; explicit
-    per-task overrides still win); (2) configured fallback policy — task chain, then the main agent's
+    per-task overrides still win, and *model* is that override: the main route is BUILT for it, so its
+    wire policy is the sent model's); (2) configured fallback policy — task chain, then the main agent's
     top-level chain; (3) OpenRouter → Nous → custom → Codex → API-key providers, only with no policy
     and no working main client."""
     global auxiliary_is_nous
@@ -4715,6 +4710,7 @@ def _resolve_auto_route(
     runtime = _normalize_main_runtime(main_runtime)
     _warn_stale_openai_base_url(runtime.get("provider", ""))
     main_provider, main_model, base_url, api_key, api_mode = _main_route_target(runtime, task)
+    main_model = auto_route_model(model, main_model, _normalize_resolved_model(main_model, main_provider))
     routed = _try_main_provider_route(
         main_provider, main_model, base_url, api_key, api_mode, main_runtime=runtime
     )
@@ -4769,7 +4765,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     # ``.api_key`` (which stays ""); rebuilding from the snapshot alone ships NO Authorization
     # header. Configured default_headers (a named entry's extra_headers) are likewise carried over,
     # merged last exactly as the SDK merges them on the sync client. See #109595.
-    from agent.auxiliary_async_rebuild import async_api_key, configured_default_headers
+    from agent.auxiliary_async_rebuild import async_api_key, async_twin, configured_default_headers
     async_kwargs = {"api_key": async_api_key(sync_client), "base_url": sync_base_url}
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         headers = _apply_user_default_headers(build_or_headers())
@@ -4791,7 +4787,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     # Hermes owns the auxiliary retry/timeout budget; disable SDK-internal retries.
     # See #54465.
     async_kwargs.setdefault("max_retries", 0)
-    return AsyncOpenAI(**async_kwargs), model
+    return async_twin(AsyncOpenAI, sync_client, async_kwargs), model
 
 
 def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optional[str]:
@@ -4803,39 +4799,6 @@ def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optio
         return normalize_model_for_provider(model_name, provider)
     except Exception:
         return model_name
-
-
-def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_base: str) -> Any:
-    """Credential for a named custom provider: inline api_key → key_env → key_cmd → credential pool → placeholder.
-    Aux resolves named custom providers here, not via _resolve_named_custom_runtime, so key_cmd must be
-    honoured at the same precedence or every aux call 401s."""
-    custom_key: Any = (custom_entry.get("api_key") or "").strip()
-    custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
-    if not custom_key and custom_key_env:
-        custom_key = _scoped_key_env(custom_key_env)
-    custom_key_cmd = str(custom_entry.get("key_cmd", "") or "").strip()
-    if custom_key_cmd:
-        from agent.command_token_source import build_command_token_provider
-        custom_key = build_command_token_provider(custom_key_cmd, custom_entry.get("name") or provider) or custom_key
-    if not custom_key:
-        with contextlib.suppress(Exception):
-            from agent.credential_pool import custom_provider_pool_key_candidates
-            pool_name = custom_entry.get("provider_key") or custom_entry.get("name") or provider
-            for pool_key in custom_provider_pool_key_candidates(custom_base, pool_name):
-                try:
-                    pool = load_pool(pool_key)
-                except Exception:
-                    continue
-                if not pool.has_credentials():
-                    continue
-                pool_entry = pool.select()
-                if pool_entry is None:
-                    continue
-                pool_api_key = getattr(pool_entry, "runtime_api_key", None) or getattr(pool_entry, "access_token", "") or ""
-                if str(pool_api_key).strip():
-                    custom_key = str(pool_api_key).strip()
-                    break
-    return custom_key or "no-key-required"
 
 
 def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: bool) -> Tuple[Optional[Any], Optional[str]]:
@@ -5004,7 +4967,6 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
     # A profile that declares the Messages wire (commandcode-anthropic) is on it whatever the URL
     # looks like; the same declaration gates ``_reasoning_config`` in _build_call_kwargs.
     api_mode = req.api_mode or _profile_declared_messages_wire(req.provider)
-    from agent.auxiliary_oauth import runtime_oauth_proxy
     force_oauth = bool(runtime_oauth_proxy(
         req.main_runtime, req.owner or req.provider, base_url_str, final_model_str))
     return _maybe_wrap_anthropic(
@@ -5037,7 +4999,7 @@ def _route_or_warn(req: _ResolveRequest, client: Any, default: Optional[str], un
 
 def _resolve_auto_branch(req: _ResolveRequest) -> _ResolveResult:
     """Auto: try all providers in priority order; tag the client with the effective provider (survives cache reuse)."""
-    client, resolved, effective_provider = _resolve_auto_route(main_runtime=req.main_runtime, task=req.task)
+    client, resolved, effective_provider = _resolve_auto_route(main_runtime=req.main_runtime, task=req.task, model=req.model)
     if client is None:
         return None, None
     model = req.model
@@ -5227,6 +5189,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # whatever the caller left blank, never replaces what the caller set (compression prompts carry
     # conversation history, so a silently swapped destination is a data-routing bug, not a nuisance).
     custom_base = (req.explicit_base_url or custom_entry.get("base_url") or "").strip()
+    from agent.auxiliary_named_route import _named_custom_api_key
     custom_key = _normalize_api_key(req.explicit_api_key) or _named_custom_api_key(custom_entry, provider, custom_base)
     if custom_key == "no-key-required":
         logger.warning("resolve_provider_client: named custom provider %r has no resolvable "
@@ -5265,7 +5228,6 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     if entry_api_mode == "anthropic_messages":
         # Model-qualified: two models on this one relay may declare different values, and this
         # decides Bearer vs x-api-key plus the Claude Code transforms on the actual request.
-        from agent.auxiliary_oauth import runtime_oauth_proxy
         force_oauth = bool(runtime_oauth_proxy(req.main_runtime, owner, custom_base, final_model))
         try:
             from agent.anthropic_adapter import build_anthropic_client
@@ -5868,8 +5830,9 @@ def _client_cache_key(
     api_key_key = _runtime_cache_discriminator("api_key", api_key or "")
     # Profile home leads the key: callers that omit api_key (pool / Nous auth.json paths) would
     # otherwise share one client across multiplex profiles holding different credentials.
+    # Last: the target route's own OAuth-proxy policy, re-read per lookup (auxiliary_oauth.cached_route_policy).
     return (hermes_home_key(), provider, async_mode, base_url or "", api_key_key, api_mode or "", runtime_key, is_vision, task_key, pool_hint, model_key,
-            _borrowed_main_credential_key(provider, base_url, api_key, runtime))
+            _borrowed_main_credential_key(provider, base_url, api_key, runtime), cached_route_policy(runtime, provider, base_url, model_key))
 
 
 def _borrowed_main_credential_key(provider: str, base_url: Optional[str], api_key: Any, runtime: Dict[str, Any]) -> tuple:
@@ -6169,71 +6132,6 @@ def _unwrap_moa_provider(prov: str, mdl: Optional[str]) -> Tuple[str, Optional[s
     return prov, mdl
 
 
-def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
-    """True when a first-class provider keeps its identity alongside an explicit base_url."""
-    normalized = str(prov or "").strip().lower()
-    if normalized in {"", "auto", "custom"} or normalized.startswith("custom:"):
-        return False
-    if normalized in _LOCAL_SERVER_ALIASES:
-        return True  # the custom branch applies the /v1 tail only when it still sees the alias
-    # #76602 — two independent lookups, each guarded by its own try/except so a partial
-    # catalog-load failure in either path doesn't suppress the other. A user-defined
-    # ``providers:`` entry keeps its name alongside an explicit base_url so the named-custom
-    # branch resolves the entry's key/transport instead of the anonymous ``custom`` downgrade
-    # (which sends ``no-key-required`` and 401s on auth-required endpoints).
-    if _builtin_provider_present(normalized):
-        return True
-    if _named_custom_provider_present(normalized):
-        return True
-    return False
-
-
-def _builtin_provider_present(name: str) -> bool:
-    """Look up *name* in the built-in provider registry, returning False
-    (not raising) when the catalog fails to load.
-
-    Used by ``_preserve_provider_with_base_url`` so a built-in lookup
-    exception cannot suppress the parallel user-defined provider lookup
-    (#76602).
-    """
-    try:
-        from hermes_cli.providers import get_provider
-
-        return get_provider(name) is not None
-    except Exception:
-        # Keep the high-risk provider-backed routes safe even if provider
-        # catalog loading is unavailable during early import/test paths.
-        return name in {
-            "anthropic",
-            "copilot",
-            "copilot-acp",
-            "minimax-oauth",
-            "nous",
-            "openai-codex",
-            "qwen-oauth",
-            "xai-oauth",
-        }
-
-
-def _named_custom_provider_present(name: str) -> bool:
-    """Look up *name* in the user-defined ``providers:`` section of
-    config.yaml, returning False when the config is unavailable or
-    fails to load.
-
-    Used by ``_preserve_provider_with_base_url`` so a user-defined
-    provider remains preserved even when the built-in registry raises
-    (parallel lookup; each side fails independently — #76602).
-    """
-    try:
-        from hermes_cli.runtime_provider import _get_named_custom_provider
-
-        return _get_named_custom_provider(name) is not None
-    except Exception:
-        # Config not loaded yet (early import paths, tests) — fail closed:
-        # never widen True just because the import / load failed.
-        return False
-
-
 def _resolve_task_provider_model(
     task: str = None, provider: str = None, model: str = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -6294,12 +6192,12 @@ def _resolve_task_provider_model(
         base_url = cfg_base_url
         if not api_key:
             api_key = cfg_api_key
-    from agent.auxiliary_oauth import named_route_identity
     if base_url:
-        if _preserve_provider_with_base_url(provider):
-            kept = provider
-        else:
-            kept = named_route_identity(provider, base_url) or "custom"
+        # At its own endpoint a named entry keeps its canonical name (one cache slot, one declaration
+        # lookup); elsewhere the #76602 rule decides.
+        from agent.auxiliary_named_route import _preserve_provider_with_base_url
+        kept = named_route_identity(provider, base_url) or (
+            provider if _preserve_provider_with_base_url(provider) else "custom")
         return kept, resolved_model, base_url, api_key, resolved_api_mode
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode
@@ -6881,7 +6779,6 @@ def _build_call_kwargs(
     # backend, and so an OAuth relay recognises them as that conversation instead of pinning a
     # second account. The proxy header is scoped by runtime_oauth_proxy: same provider, endpoint
     # and model, so a model declaring itself off this relay's OAuth policy sends no such header.
-    from agent.auxiliary_oauth import affinity_capabilities
     from agent.opencode_affinity import merge_session_affinity_headers
     aux_capabilities = affinity_capabilities(_normalize_main_runtime(None), provider, route_url or base_url, model)
     return merge_session_affinity_headers(

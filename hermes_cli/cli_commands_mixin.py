@@ -1819,7 +1819,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         runtime = turn_route["runtime"]
         main_runtime = {
             "model": turn_route["model"],
-            **{k: runtime.get(k) for k in ("provider", "base_url", "api_key", "api_mode")},
+            **{k: runtime.get(k) for k in ("provider", "requested_provider", "base_url", "api_key", "api_mode", "capabilities")},
             "session_id": getattr(parent_agent, "session_id", None),
         }
         preview = _ellipsize(question, 60)

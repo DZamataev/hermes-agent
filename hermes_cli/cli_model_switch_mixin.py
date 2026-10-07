@@ -486,7 +486,7 @@ class CLIModelSwitchMixin:
                     requested=self.provider, target_model=stored_model,
                     explicit_base_url=None if managed_repin else (stored_base_url or None),
                 )
-            except Exception:
+            except Exception:  # health: allow BLE001 -- resumed-session re-resolution is best-effort: a failure keeps the ambient credentials and is logged with the traceback
                 if managed_repin and stored_base_url:
                     self.base_url = stored_base_url
                 logger.debug("Runtime re-resolution for resumed session failed", exc_info=True)

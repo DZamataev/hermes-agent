@@ -20,7 +20,7 @@ from contextlib import suppress
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
-from urllib.parse import parse_qs, urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
 from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
@@ -35,9 +35,7 @@ from agent.model_metadata import (
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
-from agent.tool_guardrails import (
-    ToolCallGuardrailConfig, ToolCallGuardrailController
-)
+from agent.tool_guardrails import ToolCallGuardrailController
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
@@ -821,11 +819,11 @@ def _init_bedrock_client(agent, base_url):
 
 def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict[str, Any]:
     """OpenAI-client kwargs from explicit CLI/gateway credentials (auth already resolved)."""
-    _parsed_url = urlparse(base_url)
-    client_kwargs = {"api_key": api_key, "base_url": base_url}
-    if _parsed_url.query:
-        client_kwargs["base_url"] = urlunparse(_parsed_url._replace(query=""))
-        client_kwargs["default_query"] = {k: v[0] for k, v in parse_qs(_parsed_url.query).items()}
+    from hermes_cli.route_identity import split_url_query
+    clean_base_url, default_query = split_url_query(base_url)
+    client_kwargs = {"api_key": api_key, "base_url": clean_base_url}
+    if default_query:
+        client_kwargs["default_query"] = default_query
     if _provider_timeout is not None:
         client_kwargs["timeout"] = _provider_timeout
     # ACP/subprocess providers take launch kwargs instead of HTTP credentials. Keyed on the
@@ -1231,44 +1229,6 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
     # In-memory todo list for task planning (one per agent/session)
     from tools.todo_tool import TodoStore
     agent._todo_store = TodoStore()
-
-
-def _apply_display_config(agent, _agent_cfg, platform):
-    # show_commentary: Codex phase=commentary → interim path (true) or reasoning channel.
-    agent.show_commentary = bool(_cfg_dict(_agent_cfg, "display").get("show_commentary", True))
-
-    # Window (seconds) for the bounded /fast auto|cold modes (agent.fast_mode).
-    agent.fast_auto_seconds = (_agent_cfg.get("agent") or {}).get("fast_auto_seconds", 60)
-
-    # lmstudio_load_mode: "explicit" (preload via management API) or "jit" (Auto-Evict path).
-    _model_section = _cfg_dict(_agent_cfg, "model")
-    _load_mode = str(_model_section.get("lmstudio_load_mode", "explicit") or "explicit").strip().lower()
-    agent.lmstudio_load_mode = _load_mode if _load_mode in {"explicit", "jit"} else "explicit"
-    if agent.lmstudio_load_mode != _load_mode:
-        logger.warning(
-            "Invalid model.lmstudio_load_mode=%r; expected 'explicit' or 'jit'. Using explicit.",
-            _model_section.get("lmstudio_load_mode"),
-        )
-
-    # model.streaming=false seeds _disable_streaming (the loop's runtime fallback) for
-    # backends with broken streaming tool calls. Session-scoped; orthogonal to display.streaming.
-    _streaming = str(_model_section.get("streaming", "true")).strip().lower()
-    agent._disable_streaming = _streaming in {"false", "0", "no", "off"}
-    if not agent._disable_streaming and _streaming not in {"true", "1", "yes", "on"}:
-        logger.warning(
-            "Invalid model.streaming=%r; expected a boolean. Using streaming (default).",
-            _model_section.get("streaming"),
-        )
-    agent._stream_5xx_probe_ts = None  # monotonic time of the last streaming-5xx unmask probe
-
-    try:
-        agent._tool_guardrails = ToolCallGuardrailController(
-            ToolCallGuardrailConfig.from_mapping(
-                _agent_cfg.get("tool_loop_guardrails", {}), platform=platform,
-            )
-        )
-    except Exception as _tlg_err:
-        _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
 
 
 def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
@@ -1979,12 +1939,10 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
-        # External engines own compaction policy — the host threshold (and its Codex
-        # autoraise) never reaches the plugin, so drop the notice.
-        agent._compression_threshold_autoraised = None
         # External engines own compaction policy: the host compression threshold (including the Codex
         # gpt-5.5 autoraise above) only configures the built-in ContextCompressor and never reaches the
         # plugin, so the autoraise notice would announce a change that does not apply. (#44439)
+        agent._compression_threshold_autoraised = None
         from agent.model_metadata import get_model_context_length
         _plugin_ctx_len = get_model_context_length(
             agent.model, base_url=agent.base_url, api_key=getattr(agent, "api_key", ""),
@@ -2017,6 +1975,8 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
             custom_providers=_custom_providers,
         )
+        from agent.runtime_projection import bind_route_owner  # summary calls carry the live route
+        bind_route_owner(agent.context_compressor, agent)
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
         with suppress(Exception):
@@ -2492,6 +2452,7 @@ def init_agent(
     except Exception:
         _agent_cfg = {}
 
+    from agent.agent_init_display import _apply_display_config
     _apply_display_config(agent, _agent_cfg, platform)
     _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=memory_manager)
     _apply_agent_section(agent, _agent_cfg)

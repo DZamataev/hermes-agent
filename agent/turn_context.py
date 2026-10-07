@@ -241,14 +241,10 @@ def _maybe_title_session_at_turn_start(
             return
         # Snapshot runtime identity so the background titler can skip if the user
         # switches models before it fires.
-        # ``session_id`` rides along so the background titler's OpenCode request carries the
-        # same ``x-opencode-session`` affinity as the turn it belongs to (#112717).
-        main_runtime = {
-            k: getattr(agent, k, None) for k in (
-                "model", "provider", "requested_provider", "base_url", "api_key", "api_mode",
-                "capabilities", "session_id",
-            )
-        }
+        # The whole live route (owner, tenant query, capabilities, session id for affinity
+        # headers, #112717), the same projection every other auxiliary producer hands over.
+        from agent.runtime_projection import live_main_runtime
+        main_runtime = live_main_runtime(agent)
         # See #19027.
         upgrade = maybe_auto_title(
             session_db,
@@ -262,8 +258,8 @@ def _maybe_title_session_at_turn_start(
             main_runtime=main_runtime,
             title_callback=getattr(agent, "_on_session_title", None),
             runtime_validator=lambda: (
-                getattr(agent, "model", None) == main_runtime["model"]
-                and getattr(agent, "provider", None) == main_runtime["provider"]
+                (getattr(agent, "model", None) or "") == main_runtime["model"]
+                and (getattr(agent, "provider", None) or "") == main_runtime["provider"]
             ),
             title_preview=title_preview,
         )

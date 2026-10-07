@@ -377,16 +377,15 @@ def _base_client_kwargs(base_url, timeout) -> tuple[str, Dict[str, Any]]:
     Retry-After and double-retries inside our loop. Any trailing ``/v1`` is stripped because the
     SDK appends ``/v1/messages``. A URL query goes through ``default_query``: the SDK joins the
     request path onto ``base_url`` as text, so ``/anthropic?tenant=a`` would become
-    ``/anthropic?tenant=a/v1/messages`` — the path lost inside the query value. Azure's
-    ``api-version`` is added the same way when the URL does not carry one."""
+    ``/anthropic?tenant=a/v1/messages`` — the path lost inside the query value. The split is
+    lossless (``split_url_query``) and ``_new_sdk_client`` sends it verbatim (``agent.sdk_query``).
+    Azure's ``api-version`` is added the same way when the URL does not carry one."""
+    from hermes_cli.route_identity import split_url_query
     kwargs: Dict[str, Any] = {"timeout": _client_timeout(timeout), "max_retries": 0}
-    text = _normalize_base_url_text(base_url)
-    query: Dict[str, Any] = {}
+    text, query = _normalize_base_url_text(base_url), {}
     if "?" in text:
-        from urllib.parse import parse_qs, urlsplit, urlunsplit
-        parts = urlsplit(text)
-        query = {k: v[0] if len(v) == 1 else v for k, v in parse_qs(parts.query, keep_blank_values=True).items()}
-        text = urlunsplit(parts._replace(query="", fragment=""))
+        text, split = split_url_query(text.split("#", 1)[0])
+        text, query = text.rstrip("?"), split or {}
     normalized = re.sub(r"/v1/?$", "", text.rstrip("/"))
     if normalized:
         kwargs["base_url"] = normalized
@@ -450,7 +449,8 @@ def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str], route:
     merged.update(_custom_provider_extra_headers(route or kwargs.get("base_url")))
     if merged:
         kwargs["default_headers"] = merged
-    return sdk.Anthropic(**kwargs)
+    from agent.sdk_query import declared_query_class
+    return declared_query_class(sdk.Anthropic, kwargs)(**kwargs)
 
 
 def _custom_provider_extra_headers(base_url) -> Dict[str, str]:

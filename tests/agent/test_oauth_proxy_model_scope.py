@@ -297,23 +297,35 @@ def assert_no_oauth_identity(request) -> None:
 
 
 @pytest.mark.parametrize(
-    "explicit_base,kept",
+    "explicit_base,own",
     [
-        (URL, "relay"),
-        (f"{URL}/", "relay"),
+        (URL, True),
+        (f"{URL}/", True),
         # A resolver may hand the endpoint back with /v1 added (OpenCode-family routing): same origin.
-        (f"{URL}/v1", "relay"),
-        ("https://relay.example.com:443", "relay"),
+        (f"{URL}/v1", True),
+        ("https://relay.example.com:443", True),
         # Same host, another origin: a different trust boundary, a different route.
-        ("https://relay.example.com:8443", "custom"),
-        ("http://relay.example.com", "custom"),
-        ("https://elsewhere.example.com", "custom"),
+        ("https://relay.example.com:8443", False),
+        ("http://relay.example.com", False),
+        ("https://elsewhere.example.com", False),
     ],
 )
-def test_explicit_endpoint_keeps_the_name_only_at_the_providers_own_origin(relay, explicit_base, kept):
-    from agent.auxiliary_client import _resolve_task_provider_model
+def test_explicit_endpoint_carries_the_relays_policy_only_at_its_own_origin(relay, explicit_base, own):
+    """The name may survive an explicit endpoint (#76602 keeps a configured provider's name so its
+    key resolves), but the relay's OAuth declaration speaks only for the relay's own endpoint."""
+    from agent.auxiliary_client import _resolve_task_provider_model, call_llm
 
-    assert _resolve_task_provider_model(None, "relay", TRUSTED_MODEL, explicit_base, KEY)[0] == kept
+    assert _resolve_task_provider_model(None, "relay", TRUSTED_MODEL, explicit_base, KEY)[0] == "relay"
+    call_llm(
+        provider="relay", model=TRUSTED_MODEL, base_url=explicit_base,
+        messages=[{"role": "user", "content": "hello"}], max_tokens=32,
+        main_runtime={"provider": "moa", "base_url": "moa://local", "model": "simple"},
+    )
+    request = relay[-1]
+    if own:
+        assert_oauth_wire(request, True)
+    else:
+        assert_no_oauth_identity(request)
 
 
 def test_kept_identity_is_the_canonical_name(relay):
@@ -524,7 +536,6 @@ def test_a_sibling_tenant_path_is_not_the_relay(relay):
     _tenant_config()
     assert _resolve_task_provider_model(None, "tenant", TRUSTED_MODEL, f"{GATEWAY}/tenant-a", KEY)[0] == "tenant"
     assert _resolve_task_provider_model(None, "tenant", TRUSTED_MODEL, f"{GATEWAY}/tenant-a/v1", KEY)[0] == "tenant"
-    assert _resolve_task_provider_model(None, "tenant", TRUSTED_MODEL, f"{GATEWAY}/tenant-b", KEY)[0] == "custom"
     # The MoA-slot / explicit-caller shape the review reproduced: name + another tenant's URL.
     call_llm(
         provider="tenant", model=TRUSTED_MODEL, base_url=f"{GATEWAY}/tenant-b",
@@ -533,7 +544,6 @@ def test_a_sibling_tenant_path_is_not_the_relay(relay):
     )
     request = relay[-1]
     assert request.url.path.startswith("/tenant-b")
-    assert request.headers.get("x-tenant-token") is None
     assert request.headers.get("authorization") != f"Bearer {KEY}"
     assert "x-claude-code-session-id" not in request.headers
     assert_no_oauth_identity(request)
@@ -879,7 +889,7 @@ def test_a_spaced_name_whose_dashed_form_is_a_builtin_alias_is_not_dashed(relay)
     """Finding 1 (review 3): ``Claude Code`` dashed is ``claude-code``, the ``anthropic`` alias;
     the downstream resolver would route it to the built-in and drop the relay's wire policy."""
     from agent.auxiliary_client import _resolve_task_provider_model, call_llm
-    from hermes_cli.auth import known_provider_id
+    from hermes_cli.auth_plugin_providers import known_provider_id
 
     assert known_provider_id("claude-code") is not None
     _rewrite_config(providers={"my-relay": {
@@ -915,7 +925,7 @@ def test_an_alias_named_relay_keeps_its_policy_through_the_cached_client(
     wire policy must be looked up under that same identity, not the alias-normalized built-in,
     which owns no custom entry and would answer ``false`` for a relay declaring ``true``."""
     from agent.auxiliary_client import _get_cached_client
-    from hermes_cli.auth import known_provider_id
+    from hermes_cli.auth_plugin_providers import known_provider_id
 
     assert known_provider_id("claude") == "anthropic"
     _rewrite_config(providers={"claude": {

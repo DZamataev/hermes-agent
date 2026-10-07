@@ -233,7 +233,7 @@ def _child_route_capabilities(
 def _names_an_entry(lookup, provider) -> bool:
     try:
         return bool(lookup(str(provider)))
-    except Exception:  # noqa: BLE001 — a malformed entry names nothing usable
+    except AttributeError:  # a malformed entry names nothing usable
         return False
 
 

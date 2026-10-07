@@ -263,7 +263,7 @@ from hermes_cli.config import (  # noqa: E402
 # Plugin profiles (plugins/model-providers/<name>/) are mirrored into PROVIDER_REGISTRY with the
 # auth_type they declare; the mirror lives in the sibling so it can be re-run after discovery.
 from hermes_cli.auth_plugin_providers import (  # noqa: E402
-    get_plugin_oauth_auth_status, registry_lookup as _registry_lookup, sync_plugin_provider_registry)
+    get_plugin_oauth_auth_status, known_provider_id, registry_lookup as _registry_lookup, sync_plugin_provider_registry)
 
 sync_plugin_provider_registry()
 
@@ -1627,19 +1627,6 @@ def _env_key_auto_detected(
                         "explicitly.",
                         pid, env_var, oauth_active, env_var)
                 return pid
-    return None
-
-
-def known_provider_id(requested: Optional[str]) -> Optional[str]:
-    """The canonical id when *requested* names a built-in/plugin provider (aliases applied), else None.
-
-    The non-raising half of :func:`resolve_provider` for an explicit name: route-identity checks run
-    on every auxiliary call and must not pay for the unknown-provider hint (a full config validation).
-    """
-    normalized = (requested or "").strip().lower()
-    normalized = _plugin_aliases().get(normalized, normalized)
-    if normalized in ("openrouter", "custom") or _registry_lookup(normalized) is not None:
-        return normalized
     return None
 
 

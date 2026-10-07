@@ -5938,8 +5938,6 @@ class TestAnthropicCredentialRefresh:
             assert agent._try_refresh_anthropic_client_credentials() is True
 
         old_client.close.assert_called_once()
-        # force_oauth carries the route's OAuth verdict into the rebuild; a token-refresh
-        # rebuild must not silently drop it and downgrade the wire to x-api-key.
         rebuild.assert_called_once_with(
             "sk-ant-oat01-fresh-token", "https://api.anthropic.com", timeout=None, force_oauth=True,
         )

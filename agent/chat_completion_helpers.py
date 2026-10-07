@@ -1537,9 +1537,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
 
     Wraps the per-api_mode builder so the conversation-affinity headers (OpenCode's
     ``x-opencode-session``, a custom provider's opt-in ``session_affinity_header``, an
-    ``anthropic_oauth_proxy`` relay's ``x-claude-code-session-id``) ride on every request
-    regardless of transport (chat_completions / codex_responses / anthropic_messages).
-    No-op for every other provider.
+    ``anthropic_oauth_proxy`` relay's ``x-claude-code-session-id``) ride every transport.
     """
     from agent.opencode_affinity import merge_session_affinity_headers
 
