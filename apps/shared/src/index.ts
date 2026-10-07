@@ -73,9 +73,11 @@ export {
   type TranslationOverride
 } from './i18n'
 export {
+  carryRequestInFlight,
   DEFAULT_HEARTBEAT_DEADLINE_MS,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   type GatewayRequestId,
+  isRequestInFlightError,
   JSON_RPC_INTERNAL_ERROR,
   JSON_RPC_METHOD_NOT_FOUND,
   jsonRpcErrorFromFrame,

@@ -416,6 +416,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             # Composer "Subagents" pick made on the draft before this session existed.
             **({"delegation_override": pick} if (pick := _create_delegation_override(params)) else {}),
             "parent_session_id": parent_session_id, "pending_title": _str_param(params, "title") or None,
+            "pending_title_dedupe": _flag(params, "title_dedupe"),
             "pending_hidden": _flag(params, "hidden"), "room_plumbing": _flag(params, "room_plumbing"),
             "follow_profile_config": _flag(params, "follow_profile_config"),
             "profile_home": str(profile_home) if profile_home is not None else None,

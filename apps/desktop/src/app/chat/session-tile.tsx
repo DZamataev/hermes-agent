@@ -81,7 +81,7 @@ import { paneMirror } from './pane-mirror'
 import { SessionDraftTitle } from './session-draft-title'
 import { startSessionDrag } from './session-drag'
 import { SessionStatusDot } from './session-status-dot'
-import { useSessionTileActions } from './session-tile-actions'
+import { useSessionTileActions, useTileKickoff } from './session-tile-actions'
 import { tileOwnerRoute } from './session-tile-owner'
 import { reasoningEffortPending, type SessionView, SessionViewProvider } from './session-view'
 import { SessionContextMenu } from './sidebar/session-actions-menu'
@@ -312,6 +312,8 @@ function TileChat({
   // follows foreground focus and can point at another backend during restore or
   // reconnect, which turns a recoverable stale runtime into "session not found".
   const actions = useSessionTileActions({ requestGateway: requestTileGateway, runtimeId, scope, storedSessionId })
+
+  useTileKickoff(storedSessionId, actions)
 
   // The same attach/pick/paste/drop pipeline the primary composer uses,
   // pointed at this tile's chips + session.

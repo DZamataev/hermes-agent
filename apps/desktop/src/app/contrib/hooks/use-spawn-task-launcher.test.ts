@@ -1,0 +1,310 @@
+import { renderHook, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { SessionCreateOverrides } from '@/app/session/hooks/use-session-actions/create-overrides'
+import { $connection, $sessions } from '@/store/session'
+import { $sessionTiles, reopenLastClosedTile } from '@/store/session-states'
+import {
+  $spawnTaskChips,
+  $spawnTaskLauncherReady,
+  type KickoffOutcome,
+  launchSpawnTask,
+  resetSpawnTaskStoreForTests,
+  setSpawnTaskLauncher,
+  spawnTaskChipKey,
+  type SpawnTaskChoice,
+  takeTileKickoff,
+  TILE_KICKOFF_DEADLINE_MS
+} from '@/store/spawn-task'
+
+import { spawnTaskWorktreeName, useSpawnTaskLauncher } from './use-spawn-task-launcher'
+
+const isGitRepoPath = vi.fn(async (_path: string) => true)
+
+const startWorkInRepo = vi.fn(async (_repo: string, _options: unknown) => ({
+  branch: 'hermes/x',
+  path: '/repo/.worktrees/x'
+}))
+
+const revParse = vi.fn(async () => 'abc123')
+const removeWorktreePath = vi.fn(async (_repo: string, _path: string, _options?: unknown) => undefined)
+const notify = vi.fn()
+
+vi.mock('@/store/coding-status', () => ({ isGitRepoPath: (p: string) => isGitRepoPath(p) }))
+vi.mock('@/store/projects', () => ({
+  removeWorktreePath: (repo: string, path: string, options?: unknown) => removeWorktreePath(repo, path, options),
+  startWorkInRepo: (repo: string, options: unknown) => startWorkInRepo(repo, options)
+}))
+vi.mock('@/lib/desktop-git', () => ({ desktopGit: () => ({ review: { revParse } }) }))
+vi.mock('@/store/notifications', () => ({ notify: (n: unknown) => notify(n), notifyError: vi.fn() }))
+
+const CHOICE: SpawnTaskChoice = { effort: '', fast: false, mode: 'tab', model: '', pin: false, provider: '' }
+
+const OFFER = {
+  cwd: '/repo/.worktrees/feature',
+  ownerStoredSessionId: 'owner',
+  prompt: '/yolo then fix it',
+  title: 'Задача',
+  toolCallId: 'c1'
+}
+
+const ROUTE = { connectionId: 'remote-1', profile: 'work', targetProfile: 'work' }
+
+type OpenOptions = { createOverrides: SessionCreateOverrides; cwd?: string }
+
+/** Mirrors `openNewSessionTile` + the mounted tile: assign the stored id (which
+ *  queues the kickoff), then the tile takes it and settles it as its submit did. */
+function tileThatSends(sent: 'never' | KickoffOutcome) {
+  return vi.fn(async (_dir: 'center', options: OpenOptions) => {
+    options.createOverrides.onComposerScopeAssigned?.('stored-new')
+
+    if (sent !== 'never') {
+      takeTileKickoff('stored-new')?.settle(sent)
+    }
+
+    return 'stored-new'
+  })
+}
+
+describe('spawn-task launcher', () => {
+  let open = tileThatSends('sent')
+
+  function mountLauncher(next = tileThatSends('sent')) {
+    open = next
+    renderHook(() => useSpawnTaskLauncher(open))
+  }
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    resetSpawnTaskStoreForTests()
+    isGitRepoPath.mockClear()
+    startWorkInRepo.mockClear()
+    revParse.mockClear()
+    removeWorktreePath.mockClear()
+    notify.mockClear()
+    $connection.set({ mode: 'local' } as never)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    $connection.set(null)
+    $sessions.set([])
+    $sessionTiles.set([])
+    setSpawnTaskLauncher(null)
+  })
+
+  it('starts the session on the offering tile’s backend and profile, and records it launched', async () => {
+    mountLauncher()
+    $sessionTiles.set([{ ownerRoute: ROUTE, storedSessionId: 'owner' } as never])
+
+    await expect(launchSpawnTask(OFFER, CHOICE, 'scope')).resolves.toBe(true)
+
+    expect(open).toHaveBeenCalledWith('center', expect.objectContaining({ cwd: OFFER.cwd, listed: true, route: ROUTE }))
+    expect($spawnTaskChips.get()[spawnTaskChipKey(OFFER)]).toEqual({ state: 'launched', storedSessionId: 'stored-new' })
+  })
+
+  // The chip owns the whole selection; "Default model" = the profile default
+  // for everything, so not even the fast tier rides along with it.
+  it('creates with the chip’s own selection only, deduping its title', async () => {
+    mountLauncher()
+
+    await launchSpawnTask(OFFER, CHOICE, 'scope')
+    const overrides = open.mock.calls[0]![1].createOverrides
+
+    expect(overrides).toMatchObject({ ownSelection: true, title: OFFER.title, titleDedupe: true })
+    expect(overrides).not.toHaveProperty('fast')
+    expect(overrides).not.toHaveProperty('model')
+
+    await launchSpawnTask(
+      { ...OFFER, toolCallId: 'c2' },
+      { ...CHOICE, fast: true, model: 'gpt-5.5', provider: 'openai' },
+      'scope'
+    )
+    expect(open.mock.calls[1]![1].createOverrides).toMatchObject({
+      fast: true,
+      model: { model: 'gpt-5.5', provider: 'openai' }
+    })
+  })
+
+  it('hands the tile the task text verbatim, slash and all', async () => {
+    let queued: null | string = null
+
+    mountLauncher(
+      vi.fn(async (_dir: 'center', options: OpenOptions) => {
+        options.createOverrides.onComposerScopeAssigned?.('stored-new')
+        const kickoff = takeTileKickoff('stored-new')
+        queued = kickoff?.text ?? null
+        kickoff?.settle('sent')
+
+        return 'stored-new'
+      })
+    )
+
+    await launchSpawnTask(OFFER, CHOICE, 'scope')
+
+    expect(queued).toBe('/yolo then fix it')
+  })
+
+  // A tab that opened but never sent the task is not a launched chip: the
+  // user must be told, and the chip must stay launchable.
+  it('leaves the chip launchable when the tile refuses the first prompt', async () => {
+    mountLauncher(tileThatSends('not-sent'))
+
+    await expect(launchSpawnTask(OFFER, CHOICE, 'scope')).resolves.toBe(false)
+
+    expect($spawnTaskChips.get()[spawnTaskChipKey(OFFER)]).toBeUndefined()
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'error' }))
+  })
+
+  it('gives up on a tile that never mounts, and withdraws the queued prompt', async () => {
+    vi.useFakeTimers()
+    mountLauncher(tileThatSends('never'))
+
+    const launched = launchSpawnTask(OFFER, CHOICE, 'scope')
+    await vi.advanceTimersByTimeAsync(TILE_KICKOFF_DEADLINE_MS + 1)
+
+    await expect(launched).resolves.toBe(false)
+    // A late mount must not send a task the chip already reported as failed.
+    expect(takeTileKickoff('stored-new')).toBeNull()
+  })
+
+  // A launched chip stays launched: a later click (another window, a stale
+  // render) must not open the task a second time.
+  it('never launches a chip that already launched', async () => {
+    mountLauncher()
+
+    await expect(launchSpawnTask(OFFER, CHOICE, 'scope')).resolves.toBe(true)
+    await expect(launchSpawnTask(OFFER, CHOICE, 'scope')).resolves.toBe(false)
+
+    expect(open).toHaveBeenCalledTimes(1)
+  })
+
+  // The backend runs `worktree add` in the MAIN checkout; without an explicit
+  // base a chat living in a feature worktree would branch off main's HEAD.
+  it('branches a worktree off the offering checkout’s HEAD, under a fresh name', async () => {
+    mountLauncher()
+
+    await launchSpawnTask(OFFER, { ...CHOICE, mode: 'worktree' }, 'scope')
+
+    await waitFor(() => expect(open).toHaveBeenCalledTimes(1))
+    expect(revParse).toHaveBeenCalledWith(OFFER.cwd, 'HEAD')
+    expect(startWorkInRepo).toHaveBeenCalledWith(OFFER.cwd, expect.objectContaining({ base: 'abc123' }))
+    expect(open).toHaveBeenCalledWith('center', expect.objectContaining({ cwd: '/repo/.worktrees/x' }))
+  })
+
+  // Git runs on the window's connection; a chat routed elsewhere has its
+  // checkout on another machine.
+  it('refuses a worktree for a chat on another backend, touching no git', async () => {
+    mountLauncher()
+    $sessionTiles.set([{ ownerRoute: ROUTE, storedSessionId: 'owner' } as never])
+
+    await expect(launchSpawnTask(OFFER, { ...CHOICE, mode: 'worktree' }, 'scope')).resolves.toBe(false)
+
+    expect(isGitRepoPath).not.toHaveBeenCalled()
+    expect(startWorkInRepo).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  // The other side of the guard: a chat on THIS machine — routed `local`
+  // while the window descriptor carries no connection id — still gets one.
+  it('makes a worktree for a local-routed chat in an unqualified local window', async () => {
+    mountLauncher()
+    $sessionTiles.set([{ ownerRoute: { connectionId: 'local', profile: 'default' }, storedSessionId: 'owner' } as never])
+
+    await expect(launchSpawnTask(OFFER, { ...CHOICE, mode: 'worktree' }, 'scope')).resolves.toBe(true)
+
+    expect(startWorkInRepo).toHaveBeenCalledTimes(1)
+  })
+
+  // A failed launch must not leave litter a retry would duplicate: the fresh
+  // worktree goes, and so do the tab and its sidebar row.
+  it('rolls back the worktree, tab and row when the first prompt never goes out', async () => {
+    mountLauncher(
+      vi.fn(async (_dir: 'center', options: OpenOptions) => {
+        $sessions.set([{ id: 'stored-new' } as never])
+        options.createOverrides.onComposerScopeAssigned?.('stored-new')
+        takeTileKickoff('stored-new')?.settle('not-sent')
+
+        return 'stored-new'
+      })
+    )
+    $sessionTiles.set([{ storedSessionId: 'stored-new' } as never])
+
+    await expect(launchSpawnTask(OFFER, { ...CHOICE, mode: 'worktree' }, 'scope')).resolves.toBe(false)
+
+    expect(removeWorktreePath).toHaveBeenCalledWith(OFFER.cwd, '/repo/.worktrees/x', { force: true })
+    expect($sessions.get().some(session => session.id === 'stored-new')).toBe(false)
+    expect($sessionTiles.get().some(tile => tile.storedSessionId === 'stored-new')).toBe(false)
+    // Discarded, not closed: ⌘⇧T must not bring back a tab declared dead.
+    reopenLastClosedTile()
+    expect($sessionTiles.get().some(tile => tile.storedSessionId === 'stored-new')).toBe(false)
+  })
+
+  // The prompt left but its reply was lost (socket drop): the turn may be
+  // running in that worktree. Nothing is rolled back and the chip counts as
+  // launched, so a retry cannot run the task twice.
+  it('keeps everything when the first prompt’s outcome is unknown', async () => {
+    mountLauncher(tileThatSends('unknown'))
+    $sessions.set([{ id: 'stored-new' } as never])
+
+    await expect(launchSpawnTask(OFFER, { ...CHOICE, mode: 'worktree' }, 'scope')).resolves.toBe(true)
+
+    expect(removeWorktreePath).not.toHaveBeenCalled()
+    expect($sessions.get().some(session => session.id === 'stored-new')).toBe(true)
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'warning' }))
+  })
+
+  // Without the offering checkout's HEAD the backend would branch off the
+  // main checkout — refuse rather than silently use the wrong base.
+  it('refuses a worktree when the offering checkout’s HEAD cannot be read', async () => {
+    mountLauncher()
+    revParse.mockResolvedValueOnce(null as never)
+
+    await expect(launchSpawnTask(OFFER, { ...CHOICE, mode: 'worktree' }, 'scope')).resolves.toBe(false)
+
+    expect(startWorkInRepo).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  // A remote window: a chat routed to THIS machine (`local`) is on another
+  // backend from the window's point of view.
+  it('refuses a worktree for a local-routed chat in a remote window', async () => {
+    mountLauncher()
+    $connection.set({ connectionId: 'remote-1', mode: 'remote' } as never)
+    $sessionTiles.set([{ ownerRoute: { connectionId: 'local', profile: 'default' }, storedSessionId: 'owner' } as never])
+
+    await expect(launchSpawnTask(OFFER, { ...CHOICE, mode: 'worktree' }, 'scope')).resolves.toBe(false)
+
+    expect(startWorkInRepo).not.toHaveBeenCalled()
+  })
+
+  // A window with no tile tree (HUD) would open the session and never send
+  // the task: it registers no launcher at all.
+  it('registers no launcher in a window that cannot host tiles', () => {
+    renderHook(() => useSpawnTaskLauncher(open, false))
+
+    expect($spawnTaskLauncherReady.get()).toBe(false)
+  })
+
+  // The default comes from the window's own kind — what the app wiring uses.
+  it('registers no launcher by default in the HUD window', async () => {
+    window.history.replaceState(null, '', '/?win=hud')
+    vi.resetModules()
+
+    try {
+      const fresh = await import('./use-spawn-task-launcher')
+      const store = await import('@/store/spawn-task')
+      renderHook(() => fresh.useSpawnTaskLauncher(open))
+
+      expect(store.$spawnTaskLauncherReady.get()).toBe(false)
+    } finally {
+      window.history.replaceState(null, '', '/')
+    }
+  })
+
+  it('never reuses a worktree name, even for titles that slug to nothing', () => {
+    expect(spawnTaskWorktreeName('Задача', 1)).not.toBe(spawnTaskWorktreeName('Задача', 2))
+    expect(spawnTaskWorktreeName('Задача', 1)).toMatch(/^task-/)
+    expect(spawnTaskWorktreeName('Fix Login!', 36)).toBe('fix-login-10')
+  })
+})

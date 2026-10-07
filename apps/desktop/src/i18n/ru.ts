@@ -4117,6 +4117,24 @@ export const ru = defineLocale({
       requirementsLabel: 'Требования',
       credentialsHeading: 'Учётные данные'
     },
+    spawnTask: {
+      defaultModel: 'Модель по умолчанию',
+      modelLabel: 'Модель для новой сессии',
+      mode: { tab: 'Запустить во вкладке', worktree: 'Запустить в worktree' },
+      dismiss: 'Скрыть',
+      pin: 'Закрепить',
+      dismissed: title => `Побочная задача скрыта: ${title}`,
+      launched: 'Запущено в новой сессии',
+      openSession: 'Открыть',
+      showPrompt: 'Показать промпт',
+      hidePrompt: 'Скрыть промпт',
+      launchFailed: 'Не удалось запустить побочную задачу',
+      kickoffFailed: 'Задача не дошла до новой сессии; чип можно запустить снова',
+      kickoffUnknown: 'Связь оборвалась при отправке задачи; возможно, она уже выполняется в новой вкладке',
+      worktreeNeedsRepo: 'Для worktree нужен git-репозиторий. Запустите во вкладке.',
+      worktreeNoBase: 'Не удалось прочитать текущий коммит этого checkout, worktree не создан',
+      worktreeOtherBackend: 'Worktree можно создать только для чата на бэкенде этого окна; запустите задачу в новой вкладке'
+    },
     mcpSetup: {
       installTitle: 'Добавить MCP-серверы',
       enableTitle: 'Включить MCP-серверы',

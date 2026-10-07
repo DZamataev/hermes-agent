@@ -5413,6 +5413,215 @@ describe('openNewSessionTile workspace target', () => {
     expect(createParams).not.toHaveProperty('cwd')
   })
 
+  // The spawn-task chip opens its tile on the model the user picked ON THE
+  // CHIP, not the composer's sticky pick, and needs the stored id back to
+  // hand the task to the tile.
+  it('pins the caller-picked model over the composer selection and returns the stored id', async () => {
+    const assigned: { scope: string; tileMounted: boolean }[] = []
+
+    setCurrentModel('ambient-model')
+    setCurrentProvider('ambient-provider')
+    setCurrentModelSource('manual')
+    setCurrentReasoningEffort('low')
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return {
+          info: { cwd: '/repo', model: 'chip-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'stored-chip-tile'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    let stored: null | string | undefined
+
+    try {
+      await act(async () => {
+        stored = await handle!.openNewSessionTile('center', {
+          createOverrides: {
+            fast: false,
+            model: { model: 'chip-model', provider: 'chip-provider' },
+            // The tile must find its first prompt waiting on its first render:
+            // the handoff fires with the stored id BEFORE the tile exists.
+            onComposerScopeAssigned: scope =>
+              assigned.push({ scope, tileMounted: $sessionTiles.get().some(t => t.storedSessionId === scope) }),
+            reasoningEffort: 'high',
+            title: 'Flaky login'
+          },
+          cwd: '/repo',
+          listed: true
+        })
+      })
+    } finally {
+      setCurrentModelSource('')
+      setCurrentModel('')
+      setCurrentProvider('')
+      setCurrentReasoningEffort('')
+    }
+
+    expect(stored).toBe('stored-chip-tile')
+    expect(assigned).toEqual([{ scope: 'stored-chip-tile', tileMounted: false }])
+    // The sidebar row and the tab name the task from the first paint.
+    expect($sessions.get().find(session => session.id === 'stored-chip-tile')?.title).toBe('Flaky login')
+    expect(createParams).toMatchObject({
+      fast: false,
+      model: 'chip-model',
+      provider: 'chip-provider',
+      reasoning_effort: 'high',
+      title: 'Flaky login'
+    })
+    expect(createParams).not.toHaveProperty('title_dedupe')
+  })
+
+  // The chip owns its whole selection: "Default model" and an unset effort
+  // mean the PROFILE's defaults, never the composer's sticky pick.
+  it('a create with its own selection ships none of the composer pick', async () => {
+    setCurrentModel('ambient-model')
+    setCurrentProvider('ambient-provider')
+    setCurrentModelSource('manual')
+    setCurrentReasoningEffort('low')
+    setCurrentFastMode(true)
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return {
+          info: { cwd: '/repo', model: 'profile-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'stored-chip-default'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    try {
+      await act(async () => {
+        await handle!.openNewSessionTile('center', {
+          createOverrides: { fast: false, ownSelection: true, title: 'Default pick', titleDedupe: true },
+          cwd: '/repo',
+          listed: true
+        })
+      })
+    } finally {
+      setCurrentModelSource('')
+      setCurrentModel('')
+      setCurrentProvider('')
+      setCurrentReasoningEffort('')
+      setCurrentFastMode(false)
+    }
+
+    expect(createParams).not.toHaveProperty('model')
+    expect(createParams).not.toHaveProperty('provider')
+    expect(createParams).not.toHaveProperty('reasoning_effort')
+    // The model-proposed title rides with its dedupe flag onto the wire.
+    expect(createParams).toMatchObject({ fast: false, title: 'Default pick', title_dedupe: true })
+  })
+
+  // Overrides alone do not own the selection: a caller passing only a title
+  // (no `ownSelection`) still gets the composer's sticky manual pick.
+  it('overrides without ownSelection keep the composer’s manual pick', async () => {
+    setConnection({ mode: 'local' } as never)
+    setCurrentModel('ambient-model')
+    setCurrentProvider('ambient-provider')
+    setCurrentModelSource('manual')
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return {
+          info: { cwd: '/repo', model: 'ambient-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'stored-titled-tile'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    try {
+      await act(async () => {
+        await handle!.openNewSessionTile('center', { createOverrides: { title: 'Named' }, cwd: '/repo', listed: true })
+      })
+    } finally {
+      setCurrentModelSource('')
+      setCurrentModel('')
+      setCurrentProvider('')
+    }
+
+    expect(createParams).toMatchObject({ model: 'ambient-model', provider: 'ambient-provider', title: 'Named' })
+  })
+
+  // The other half of the contract: an ordinary new tab (no own selection)
+  // still opens on the composer's sticky manual pick.
+  it('an ordinary new tile still carries the composer’s manual pick', async () => {
+    // A known window owner: with none, the composer selection is not
+    // persisted at all and there would be nothing to carry.
+    setConnection({ mode: 'local' } as never)
+    setCurrentModel('ambient-model')
+    setCurrentProvider('ambient-provider')
+    setCurrentModelSource('manual')
+    setCurrentReasoningEffort('low')
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return {
+          info: { cwd: '/repo', model: 'ambient-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'stored-plain-tile'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    try {
+      await act(async () => {
+        await handle!.openNewSessionTile('center', { cwd: '/repo', listed: true })
+      })
+    } finally {
+      setCurrentModelSource('')
+      setCurrentModel('')
+      setCurrentProvider('')
+      setCurrentReasoningEffort('')
+    }
+
+    expect(createParams).toMatchObject({ model: 'ambient-model', provider: 'ambient-provider' })
+  })
+
   it('omits the manual ambient composer selection from a Bot-workspace tile so the bot profile defaults apply', async () => {
     setCurrentModel('ambient-model')
     setCurrentProvider('ambient-provider')

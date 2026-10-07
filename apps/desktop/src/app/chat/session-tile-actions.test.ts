@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError, JsonRpcRequestChannel } from '@hermes/shared'
 import { renderHook } from '@testing-library/react'
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -14,7 +15,11 @@ const { $activeSessionId, $sessions, setSessions } = await import('@/store/sessi
 const { $sessionStates, $sessionTiles, clearAllSessionStates, publishSessionState, setSessionTileDelegate } =
   await import('@/store/session-states')
 
-const { listTileSessionRow, useSessionTileActions } = await import('./session-tile-actions')
+const { listTileSessionRow, useSessionTileActions, useTileKickoff } = await import('./session-tile-actions')
+
+const { queueTileKickoff } = await import('@/store/spawn-task')
+
+const { requestDesktopOnboardingForCredentialWarning } = await import('@/store/onboarding')
 
 const RUNTIME_SESSION_ID = 'rt-tile-current'
 const STORED_SESSION_ID = 'stored-tile-db'
@@ -81,8 +86,11 @@ describe('session tile optimistic owner metadata', () => {
 // withSessionNotFoundResume) — see use-prompt-actions/index.test.tsx's
 // "sleep/wake session recovery" suite for the same regression on the
 // primary chat's own reloadFromMessage.
+const sessionTileDelegateExecuteSlash = vi.fn(async () => undefined)
+
 describe('useSessionTileActions sleep/wake session recovery', () => {
   beforeEach(() => {
+    sessionTileDelegateExecuteSlash.mockClear()
     $activeSessionId.set('foreground-runtime')
     setSessions([])
     $sessionTiles.set([{ runtimeId: RUNTIME_SESSION_ID, storedSessionId: STORED_SESSION_ID }])
@@ -90,7 +98,7 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
       archiveSession: vi.fn(async () => undefined),
       branchSession: vi.fn(async () => undefined),
       deleteSession: vi.fn(async () => undefined),
-      executeSlash: vi.fn(async () => undefined),
+      executeSlash: sessionTileDelegateExecuteSlash,
       interruptSession: vi.fn(async () => undefined),
       resumeTile: vi.fn(async () => RUNTIME_SESSION_ID),
       submitToSession: vi.fn(async () => undefined),
@@ -224,6 +232,266 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     expect(calls[2]?.params).toMatchObject({ session_id: RECOVERED_SESSION_ID })
     expect($sessionTiles.get()[0]?.runtimeId).toBe(RECOVERED_SESSION_ID)
     expect($activeSessionId.get()).toBe('foreground-runtime')
+  })
+
+  // A spawn-task chip's first prompt is model-written: a leading `/` must be
+  // sent as text, never dispatched as a slash command (`/yolo` would turn on
+  // auto-approval in the new session and the task itself would never run).
+  it('sends literal text as a prompt even when it looks like a slash command', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    requestGatewayMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {}
+    })
+
+    const { result } = renderTileActions()
+
+    await act(async () => {
+      await result.current.submitLiteralText('/yolo then fix the flaky login test')
+    })
+
+    expect(sessionTileDelegateExecuteSlash).not.toHaveBeenCalled()
+    expect(calls.find(c => c.method === 'prompt.submit')?.params).toMatchObject({
+      text: '/yolo then fix the flaky login test'
+    })
+  })
+
+  // The tile consumes a chip's queued first prompt through the LITERAL path,
+  // once, and settles it with whether the prompt really went out.
+  it('a tile sends its queued spawn-task prompt literally, once, and reports it sent', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    requestGatewayMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {}
+    })
+
+    const { sent } = queueTileKickoff(STORED_SESSION_ID, '/yolo then fix the flaky login test')
+
+    const { rerender } = renderHook(() => {
+      const actions = useSessionTileActions({
+        requestGateway: requestGatewayMock,
+        runtimeId: RUNTIME_SESSION_ID,
+        scope: MAIN_COMPOSER_SCOPE,
+        storedSessionId: STORED_SESSION_ID
+      })
+
+      useTileKickoff(STORED_SESSION_ID, actions)
+    })
+
+    await act(async () => {
+      await expect(sent).resolves.toBe('sent')
+    })
+    rerender()
+
+    expect(sessionTileDelegateExecuteSlash).not.toHaveBeenCalled()
+    expect(calls.filter(c => c.method === 'prompt.submit').map(c => c.params?.text)).toEqual([
+      '/yolo then fix the flaky login test'
+    ])
+  })
+
+  // A submit that refused (here: the profile has no provider, so onboarding
+  // opens instead of a doomed send) must settle the kickoff as NOT sent, and
+  // the prompt must be gone from the queue so a remount cannot resend it.
+  it('reports a refused first prompt as not sent, and consumes it once', async () => {
+    const calls: string[] = []
+
+    requestGatewayMock.mockImplementation(async (method: string) => {
+      calls.push(method)
+
+      return {}
+    })
+    requestDesktopOnboardingForCredentialWarning("No API key configured for provider 'x'. First message will fail.")
+
+    const { sent } = queueTileKickoff(STORED_SESSION_ID, 'fix the flaky login test')
+
+    const useKickoffTile = () => {
+      const actions = useSessionTileActions({
+        requestGateway: requestGatewayMock,
+        runtimeId: RUNTIME_SESSION_ID,
+        scope: MAIN_COMPOSER_SCOPE,
+        storedSessionId: STORED_SESSION_ID
+      })
+
+      useTileKickoff(STORED_SESSION_ID, actions)
+    }
+
+    const first = renderHook(useKickoffTile)
+
+    await act(async () => {
+      await expect(sent).resolves.toBe('not-sent')
+    })
+    first.unmount()
+
+    // Remount (StrictMode, tab move): nothing left to send. The onboarding
+    // gate is spent, so a second take WOULD reach the wire — flush and check.
+    await act(async () => {
+      renderHook(useKickoffTile)
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+
+    expect(calls).not.toContain('prompt.submit')
+  })
+  // The prompt frame left, but the socket dropped before the reply: the
+  // backend may be running the turn. That is NOT a refusal — the launcher
+  // must not roll back (and delete the worktree under) a live turn.
+  it('reports a first prompt whose reply was lost as unknown, a gateway refusal as not sent', async () => {
+    const useKickoffTile = () => {
+      const actions = useSessionTileActions({
+        requestGateway: requestGatewayMock,
+        runtimeId: RUNTIME_SESSION_ID,
+        scope: MAIN_COMPOSER_SCOPE,
+        storedSessionId: STORED_SESSION_ID
+      })
+
+      useTileKickoff(STORED_SESSION_ID, actions)
+    }
+
+    // Through a REAL channel, so "in flight" is decided by the transport.
+    const outcomeOf = async (channel: JsonRpcRequestChannel, afterSend?: () => void) => {
+      requestGatewayMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+        if (method !== 'prompt.submit') {
+          return {}
+        }
+
+        const call = channel.request(method, params)
+        afterSend?.()
+
+        return await call
+      })
+
+      const outcome = queueTileKickoff(STORED_SESSION_ID, 'fix it').sent
+      const tile = renderHook(useKickoffTile)
+      let result: unknown
+
+      await act(async () => {
+        result = await outcome
+      })
+      tile.unmount()
+
+      return result
+    }
+
+    // The socket dropped after the frame left: the turn may be running.
+    const live = new JsonRpcRequestChannel({ requestTimeoutMs: 60_000 })
+    live.attach({ send: () => undefined } as never)
+    expect(await outcomeOf(live, () => live.detach(new Error('gateway connection closed')))).toBe('unknown')
+
+    // Not connected: the channel refuses before any frame leaves.
+    expect(await outcomeOf(new JsonRpcRequestChannel({ requestTimeoutMs: 60_000 }))).toBe('not-sent')
+
+    // The pipeline retries on its own (timeout → resume → resubmit). An
+    // earlier frame that LEFT may be running even if the retry is refused.
+    {
+      const channel = new JsonRpcRequestChannel({ requestTimeoutMs: 60_000 })
+      channel.attach({ send: () => undefined } as never)
+      let submits = 0
+
+      requestGatewayMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+        if (method === 'session.resume') {
+          return { session_id: RECOVERED_SESSION_ID }
+        }
+
+        if (method !== 'prompt.submit') {
+          return {}
+        }
+
+        submits += 1
+
+        if (submits === 1) {
+          return await channel.request(method, params, 5) // frame left; the reply times out
+        }
+
+        throw new JsonRpcGatewayError('session already has a live owner', { code: 4090 })
+      })
+
+      const retried = queueTileKickoff(STORED_SESSION_ID, 'fix it').sent
+      const tile = renderHook(useKickoffTile)
+
+      await act(async () => {
+        await expect(retried).resolves.toBe('unknown')
+      })
+      tile.unmount()
+      expect(submits).toBe(2)
+    }
+
+    // Each send starts clean: a lost frame of an EARLIER send must not make a
+    // later, plainly refused one look in flight. (Same tile, two sends.)
+    {
+      const channel = new JsonRpcRequestChannel({ requestTimeoutMs: 60_000 })
+      channel.attach({ send: () => undefined } as never)
+      let submits = 0
+
+      requestGatewayMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+        if (method !== 'prompt.submit') {
+          return {}
+        }
+
+        submits += 1
+
+        if (submits === 1) {
+          const call = channel.request(method, params)
+          channel.detach(new Error('gateway connection closed'))
+
+          return await call
+        }
+
+        throw new JsonRpcGatewayError('session busy', { code: 4009 })
+      })
+
+      const tile = renderHook(() =>
+        useSessionTileActions({
+          requestGateway: requestGatewayMock,
+          runtimeId: RUNTIME_SESSION_ID,
+          scope: MAIN_COMPOSER_SCOPE,
+          storedSessionId: STORED_SESSION_ID
+        })
+      )
+
+      await act(async () => {
+        await expect(tile.result.current.submitLiteralText('first')).resolves.toBe('unknown')
+      })
+      await act(async () => {
+        await expect(tile.result.current.submitLiteralText('second')).resolves.toBe('not-sent')
+      })
+      tile.unmount()
+    }
+
+    // A secondary backend reconnecting refuses before sending: not sent.
+    requestGatewayMock.mockImplementation(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new Error('Backend for "x" is reconnecting; retry after it settles.')
+      }
+
+      return {}
+    })
+
+    const reconnecting = queueTileKickoff(STORED_SESSION_ID, 'fix it').sent
+    const tile = renderHook(useKickoffTile)
+
+    await act(async () => {
+      await expect(reconnecting).resolves.toBe('not-sent')
+    })
+    tile.unmount()
+
+    // A typed gateway refusal: definite answer, not sent.
+    requestGatewayMock.mockImplementation(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new JsonRpcGatewayError('session busy', { code: 4009 })
+      }
+
+      return {}
+    })
+
+    const refused = queueTileKickoff(STORED_SESSION_ID, 'fix it').sent
+    renderHook(useKickoffTile)
+
+    await act(async () => {
+      await expect(refused).resolves.toBe('not-sent')
+    })
   })
 })
 

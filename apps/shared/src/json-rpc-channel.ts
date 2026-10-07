@@ -74,6 +74,37 @@ export class JsonRpcGatewayError extends Error {
   }
 }
 
+// Errors that rejected a request whose frame had already left. A side table,
+// not a property or a copy: the error object a caller receives keeps its exact
+// identity, class, own properties and `cause`. Sharing is sound — one detach
+// error rejects only calls that were all in flight; a never-sent rejection is
+// always a fresh error.
+const inFlightErrors = new WeakSet<object>()
+
+/** True for a failure of a request whose frame was already handed to the
+ *  transport (socket dropped before the reply, or the reply timed out): the
+ *  peer may have acted on it. A rejection before sending is never in flight. */
+export function isRequestInFlightError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && inFlightErrors.has(error)
+}
+
+function markInFlight<E extends Error>(error: E): E {
+  inFlightErrors.add(error)
+
+  return error
+}
+
+/** For a layer that RETRIES a request on its own (reconnect-and-resend): if an
+ *  earlier attempt's frame left, the logical request is in flight whatever the
+ *  retry ends with — carry that onto the error the caller finally sees. */
+export function carryRequestInFlight<E>(earlier: unknown, error: E): E {
+  if (isRequestInFlightError(earlier) && typeof error === 'object' && error !== null) {
+    inFlightErrors.add(error)
+  }
+
+  return error
+}
+
 /** JSON-RPC "method not found" (tui_gateway/server.py::dispatch `_err(rid, -32601, …)`). */
 export const JSON_RPC_METHOD_NOT_FOUND = -32601
 
@@ -292,7 +323,7 @@ export class JsonRpcRequestChannel {
             // at an error toast) can tell whether the default window fired
             // or a per-call override — e.g. /compress opts into 120s.
             const seconds = Math.round(timeoutMs / 1000)
-            reject(new Error(`request timed out after ${seconds}s: ${method}`))
+            reject(markInFlight(new Error(`request timed out after ${seconds}s: ${method}`)))
           }
         }, timeoutMs)
 
@@ -597,7 +628,7 @@ export class JsonRpcRequestChannel {
       }
 
       this.pending.delete(id)
-      call.reject(error)
+      call.reject(markInFlight(error))
     }
   }
 }

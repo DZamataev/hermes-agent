@@ -14,6 +14,7 @@ import { ClarifyTool } from '@/components/assistant-ui/clarify'
 import { ConnectorExecution, ConnectorTool } from '@/components/assistant-ui/connector-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
+import { SpawnTaskTool } from '@/components/assistant-ui/spawn-task-tool'
 import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
@@ -101,7 +102,8 @@ const TOOL_CARDS: Record<CardToolName, FC<TimelineToolCallProps>> = {
   delegate_task: DelegateToolPart,
   image_generate: ImageGenerateTool,
   manage_catalog: CatalogInstallTool,
-  manage_connections: ConnectionsToolPart
+  manage_connections: ConnectionsToolPart,
+  spawn_task: SpawnTaskTool
 }
 
 // A failure the user still has to see. The gateway's tool.complete carries the

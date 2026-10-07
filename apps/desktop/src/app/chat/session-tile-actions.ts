@@ -9,8 +9,8 @@
  */
 
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
-import { SLASH_COMMAND_RE } from '@hermes/shared'
-import { useCallback, useMemo, useRef } from 'react'
+import { isRequestInFlightError, SLASH_COMMAND_RE } from '@hermes/shared'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import type { ClientSessionState } from '@/app/types'
 import type { WorkspaceMode } from '@/contrib/types'
@@ -38,6 +38,7 @@ import {
   sessionTileOwnerRoute
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
+import { type KickoffOutcome, takeTileKickoff } from '@/store/spawn-task'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
@@ -186,6 +187,12 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
   // Tile session RPCs must follow the tile's composite owner even when the
   // active gateway has moved to a same-named profile on another source.
+  // How this tile's `prompt.submit` attempts for ONE send ended: `lost` = a
+  // frame left but no reply came (socket drop, timeout), so the turn may be
+  // running — and it stays `lost` across the pipeline's own retries. Reset
+  // per send by `submitLiteralText`.
+  const lastSubmitRef = useRef<'answered' | 'lost' | 'none'>('none')
+
   const requestSessionGateway = useCallback(
     <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
       const knownOwner: SessionOwnerScope =
@@ -196,7 +203,26 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       // across same-named sources.
       const owner: SessionOwnerScope = knownOwner && typeof knownOwner === 'object' ? knownOwner : undefined
 
-      return requestForSessionProfile<T>(owner, requestGateway, method, params ?? {}, timeoutMs, signal)
+      const request = requestForSessionProfile<T>(owner, requestGateway, method, params ?? {}, timeoutMs, signal)
+
+      if (method === 'prompt.submit') {
+        request.then(
+          () => undefined, // a success returns `sent` without reading the ref
+          // Only a frame that LEFT can be running: a refusal before sending
+          // (not connected, a secondary reconnecting, no route) is not-sent.
+          // Sticky: the submit pipeline retries (resume, reconnect), and a
+          // later definite refusal does not un-send an earlier lost frame.
+          error => {
+            if (isRequestInFlightError(error)) {
+              lastSubmitRef.current = 'lost'
+            } else if (lastSubmitRef.current !== 'lost') {
+              lastSubmitRef.current = 'answered'
+            }
+          }
+        )
+      }
+
+      return request
     },
     [requestGateway]
   )
@@ -334,6 +360,25 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       return await submitPromptText(rawText, options)
     },
     [listTileSession, scope.attachments.$attachments, submitPromptText]
+  )
+
+  // Text sent as a PROMPT — never parsed as a slash command, whatever it starts
+  // with (a spawn-task chip's first prompt is model-written). It is an
+  // ordinary prompt otherwise: the gateway still expands `@file:` / `@url:` /
+  // `@diff` references in it, as for any typed prompt.
+  const submitLiteralText = useCallback(
+    async (rawText: string): Promise<KickoffOutcome> => {
+      listTileSession(rawText.trim())
+      lastSubmitRef.current = 'none'
+
+      if (await submitPromptText(rawText, { attachments: [] })) {
+        return 'sent'
+      }
+
+      // Read through a widening cast: the await above may have updated it.
+      return (lastSubmitRef.current as 'answered' | 'lost' | 'none') === 'lost' ? 'unknown' : 'not-sent'
+    },
+    [listTileSession, submitPromptText]
   )
 
   const cancelRun = useCallback(async () => {
@@ -699,6 +744,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       reloadFromMessage,
       restoreToMessage,
       steerPrompt,
+      submitLiteralText,
       submitText
     }),
     [
@@ -710,7 +756,29 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       reloadFromMessage,
       restoreToMessage,
       steerPrompt,
+      submitLiteralText,
       submitText
     ]
   )
+}
+
+/**
+ * A spawn-task chip opened this tile with a task to run: send it once, as a
+ * prompt, and report back whether it went out. Literal on purpose — the text
+ * is model-written, and a leading `/` must never run a slash command
+ * (`/yolo …`) in the new session.
+ */
+export function useTileKickoff(
+  storedSessionId: string,
+  actions: Pick<ReturnType<typeof useSessionTileActions>, 'submitLiteralText'>
+): void {
+  const submitLiteralText = actions.submitLiteralText
+
+  useEffect(() => {
+    const kickoff = takeTileKickoff(storedSessionId)
+
+    if (kickoff) {
+      void submitLiteralText(kickoff.text).then(kickoff.settle, () => kickoff.settle('not-sent'))
+    }
+  }, [storedSessionId, submitLiteralText])
 }

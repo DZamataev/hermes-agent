@@ -5767,6 +5767,24 @@ export const esOverrides = {
       requirementsLabel: 'Requiere',
       credentialsHeading: 'Credenciales'
     },
+    spawnTask: {
+      defaultModel: 'Modelo predeterminado',
+      modelLabel: 'Modelo para la nueva sesión',
+      mode: { tab: 'Iniciar en pestaña nueva', worktree: 'Iniciar en worktree' },
+      dismiss: 'Descartar',
+      pin: 'Fijar',
+      dismissed: title => `Tarea secundaria descartada: ${title}`,
+      launched: 'Iniciada en una sesión nueva',
+      openSession: 'Abrir',
+      showPrompt: 'Mostrar prompt',
+      hidePrompt: 'Ocultar prompt',
+      launchFailed: 'No se pudo iniciar la tarea secundaria',
+      kickoffFailed: 'La tarea secundaria no llegó a su nueva sesión; el chip sigue disponible',
+      kickoffUnknown: 'La conexión se cortó al enviar la tarea; puede que ya se esté ejecutando en su nueva pestaña',
+      worktreeNeedsRepo: 'Un worktree necesita un repositorio git. Iníciala en una pestaña nueva.',
+      worktreeNoBase: 'No se pudo leer el commit actual de este checkout; no se creó el worktree',
+      worktreeOtherBackend: 'Solo se puede crear un worktree para un chat en el backend de esta ventana; iníciala en una pestaña nueva'
+    },
     mcpSetup: {
       installTitle: 'Añadir servidores MCP',
       enableTitle: 'Activar servidores MCP',

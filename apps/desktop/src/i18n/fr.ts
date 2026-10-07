@@ -5789,6 +5789,24 @@ export const frOverrides = {
       requirementsLabel: 'Nécessite',
       credentialsHeading: 'Identifiants'
     },
+    spawnTask: {
+      defaultModel: 'Modèle par défaut',
+      modelLabel: 'Modèle pour la nouvelle session',
+      mode: { tab: 'Lancer dans un nouvel onglet', worktree: 'Lancer dans un worktree' },
+      dismiss: 'Ignorer',
+      pin: 'Épingler',
+      dismissed: title => `Tâche annexe ignorée : ${title}`,
+      launched: 'Lancée dans une nouvelle session',
+      openSession: 'Ouvrir',
+      showPrompt: 'Afficher le prompt',
+      hidePrompt: 'Masquer le prompt',
+      launchFailed: 'Impossible de lancer la tâche annexe',
+      kickoffFailed: 'La tâche annexe n’a pas atteint sa nouvelle session ; la puce reste disponible',
+      kickoffUnknown: 'La connexion a été coupée pendant l’envoi ; la tâche tourne peut-être dans son nouvel onglet',
+      worktreeNeedsRepo: 'Un worktree nécessite un dépôt git. Lancez-la plutôt dans un nouvel onglet.',
+      worktreeNoBase: 'Impossible de lire le commit courant de ce dépôt, aucun worktree créé',
+      worktreeOtherBackend: 'Un worktree ne peut être créé que pour un chat sur le backend de cette fenêtre ; lancez-la dans un nouvel onglet'
+    },
     mcpSetup: {
       installTitle: 'Ajouter des serveurs MCP',
       enableTitle: 'Activer des serveurs MCP',

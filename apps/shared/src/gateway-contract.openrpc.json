@@ -29647,6 +29647,11 @@
             "default": null,
             "title": "Title"
           },
+          "title_dedupe": {
+            "default": false,
+            "title": "Title Dedupe",
+            "type": "boolean"
+          },
           "model": {
             "anyOf": [
               {

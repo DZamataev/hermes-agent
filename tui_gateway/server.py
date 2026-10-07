@@ -2101,6 +2101,8 @@ def _tool_progress_enabled(sid: str) -> bool:
 _TOOL_LIFECYCLE_UI_TOOLS = frozenset({
     "clarify", "manage_connections", "setup_mcp",
     "image_generate", "manage_catalog", "delegate_task",
+    # A side-task offer the user launches from its chip.
+    "spawn_task",
     # File edits are the turn's deliverable — the diff card the user reviews.
     "edit_file", "patch", "write_file",
 })

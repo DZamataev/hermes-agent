@@ -1,0 +1,173 @@
+"""``spawn_task``: the agent offers a side task; the desktop renders it as a chip.
+
+The tool never starts anything. The user picks the model and the launch mode
+on the chip, so the contract here is: valid args come back as an "offered"
+receipt the model can read, invalid args are refused, and the tool lives only
+in the desktop surface toolset.
+"""
+
+import json
+
+from tools import spawn_task_tool as st
+from tools.registry import registry
+from toolsets import _HERMES_CORE_TOOLS, TOOLSETS
+
+
+def test_offers_the_task_without_starting_it():
+    out = json.loads(st.spawn_task_tool(
+        title="  Fix flaky login test ", prompt="Investigate tests/test_login.py flake.",
+        tldr="Login test flakes on CI"))
+
+    assert out["success"] is True
+    assert out["status"] == "offered"
+    assert out["title"] == "Fix flaky login test"
+
+
+def test_refuses_a_chip_with_nothing_to_run():
+    for title, prompt in (("", "do it"), ("Title", "   ")):
+        out = json.loads(st.spawn_task_tool(title=title, prompt=prompt))
+        assert "error" in out
+
+
+def test_bot_mode_names_are_refused():
+    """Bot Mode sweeps "Agent Inbox" / "Group: …" rows out of a bot profile's
+    sidebar; a side task titled so would vanish five minutes after launch."""
+    for title in ("Agent Inbox", " agent inbox ", "Group: release", "GROUP: x"):
+        assert "error" in json.loads(st.spawn_task_tool(title=title, prompt="p")), title
+    assert json.loads(st.spawn_task_tool(title="Grouping fix", prompt="p"))["success"] is True
+
+
+def test_non_string_arguments_get_a_clear_refusal():
+    """The model may send a number or a list; it must hear what is missing,
+    not a stack trace."""
+    for title, prompt in ((123, "p"), ("Title", ["a"]), (None, None)):
+        out = json.loads(st.spawn_task_tool(title=title, prompt=prompt))
+        assert "spawn_task needs" in out["error"], out
+
+
+def test_title_cannot_claim_a_reserved_session_name_or_overflow():
+    """The title becomes the new session's title: the canonical Bot Chat name
+    is a registry key, and the store silently drops titles over its limit."""
+    from hermes_state import SessionDB
+
+    assert "error" in json.loads(st.spawn_task_tool(title=" bot chat ", prompt="p"))
+    long = json.loads(st.spawn_task_tool(title="x" * 300, prompt="p"))
+    assert long["success"] is True
+    assert len(long["title"]) <= SessionDB.MAX_TITLE_LENGTH
+
+
+def test_a_lineage_shaped_title_cannot_hijack_name_lookups(tmp_path):
+    """"<t> #N" reads as a continuation of "<t>" and wins `-c "<t>"` / `/resume`;
+    a model-written one must not take over the user's own session."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("mine", source="desktop")
+    db.set_session_title("mine", "Refactor auth")
+
+    for i, proposed in enumerate(["Refactor auth #2", "Refactor auth #followup", "Refactor auth #2b",
+                                  "Refactor auth #", "Refactor auth #a #b"]):
+        out = json.loads(st.spawn_task_tool(title=proposed, prompt="p"))
+        assert " #" not in out["title"], out["title"]
+        db.create_session(f"side-{i}", source="desktop")
+        try:
+            db.set_session_title(f"side-{i}", out["title"])
+        except ValueError:
+            pass  # taken: the dedupe path renames it; either way it is not a "#" continuation
+        assert db.resolve_session_by_title("Refactor auth") == "mine", proposed
+
+    assert json.loads(st.spawn_task_tool(title="Refactor auth #2", prompt="p"))["title"] == "Refactor auth (2)"
+
+
+def test_the_lineage_rewrite_never_pushes_a_title_past_the_store_limit(tmp_path):
+    from hermes_state import SessionDB
+
+    out = json.loads(st.spawn_task_tool(title="a" * 90 + " fix #urgent", prompt="p"))
+    assert len(out["title"]) <= SessionDB.MAX_TITLE_LENGTH
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s", source="desktop")
+    assert db.set_session_title("s", out["title"])  # the store accepts the receipt as-is
+
+
+def test_delegated_children_never_get_it():
+    """A child's chip would render nowhere; the model must not be told the user
+    sees one. Checked through the real schema assembly, not the deny list —
+    a name in DELEGATE_BLOCKED_TOOLS alone does not strip a tool out of a
+    mixed toolset like ``desktop_ui``. No cache resets between the builds: a
+    desktop session builds first, then delegates (and the reverse, a child in
+    one session then a new desktop session) inside the check_fn cache TTL."""
+    from agent.delegation_context import delegated_child_context
+    from model_tools import _clear_tool_defs_cache, get_tool_definitions
+    from tools.registry import invalidate_check_fn_cache
+
+    def names():
+        return {
+            row["function"]["name"]
+            for row in get_tool_definitions(
+                enabled_toolsets=["desktop_ui"], quiet_mode=True, skip_tool_search_assembly=True)
+        }
+
+    def child_names():
+        with delegated_child_context():
+            return names()
+
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+    assert "spawn_task" in names()  # parent first
+    child = child_names()
+    assert "spawn_task" not in child
+    assert "focus_pane" in child  # only the offer tool is withdrawn, not the toolset
+
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+    assert "spawn_task" not in child_names()  # child first
+    assert "spawn_task" in names()
+
+
+def test_lives_only_in_the_desktop_surface_toolset():
+    assert "spawn_task" in TOOLSETS["desktop_ui"]["tools"]
+    assert "spawn_task" not in _HERMES_CORE_TOOLS
+    assert registry.get_toolset_for_tool("spawn_task") == "desktop_ui"
+
+
+def test_the_compact_history_projection_keeps_the_receipt():
+    """`session.resume` / `/compress` hand the Desktop a compact transcript that
+    drops most tool outputs. The chip renders only from the success receipt,
+    so this tool's output must survive the projection or the chip vanishes."""
+    from tui_gateway.server import _history_to_messages  # bound in server
+
+    receipt = st.spawn_task_tool(title="Fix flaky test", prompt="Investigate it")
+    history = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "spawn_task",
+                         "arguments": json.dumps({"title": "Fix flaky test", "prompt": "Investigate it"})}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": receipt},
+    ]
+
+    tool_row = next(m for m in _history_to_messages(history) if m["role"] == "tool")
+    assert json.loads(tool_row["content"])["success"] is True
+
+
+def test_compression_keeps_the_receipt_a_chip_renders_from():
+    """`/compress` demotes tool results over the prune floor to one-line text
+    summaries. A spawn_task receipt with a realistic title crosses that floor;
+    demoted to text, the chip would vanish from the compacted transcript."""
+    from agent.context_compressor import _summarize_tool_result
+
+    title = "Investigate the flaky login test in the auth integration suite"
+    receipt = st.spawn_task_tool(title=title, prompt="p")
+    assert len(receipt) > 200  # over the prune floor: this receipt WOULD be demoted
+
+    args = json.dumps({"title": title, "prompt": "p"})
+    summary = _summarize_tool_result("spawn_task", args, receipt)
+
+    kept = json.loads(summary)
+    assert kept["success"] is True and kept["title"] == title
+    # Short enough that later prune passes leave it alone.
+    assert len(summary) <= 200
+
+    # A refusal is not a receipt: it must not turn into a launchable one.
+    refusal = json.dumps({"error": "spawn_task needs a self-contained prompt " + "x" * 200})
+    assert "success" not in _summarize_tool_result("spawn_task", args, refusal)

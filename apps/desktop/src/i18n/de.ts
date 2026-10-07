@@ -5775,6 +5775,24 @@ export const deOverrides = {
       requirementsLabel: 'Erfordert',
       credentialsHeading: 'Zugangsdaten'
     },
+    spawnTask: {
+      defaultModel: 'Standardmodell',
+      modelLabel: 'Modell für die neue Sitzung',
+      mode: { tab: 'In neuem Tab starten', worktree: 'In Worktree starten' },
+      dismiss: 'Verwerfen',
+      pin: 'Anpinnen',
+      dismissed: title => `Nebenaufgabe verworfen: ${title}`,
+      launched: 'In einer neuen Sitzung gestartet',
+      openSession: 'Öffnen',
+      showPrompt: 'Prompt anzeigen',
+      hidePrompt: 'Prompt ausblenden',
+      launchFailed: 'Die Nebenaufgabe konnte nicht gestartet werden',
+      kickoffFailed: 'Die Nebenaufgabe hat ihre neue Sitzung nicht erreicht; der Chip bleibt verfügbar',
+      kickoffUnknown: 'Die Verbindung brach beim Senden ab; die Aufgabe läuft eventuell schon im neuen Tab',
+      worktreeNeedsRepo: 'Ein Worktree braucht ein Git-Repository. Starte sie stattdessen in einem neuen Tab.',
+      worktreeNoBase: 'Der aktuelle Commit dieses Checkouts war nicht lesbar, kein Worktree erstellt',
+      worktreeOtherBackend: 'Ein Worktree geht nur für einen Chat auf dem Backend dieses Fensters; starte sie in einem neuen Tab'
+    },
     mcpSetup: {
       installTitle: 'MCP-Server hinzufügen',
       enableTitle: 'MCP-Server aktivieren',

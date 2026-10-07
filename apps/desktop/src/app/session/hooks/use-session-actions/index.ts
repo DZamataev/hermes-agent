@@ -925,13 +925,15 @@ export function useSessionActions({
       options?: {
         anchor?: string
         before?: null | string
+        /** Per-create pins folded over the composer selection (spawn-task chip). */
+        createOverrides?: SessionCreateOverrides
         cwd?: null | string
         listed?: boolean
         profile?: string
         route?: AgentProfileRoute | null
         workspaceScope?: SessionTileWorkspaceScope
       }
-    ) => {
+    ): Promise<null | string> => {
       const listed = options?.listed ?? true
 
       try {
@@ -1022,13 +1024,16 @@ export function useSessionActions({
         // `/resume`, and reachable only while their tab stayed open, since the
         // bot row opens the canonical chat and "Open recent session" reads
         // `last_session`, which never reports a hidden row.
-        const params = await desktopSessionCreateParams(
-          cwd,
-          capturedRoute,
-          requestedProfile,
-          options?.route === null || defaultTarget?.route === null,
-          workspaceScope.workspaceMode !== 'bots'
-        )
+        const params = {
+          ...(await desktopSessionCreateParams(
+            cwd,
+            capturedRoute,
+            requestedProfile,
+            options?.route === null || defaultTarget?.route === null,
+            workspaceScope.workspaceMode !== 'bots' && !options?.createOverrides?.ownSelection
+          )),
+          ...sessionCreateOverrideParams(options?.createOverrides)
+        }
 
         // Same lease chain as createBackendSessionForSend: owner socket held
         // across the create, then the foreground hold carries it until the
@@ -1084,10 +1089,13 @@ export function useSessionActions({
           await closeCreated.catch(() => undefined)
           notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
 
-          return
+          return null
         }
 
         markSessionCreatedThisRun(stored)
+        // Before the tile can mount: a caller hands the tile work it must find
+        // waiting on first render (the spawn-task chip's first prompt).
+        options?.createOverrides?.onComposerScopeAssigned?.(stored)
 
         // Seed the per-runtime cache so the tile renders immediately without a
         // redundant resume. Only add the row to the SIDEBAR when `listed` — an
@@ -1099,7 +1107,15 @@ export function useSessionActions({
         // immediate session.resume fails closed on multi-profile installs
         // (#102792).
         if (listed) {
-          upsertOptimisticSession(created, stored, null, null, null, undefined, capturedRoute)
+          upsertOptimisticSession(
+            created,
+            stored,
+            options?.createOverrides?.title ?? null,
+            null,
+            null,
+            undefined,
+            capturedRoute
+          )
         } else {
           upsertUnlistedSessionOwner(created, stored, capturedRoute)
         }
@@ -1126,8 +1142,12 @@ export function useSessionActions({
         if (listed) {
           broadcastSessionsChanged()
         }
+
+        return stored
       } catch (error) {
         notifyError(error, copy.createSessionFailed)
+
+        return null
       }
     },
     [copy, requestGateway, updateSessionState]

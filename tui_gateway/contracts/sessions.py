@@ -125,6 +125,10 @@ class SessionCreateParams(ProfileParams):
     messages: list[SeedMessage] | None = None
     parent_session_id: str | None = None
     title: str | None = None
+    # A proposed (model-written) title: taken by another session, it lands as
+    # ``<title> (N)`` instead of being dropped for an auto-title (never the
+    # lineage ``#N`` form, which name lookups treat as a continuation).
+    title_dedupe: bool = False
     model: str | None = None
     provider: str | None = None
     reasoning_effort: str | None = None

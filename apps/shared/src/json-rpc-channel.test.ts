@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { JSON_RPC_SESSION_NOT_SHOWN, JsonRpcGatewayError, JsonRpcRequestChannel, type JsonRpcTransport } from './json-rpc-channel.js'
+import {
+  carryRequestInFlight,
+  isRequestInFlightError,
+  JSON_RPC_SESSION_NOT_SHOWN,
+  JsonRpcGatewayError,
+  JsonRpcRequestChannel,
+  type JsonRpcTransport
+} from './json-rpc-channel.js'
 
 const spyTransport = () => {
   const sent: string[] = []
@@ -67,15 +74,33 @@ describe('JsonRpcRequestChannel', () => {
 
       channel.attach(transport)
 
-      const slow = expect(channel.request('a.slow', {}, 1_000)).rejects.toThrow('request timed out after 1s: a.slow')
+      const slowCall = channel.request('a.slow', {}, 1_000).catch((error: unknown) => error)
+
+      const slow = slowCall.then(error => {
+        expect((error as Error).message).toBe('request timed out after 1s: a.slow')
+        expect(isRequestInFlightError(error)).toBe(true)
+      })
+
       const untilDetach = channel.request('b.wait')
 
       await vi.advanceTimersByTimeAsync(1_000)
       await slow
 
-      channel.detach(new Error('gateway exited (1)'))
-      await expect(untilDetach).rejects.toThrow('gateway exited (1)')
-      await expect(channel.request('c.after')).rejects.toThrow('gateway not connected')
+      const exited = new Error('gateway exited (1)')
+      channel.detach(exited)
+      const inFlight = await untilDetach.catch((error: unknown) => error)
+      expect(inFlight).toBeInstanceOf(Error)
+      expect((inFlight as Error).message).toBe('gateway exited (1)')
+      const notSent = await channel.request('c.after').catch((error: unknown) => error)
+      expect((notSent as Error).message).toBe('gateway not connected')
+
+      // A caller must tell "the frame left, the reply was lost" (the peer may
+      // have acted) from "never sent" — without the marker changing the error
+      // any other consumer sees: same object, class, fields and cause.
+      expect(isRequestInFlightError(inFlight)).toBe(true)
+      expect(isRequestInFlightError(notSent)).toBe(false)
+      expect(inFlight).toBe(exited)
+      expect(inFlight).toStrictEqual(new Error('gateway exited (1)'))
     } finally {
       vi.useRealTimers()
     }
@@ -317,5 +342,24 @@ describe('JsonRpcRequestChannel', () => {
     const third = sent.at(-1)!
     expect((JSON.parse(third) as { id: string }).id).toBe('srq-3')
     expect((JSON.parse(third) as { result?: { answer?: string } }).result?.answer).toBe('yes')
+  })
+
+  // A retrying layer (reconnect-and-resend, or a reauth that ends it) carries
+  // the first frame's in-flight mark onto the error it finally throws — and
+  // only when the first frame had left.
+  it('carries the in-flight mark onto a retry error only when the first frame left', async () => {
+    const channel = new JsonRpcRequestChannel({ requestTimeoutMs: 60_000 })
+    const { transport } = spyTransport()
+
+    channel.attach(transport)
+    const lost = channel.request('a.call').catch((error: unknown) => error)
+    channel.detach(new Error('gateway connection closed'))
+    const neverLeft = await channel.request('b.call').catch((error: unknown) => error)
+
+    const afterLost = carryRequestInFlight(await lost, new Error('reauth required'))
+    const afterNeverLeft = carryRequestInFlight(neverLeft, new Error('reauth required'))
+
+    expect(isRequestInFlightError(afterLost)).toBe(true)
+    expect(isRequestInFlightError(afterNeverLeft)).toBe(false)
   })
 })
