@@ -455,6 +455,7 @@ export function ChatBar({
     busy,
     gateway,
     hasText,
+    isEditorEmpty: () => !editorRef.current || composerPlainText(editorRef.current).trim() === '',
     placeholder,
     sessionId,
     trigger,

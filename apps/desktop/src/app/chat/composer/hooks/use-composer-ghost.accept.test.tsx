@@ -43,6 +43,7 @@ function Harness({ busy, writer }: { busy: boolean; writer: 'loadIntoComposer' |
     busy,
     gateway,
     hasText: draft.hasText,
+    isEditorEmpty: () => (draft.editorRef.current?.textContent ?? '') === '',
 
     placeholder: 'Ask anything',
     sessionId: 'session-A',
@@ -107,6 +108,19 @@ describe('accepting the ghost reply in a focused composer', () => {
 
     expect(editor.textContent).toBe('')
     expect(editor.getAttribute('data-placeholder')).toBe(GHOST)
+  })
+
+  it.each(['Tab', 'ArrowRight'])('%s never replaces text typed in the same frame', async key => {
+    const editor = await showGhost('loadIntoComposer')
+
+    // The DOM already holds a character, but no input event has reached the composer state yet,
+    // so the ghost is still "visible": exactly the window between a keystroke and the next render.
+    editor.textContent = 'f'
+    const notPrevented = fireEvent.keyDown(editor, { key })
+
+    expect(notPrevented).toBe(true) // the key keeps its native meaning
+    expect(editor.textContent).toBe('f')
+    expect(mockComposerApi.setText).not.toHaveBeenCalledWith(GHOST)
   })
 
   it('Escape dismisses the ghost without writing anything', async () => {

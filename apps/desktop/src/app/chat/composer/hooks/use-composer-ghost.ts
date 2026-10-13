@@ -48,6 +48,12 @@ export function useComposerGhost(opts: {
   busy: boolean
   gateway: HermesGateway | null | undefined
   hasText: boolean
+  /**
+   * Whether the editor is empty RIGHT NOW, read from the DOM. `hasText` comes from composer state,
+   * which lags the editor by a render: a key pressed in the same frame as a typed or pasted
+   * character would otherwise still see the ghost and replace the user's own text with it.
+   */
+  isEditorEmpty: () => boolean
   placeholder: string
   sessionId: null | string | undefined
   /**
@@ -69,7 +75,7 @@ export function useComposerGhost(opts: {
   /** The ghost while visible, else the regular placeholder. */
   placeholder: string
 } {
-  const { busy, gateway, hasText, placeholder, sessionId, trigger, writeDraft } = opts
+  const { busy, gateway, hasText, isEditorEmpty, placeholder, sessionId, trigger, writeDraft } = opts
   const empty = !hasText
   const [ghost, setGhost] = useState('')
   const [dismissed, setDismissed] = useState(false)
@@ -147,7 +153,7 @@ export function useComposerGhost(opts: {
 
   const handleGhostKeyDown = useCallback(
     (event: { key: string; nativeEvent: KeyboardEvent; preventDefault: () => void }): boolean => {
-      if (trigger || !visible) {
+      if (trigger || !visible || !isEditorEmpty()) {
         return false
       }
 
@@ -169,7 +175,7 @@ export function useComposerGhost(opts: {
 
       return false
     },
-    [ghost, trigger, visible, writeDraft]
+    [ghost, isEditorEmpty, trigger, visible, writeDraft]
   )
 
   return {
