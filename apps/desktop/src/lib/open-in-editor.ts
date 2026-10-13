@@ -6,10 +6,11 @@ import { $fileOpenApp, usesSystemEditor } from '@/store/file-open-prefs'
  * Opening a resolved file path outside the preview rail.
  *
  * The rail renders a file; an editor edits it. By default which editor that is
- * belongs to the OS: `file://` routes through Electron's `shell.openPath`,
- * which dispatches to the user's own file association. That is the right
- * default — it needs no setting and it honours whatever the user configured
- * system-wide.
+ * belongs to the OS: a bare absolute path sent through `openExternal` reaches
+ * Electron's `shell.openPath`, which dispatches to the user's own file
+ * association. (A `file://` URL would not — main only REVEALS those in the
+ * file manager.) That is the right default — it needs no setting and it
+ * honours whatever the user configured system-wide.
  *
  * It is not sufficient, though, and the reason is not theoretical: on macOS
  * the association for source files is rewritten by installers and toolchain
@@ -34,7 +35,12 @@ export function wantsExternalEditor(
   return event.altKey && (isMac ? event.metaKey : event.ctrlKey)
 }
 
-/** Absolute path → `file://` URL, percent-encoding each segment. */
+/**
+ * Absolute path → `file://` URL, percent-encoding each segment.
+ *
+ * Not what `openPathInEditor` sends: main reveals a `file://` URL in the file
+ * manager rather than opening it.
+ */
 export function fileUrlForPath(path: string): string {
   const isWindowsUnc = path.startsWith('\\\\')
   const normalized = isWindowsUnc || /^[a-z]:[\\/]/i.test(path) ? path.replace(/\\/g, '/') : path
@@ -113,18 +119,26 @@ export function openPathInEditor(path: string): void {
     return
   }
 
+  // The bare path, not a `file://` URL: main opens the former with the OS
+  // handler and only reveals the latter. A doubled leading slash is folded
+  // because main reads `//host/…` as a protocol-relative web URL.
+  const openWithSystem = () => openExternalLink(absolute.replace(/^\/{2,}/, '/'))
   const appId = $fileOpenApp.get()
   const bridge = window.hermesDesktop?.openInEditorApp
 
   if (usesSystemEditor(appId) || !bridge) {
-    openExternalLink(fileUrlForPath(absolute))
+    openWithSystem()
 
     return
   }
 
-  void bridge(appId, absolute).then(result => {
-    if (!result?.ok) {
-      openExternalLink(fileUrlForPath(absolute))
-    }
-  })
+  // A rejected call (the handler is missing, the IPC channel died) is the
+  // same outcome as an editor that is gone: the click still opens the file.
+  void bridge(appId, absolute)
+    .then(result => {
+      if (!result?.ok) {
+        openWithSystem()
+      }
+    })
+    .catch(openWithSystem)
 }

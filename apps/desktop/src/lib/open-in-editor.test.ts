@@ -31,10 +31,19 @@ it('percent-encodes each path segment so spaces and non-latin names survive', ()
   expect(fileUrlForPath('/a/b/c.md')).toBe('file:///a/b/c.md')
 })
 
-it('hands an absolute path to the OS as a file URL', () => {
+it('hands the OS a bare absolute path, which main opens rather than reveals', () => {
+  // Main routes a `file://` URL to reveal-in-folder and a bare path to
+  // `shell.openPath`; only the latter is "open in editor".
   opened.length = 0
-  openPathInEditor('/work/looky/docs/plan.md')
-  expect(opened).toEqual(['file:///work/looky/docs/plan.md'])
+  openPathInEditor('/work/my notes/plan.md')
+  openPathInEditor('C:\\work\\plan.md')
+  expect(opened).toEqual(['/work/my notes/plan.md', 'C:\\work\\plan.md'])
+})
+
+it('never sends a doubled leading slash, which main would read as a web URL', () => {
+  opened.length = 0
+  openPathInEditor('//work/looky/docs/plan.md')
+  expect(opened).toEqual(['/work/looky/docs/plan.md'])
 })
 
 it('refuses a relative path rather than resolving it against the wrong directory', () => {
@@ -111,7 +120,17 @@ describe('with an editor chosen in Settings', () => {
     setFileOpenApp('zed')
 
     openPathInEditor('/work/App.tsx')
-    await vi.waitFor(() => expect(opened).toEqual(['file:///work/App.tsx']))
+    await vi.waitFor(() => expect(opened).toEqual(['/work/App.tsx']))
+  })
+
+  it('falls back to the OS when the call to the chosen editor rejects', async () => {
+    desktopWindow.hermesDesktop = {
+      openInEditorApp: () => Promise.reject(new Error("No handler registered for 'hermes:fs:openInEditorApp'"))
+    }
+    setFileOpenApp('zed')
+
+    openPathInEditor('/work/App.tsx')
+    await vi.waitFor(() => expect(opened).toEqual(['/work/App.tsx']))
   })
 
   it('uses the OS association when no bridge exists', () => {
@@ -120,7 +139,7 @@ describe('with an editor chosen in Settings', () => {
 
     openPathInEditor('/work/App.tsx')
 
-    expect(opened).toEqual(['file:///work/App.tsx'])
+    expect(opened).toEqual(['/work/App.tsx'])
     expect(launched).toEqual([])
   })
 

@@ -75,7 +75,7 @@ it('sends the file to the OS when alt joins the modifier, instead of the preview
   // covered per-platform in lib/open-in-editor.test.ts.
   fireEvent.click(token, { altKey: true, ctrlKey: true, metaKey: true })
 
-  await waitFor(() => expect(opened).toEqual(['file:///work/looky/docs/plan.md']))
+  await waitFor(() => expect(opened).toEqual(['/work/looky/docs/plan.md']))
   expect($previewTabs.get()).toHaveLength(0)
 })
 

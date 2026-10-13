@@ -106,7 +106,7 @@ it('offers both destinations for a resolved file, and the editor one opens the O
   expect(await screen.findByText('Open in Hermes preview')).toBeTruthy()
   fireEvent.click(await screen.findByText('Open in editor'))
 
-  expect(opened).toEqual(['file:///work/looky/docs/plan.md'])
+  expect(opened).toEqual(['/work/looky/docs/plan.md'])
   expect($previewTabs.get()).toHaveLength(0)
 })
 
