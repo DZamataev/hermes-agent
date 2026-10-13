@@ -456,10 +456,13 @@ export function ChatBar({
     gateway,
     hasText,
     placeholder,
-    requestMainFocus,
     sessionId,
-    setComposerText,
-    trigger
+    trigger,
+    // The draft's programmatic write path (as history recall): state, editor repaint, caret at end.
+    writeDraft: text => {
+      loadIntoComposer(text, scope.attachments.$attachments.get())
+      requestMainFocus()
+    }
   })
 
   // Pull the live contentEditable text into draftRef + the AUI composer state (drives the send
