@@ -3,7 +3,7 @@ import { type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEff
 
 import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
-import { desktopFsCacheKey, desktopGitRoot, readDesktopDir } from '@/lib/desktop-fs'
+import { desktopFsCacheKey, desktopGitRoot, isDesktopFsRemoteMode, readDesktopDir } from '@/lib/desktop-fs'
 import { type ResolvedFilePath, resolveFilePath } from '@/lib/file-path-resolve'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { canOpenPathInEditor, openPathInEditor, wantsExternalEditor } from '@/lib/open-in-editor'
@@ -250,9 +250,10 @@ export function FilePathCandidate({ children, path }: FilePathCandidateProps) {
 
     // Alt sends the path out of the app entirely; without it the rail keeps
     // the file in view beside the conversation. An executable has no way out
-    // — `shell.openPath` would run it — so the gesture falls back to the
-    // preview rather than doing nothing at all.
-    if (external && canOpenPathInEditor(match.path)) {
+    // — `shell.openPath` would run it — and neither has a path on a remote
+    // gateway, which this machine's editor cannot reach; both fall back to
+    // the preview rather than doing nothing at all.
+    if (external && !isDesktopFsRemoteMode() && canOpenPathInEditor(match.path)) {
       openPathInEditor(match.path)
 
       return

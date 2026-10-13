@@ -218,8 +218,10 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
         ),
         // Executables are deliberately absent: `shell.openPath` would RUN an
         // agent-written `.command`/`.sh`. The file stays previewable and
-        // revealable — only the exit that executes is withheld.
-        target.filePathIsDirectory || !canOpenPathInEditor(target.filePath) ? null : (
+        // revealable — only the exit that executes is withheld. Local-only
+        // for the reason Reveal is: the editor runs on THIS machine, and a
+        // gateway path names either nothing here or a different file.
+        target.filePathIsDirectory || isDesktopFsRemoteMode() || !canOpenPathInEditor(target.filePath) ? null : (
           <Item
             icon="edit"
             key="file-open-editor"

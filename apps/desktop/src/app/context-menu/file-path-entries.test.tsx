@@ -220,7 +220,7 @@ it('reveals a resolved file in the OS file manager', async () => {
   expect(opened).toEqual([])
 })
 
-it('does not offer to reveal a path that lives on a remote gateway', async () => {
+it('does not offer to reveal or edit a path that lives on a remote gateway', async () => {
   // `showItemInFolder` acts on THIS machine; a remote path would select
   // nothing at all, so the entry must be absent rather than a silent no-op.
   state.remote = true
@@ -242,6 +242,9 @@ it('does not offer to reveal a path that lives on a remote gateway', async () =>
   // The rest of the file section still paints — this is a narrowing, not a
   // removal of the whole section.
   expect(await screen.findByText('Copy file path')).toBeTruthy()
+  expect(screen.getByText('Open in Hermes preview')).toBeTruthy()
+  // Same machine boundary for the editor: it would be handed a gateway path.
+  expect(screen.queryByText('Open in editor')).toBeNull()
   expect(
     screen.queryByText(
       pickRevealLabel(en.fileMenu.revealFinder, en.fileMenu.revealExplorer, en.fileMenu.revealFileManager)
