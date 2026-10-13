@@ -110,6 +110,36 @@ it('offers both destinations for a resolved file, and the editor one opens the O
   expect($previewTabs.get()).toHaveLength(0)
 })
 
+it('keeps the file menu for a path inside a pane body, which has a fallback menu of its own', async () => {
+  // Every pane body is a context-menu trigger (`data-zone-body`), and the app
+  // menu yields to it for anything it does not own. A resolved path is owned.
+  desktopWindow.hermesDesktop = {
+    openExternal: vi.fn().mockResolvedValue(undefined),
+    writeClipboard: vi.fn().mockResolvedValue(undefined)
+  } as unknown as Window['hermesDesktop']
+
+  render(
+    <MemoryRouter>
+      <AppContextMenu />
+    </MemoryRouter>
+  )
+
+  const host = attach(
+    `<div data-zone-body data-slot="context-menu-trigger">` +
+      `<p>prose <span ${RESOLVED_PATH_ATTR}="/work/looky/docs/plan.md">docs/plan.md</span></p>` +
+      `</div>`
+  )
+
+  // Bare prose in the pane still belongs to the pane's own menu.
+  fireEvent.contextMenu(host.querySelector('p')!)
+  expect($contextMenu.get()).toBeNull()
+
+  fireEvent.contextMenu(host.querySelector('span')!)
+
+  expect(await screen.findByText('Open in Hermes preview')).toBeTruthy()
+  expect(screen.getByText('Copy file path')).toBeTruthy()
+})
+
 it('reveals a resolved file in the OS file manager', async () => {
   desktopWindow.hermesDesktop = {
     openExternal: vi.fn().mockResolvedValue(undefined),

@@ -669,7 +669,9 @@ export function AppContextMenu() {
         )
       )
 
-      const owned = Boolean(target.linkUrl || target.onImage || target.editable || selected)
+      // A resolved file reference is owned like a link: without it the pane
+      // body's fallback menu below would take the click on a path in a chat.
+      const owned = Boolean(target.filePath || target.linkUrl || target.onImage || target.editable || selected)
 
       // A selection elsewhere in the same pane must not take its bare menu.
       if (!owned && trigger) {
