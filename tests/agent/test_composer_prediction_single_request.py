@@ -86,21 +86,44 @@ def test_without_the_request_budget_recovery_issues_more_requests(first):
     assert create.call_count > 1
 
 
-@pytest.mark.parametrize("first", [TimeoutError("timed out"), RuntimeError("HTTP 503: upstream unavailable")])
+def _empty_content() -> SimpleNamespace:
+    message = SimpleNamespace(content="", reasoning_content=None, reasoning=None, tool_calls=None)
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason="stop")], model="test/model", usage=_usage())
+
+
+def _no_choices() -> SimpleNamespace:
+    return SimpleNamespace(choices=[], model="test/model", usage=_usage())
+
+
+@pytest.mark.parametrize("first", [
+    TimeoutError("timed out"), RuntimeError("HTTP 503: upstream unavailable"), _empty_content(), _no_choices(),
+])
 def test_no_backoff_before_an_attempt_the_budget_forbids(monkeypatch, first):
-    from agent import turn_api_error
+    """Every recovery branch waits through ``interruptible_backoff_sleep`` before its retry; with
+    the budget spent that retry is refused, so the wait would only hold the worker."""
+    from agent import turn_recovery
 
-    waits = []
-    real_sleep = turn_api_error.interruptible_backoff_sleep
-
-    def sleep(agent, wait_time, *args, **kwargs):
-        waits.append(wait_time)
-        return real_sleep(agent, 0, *args, **kwargs)
-
-    monkeypatch.setattr(turn_api_error, "interruptible_backoff_sleep", sleep)
+    slept = []
+    monkeypatch.setattr(turn_recovery.time, "sleep", slept.append)
     create, _ = _run_fork(first)
 
-    assert create.call_count == 1 and waits and set(waits) == {0}
+    assert create.call_count == 1 and sum(slept) == 0
+
+
+@pytest.mark.parametrize(("budget", "made", "sleeps"), [(None, 0, True), (1, 0, True), (1, 1, False)])
+def test_backoff_is_skipped_only_once_the_budget_is_spent(monkeypatch, budget, made, sleeps):
+    from agent import turn_recovery
+
+    slept = []
+    monkeypatch.setattr(turn_recovery.time, "sleep", slept.append)
+    agent = _make_loop_agent()
+    agent._provider_request_budget, agent._provider_requests_made = budget, made
+
+    assert turn_recovery.interruptible_backoff_sleep(
+        agent, 0.05, None, messages=[], conversation_history=None, api_call_count=1,
+        abort_message="", interrupt_text="", activity_label="") is None
+    assert bool(slept) is sleeps
 
 
 def test_an_ordinary_agent_has_no_request_budget():

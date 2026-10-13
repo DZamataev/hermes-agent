@@ -114,8 +114,23 @@ _META_RE = re.compile(
     r"^nothing (?:found|to suggest)|^no suggestion|\bsilence is\b|\bstay(?:s|ing)? silent\b|^\W*silence\W*$"
     r"|^\W*(?:done|готово|молчу|молчание|нет предложени[йя]|нечего предложить)\W*$", re.IGNORECASE)
 _BRACKETED_RE = re.compile(r"^(?:\(.*\)|\[.*\]|（.*）|【.*】)$", re.DOTALL)
-# A fill-in-the-blank template ("the parser is in [path to file]") is not a message anyone types.
-_PLACEHOLDER_RE = re.compile(r"\[[^\]\n]{2,}\]|<[^>\n]{2,}>|\{[^}\n]{2,}\}|…{2,}|_{3,}")
+# A fill-in-the-blank template ("the parser is in [path to file]") is not a message anyone types:
+# a bracketed phrase of two or more plain words, standing on its own. One-word groups, anything
+# attached to an identifier and anything with operators stay: a[10], Promise<Result>, </div>,
+# [docs](url), ${name}, "x < 10 and y > 20" are ordinary code talk.
+_PLACEHOLDER_RE = re.compile(
+    r"(?<![\w$)\]])(?:\[(?P<a>[^\[\]\n]+)\](?!\()|<(?P<b>[^<>\n]+)>|\{(?P<c>[^{}\n]+)\})|…{2,}|_{3,}")
+_PLACEHOLDER_PHRASE_RE = re.compile(r"[^\W\d_][\w'’-]*(?: [\w'’-]+)+")
+
+
+def _has_placeholder(text: str) -> bool:
+    for match in _PLACEHOLDER_RE.finditer(text):
+        inner = match.group("a") or match.group("b") or match.group("c")
+        if inner is None or _PLACEHOLDER_PHRASE_RE.fullmatch(inner):
+            return True
+    return False
+
+
 _ERROR_PREFIXES = ("api error:", "prompt is too long", "request timed out", "invalid api key", "image was too large")
 _SENTENCE_BREAK_RE = re.compile(r"[.!?]\s+[A-ZА-ЯЁ]|[。！？]\s*\w")
 _EVALUATIVE_RE = re.compile(
@@ -153,7 +168,7 @@ def reject_reason(text: str) -> str | None:
         ("meta_text", lambda: bool(_META_RE.search(lower))),
         ("meta_wrapped", lambda: bool(_BRACKETED_RE.match(text))),
         ("error_message", lambda: lower.startswith(_ERROR_PREFIXES)),
-        ("placeholder", lambda: bool(_PLACEHOLDER_RE.search(text))),
+        ("placeholder", lambda: _has_placeholder(text)),
         ("prefixed_label", lambda: bool(re.match(r"^\w+:\s", text))),
         ("too_few_words", lambda: _too_short(text, lower, words)),
         ("too_many_words", lambda: words > MAX_PREDICTION_WORDS),
@@ -326,15 +341,20 @@ def _predict_via_fork(
                 logger.debug("composer prediction fork teardown step failed", exc_info=True)
 
 
+def _endpoint(url: Any) -> str:
+    """An endpoint for comparison: clients add the ``/v1`` tail themselves when it is missing."""
+    return str(url or "").strip().rstrip("/").removesuffix("/v1").lower()
+
+
 def _same_model(agent: Any) -> bool:
     """True when ``auxiliary.composer_predictions`` routes nowhere else, as decided by the
-    auxiliary router itself: the short-transcript call goes through it, so asking it is the only
-    way the two paths cannot disagree. It honours a model without a provider, a provider without
-    a model, another endpoint, and a credential (``api_key`` or ``key_env``) under a pinned
-    provider; a bare credential under ``provider: auto`` it drops, and so do we."""
+    auxiliary router itself: the short-transcript call goes through it, so asking it is how the
+    two paths stay in agreement. It honours a model without a provider, a provider without a
+    model, another endpoint or wire mode, and a credential (``api_key`` or ``key_env``) under a
+    pinned provider; a bare credential under ``provider: auto`` it drops, and so do we."""
     from agent.auxiliary_client import _resolve_task_provider_model
 
-    provider, model, base_url, api_key, _api_mode = _resolve_task_provider_model(task=TASK)
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task=TASK)
     own_providers = {str(getattr(agent, attr, None) or "") for attr in ("provider", "requested_provider")}
     if provider and provider != "auto" and provider not in own_providers:
         return False
@@ -342,8 +362,9 @@ def _same_model(agent: Any) -> bool:
         return False
     if api_key and api_key != str(getattr(agent, "api_key", None) or ""):
         return False
-    own_base_url = str(getattr(agent, "base_url", None) or "").rstrip("/")
-    return not base_url or base_url.rstrip("/") == own_base_url
+    if api_mode and api_mode != str(getattr(agent, "api_mode", None) or ""):
+        return False
+    return not base_url or _endpoint(base_url) == _endpoint(getattr(agent, "base_url", None))
 
 
 def _transcript(history: list[dict], coerce) -> list[str]:

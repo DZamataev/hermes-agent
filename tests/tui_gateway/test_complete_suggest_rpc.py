@@ -75,7 +75,7 @@ def _fork_harness(monkeypatch, *, task_cfg=None, run=None, routed=False):
     events, recorded = [], []
     parent = types.SimpleNamespace(
         provider="custom", requested_provider="teamclaude", model="main-model", base_url="https://main.example/v1",
-        api_key="main-key",
+        api_key="main-key", api_mode="chat_completions",
         _active_children=[], _active_children_lock=threading.Lock(), interrupted=threading.Event())
 
     class Fork:
@@ -158,6 +158,7 @@ def test_prediction_rides_the_parent_cache_through_a_fork(monkeypatch):
     {"provider": "teamclaude", "model": "main-model", "api_key": "other-account"},              # another account
     {"provider": "teamclaude", "key_env": "OTHER_KEY"},                                         # ... named by env var
     {"provider": "teamclaude", "api_key_env": "OTHER_KEY"},
+    {"provider": "teamclaude", "api_mode": "responses"},                                        # another wire mode
 ])
 def test_any_pinned_route_uses_the_short_transcript_call(monkeypatch, task_cfg):
     """Each routing key counts on its own, and the session's cold cache is not the routed model's
@@ -172,7 +173,8 @@ def test_any_pinned_route_uses_the_short_transcript_call(monkeypatch, task_cfg):
 @pytest.mark.parametrize("task_cfg", [
     {}, {"provider": "auto", "model": ""}, {"provider": "teamclaude", "model": "main-model"},
     {"provider": "custom", "base_url": "https://main.example/v1/"}, {"model": "main-model", "api_key": "main-key"},
-    {"provider": "teamclaude", "key_env": "MAIN_KEY"},
+    {"provider": "teamclaude", "key_env": "MAIN_KEY"}, {"provider": "teamclaude", "api_mode": "chat_completions"},
+    {"provider": "custom", "base_url": "https://MAIN.example"},  # clients add the /v1 tail themselves
     # A bare credential under provider auto is dropped by the auxiliary router, so the short call
     # would run on the session's account anyway: nothing is routed elsewhere.
     {"api_key": "other-account"}, {"provider": "auto", "key_env": "OTHER_KEY"},
@@ -379,12 +381,18 @@ def test_reply_filters_and_cache_estimate():
             "покажи": "покажи", "运行测试": "运行测试", "テストを実行して": "テストを実行して",
             "继续": "继续", "提交": "提交", "해줘": "해줘", "停": "停", "네": "네", "可": "可", "否": "否",
             "fix a[0] and b[1]": "fix a[0] and b[1]", "покажи x < y": "покажи x < y",
+            # Code talk is not a fill-in-the-blank template.
+            "fix a[10] and b[11]": "fix a[10] and b[11]", "check x < 10 and y > 20": "check x < 10 and y > 20",
+            "return Promise<Result> here": "return Promise<Result> here", "fix the </div> tag": "fix the </div> tag",
+            "open [docs](https://example.invalid/api)": "open [docs](https://example.invalid/api)",
+            "use `${name}` here": "use `${name}` here",
             "<suggestion>push it</suggestion>": "push it", "/compact": "/compact",
             "Да, покажи пример теста.": "Да, покажи пример теста."}
     assert {raw: predict._clean(raw) for raw in kept} == kept
     rejected = {"NONE": None, "Nothing to suggest": "meta_text", "(no obvious next step)": "meta_wrapped",
                 "API Error: overloaded": "error_message", "парсер в файле [путь к файлу]": "placeholder",
-                "open <file name> please": "placeholder", "hmm": "too_few_words", "呃": "too_few_words", "测试" * 13: "too_many_words", "word " * 13: "too_many_words",
+                "open <file name> please": "placeholder", "name it {your project name}": "placeholder",
+                "run ___ now": "placeholder", "hmm": "too_few_words", "呃": "too_few_words", "测试" * 13: "too_many_words", "word " * 13: "too_many_words",
                 "Fix it. Then push": "multiple_sentences", "**run** it": "has_formatting",
                 "Thanks, looks good": "evaluative", "Спасибо, отлично": "evaluative",
                 "Let me check the logs": "assistant_voice", "Я сейчас проверю логи": "assistant_voice"}

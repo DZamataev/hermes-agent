@@ -275,7 +275,7 @@ aggregator model alone.
 Routing `auxiliary.composer_predictions` anywhere else (another `provider`, `model` or `base_url`,
 or another `api_key` / `key_env` under a pinned provider, exactly as the other auxiliary tasks read
 those keys) switches to a cheaper shape instead: that model has no warm cache, so it gets only a short transcript of the last few
-turns in one small request.
+turns in one small request, capped at 80 output tokens and, like the fork, never retried or failed over.
 
 ```yaml
 display:
