@@ -513,6 +513,12 @@ export const zhHantChrome = {
   },
 
   contextMenu: {
+    file: {
+      openInHermes: '在 Hermes 預覽中開啟',
+      openInEditor: '在編輯器中開啟',
+      openWith: '開啟方式…',
+      copyPath: '複製檔案路徑'
+    },
     link: {
       openInApp: '在應用程式內瀏覽器中開啟',
       openExternal: '在外部瀏覽器中開啟',

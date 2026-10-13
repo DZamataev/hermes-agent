@@ -91,28 +91,14 @@ describe('optimisticAttachmentRef', () => {
     expect(optimisticAttachmentRef(attachment({ kind: 'image', previewUrl: 'https://example.com/x.png' }))).toBeNull()
   })
 
-  it('keeps the path ref for a paste/OS-drop image whose chip preview is a blob: url', () => {
-    // The sent bubble's attachment row renders refs through DirectiveContent,
-    // which does not parse markdown: a `![alt](blob:…)` ref painted as raw
-    // text and the pasted image never showed. The path ref renders through
-    // DirectiveImage like a reloaded turn.
+  it('renders an OS-drop blob: preview as a markdown image (no IPC data URL)', () => {
+    const blobUrl = 'blob:https://desktop/preview-1'
+
     const ref = optimisticAttachmentRef(
-      attachment({
-        kind: 'image',
-        label: 'Lattice.png',
-        detail: 'C:\\shot.png',
-        path: 'C:\\shot.png',
-        previewUrl: 'blob:https://desktop/preview-1'
-      })
+      attachment({ kind: 'image', label: 'Lattice.png', detail: 'C:\\shot.png', previewUrl: blobUrl })
     )
 
-    expect(ref).toBe('@image:C:\\shot.png')
-  })
-
-  it('never emits a blob: url for a path-less image (it would render as raw text)', () => {
-    const ref = optimisticAttachmentRef(attachment({ kind: 'image', previewUrl: 'blob:https://desktop/preview-1' }))
-
-    expect(ref).toBeNull()
+    expect(ref).toBe(`![Lattice.png](${blobUrl})`)
   })
 
   it('percent-encodes a blob ref alt so brackets in a filename cannot break it', () => {
