@@ -4588,6 +4588,24 @@ export const zhOverrides = {
       plugin: '插件',
       startsLater: '开始时我们会帮你设置好这些。'
     },
+    spawnTask: {
+      defaultModel: '默认模型',
+      modelLabel: '新会话使用的模型',
+      mode: { tab: '在新标签页中启动', worktree: '在工作树中启动' },
+      dismiss: '忽略',
+      pin: '固定',
+      dismissed: title => `已忽略附带任务：${title}`,
+      launched: '已在新会话中启动',
+      openSession: '打开',
+      showPrompt: '显示提示词',
+      hidePrompt: '隐藏提示词',
+      launchFailed: '无法启动附带任务',
+      kickoffFailed: '附带任务未能送达新会话；该卡片仍可使用',
+      kickoffUnknown: '发送附带任务时连接中断；它可能已在新标签页中运行',
+      worktreeNeedsRepo: '工作树需要 git 仓库。请改为在新标签页中启动。',
+      worktreeNoBase: '无法读取此检出的当前提交，因此未创建工作树',
+      worktreeOtherBackend: '只能为此窗口后端上的对话创建工作树；请改为在新标签页中启动'
+    },
     startChat: {
       starting: title => `正在启动“${title}”…`,
       startingUntitled: '正在启动对话…',

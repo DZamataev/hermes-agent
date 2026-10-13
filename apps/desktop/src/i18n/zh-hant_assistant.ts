@@ -190,6 +190,24 @@ export const zhHantAssistant = {
       plugin: '外掛',
       startsLater: '開始時我們會幫你設定好這些。'
     },
+    spawnTask: {
+      defaultModel: '預設模型',
+      modelLabel: '新工作階段使用的模型',
+      mode: { tab: '在新分頁中啟動', worktree: '在工作樹中啟動' },
+      dismiss: '略過',
+      pin: '釘選',
+      dismissed: title => `已略過附帶任務：${title}`,
+      launched: '已在新工作階段中啟動',
+      openSession: '開啟',
+      showPrompt: '顯示提示詞',
+      hidePrompt: '隱藏提示詞',
+      launchFailed: '無法啟動附帶任務',
+      kickoffFailed: '附帶任務未能送達新工作階段；此卡片仍可使用',
+      kickoffUnknown: '傳送附帶任務時連線中斷；它可能已在新分頁中執行',
+      worktreeNeedsRepo: '工作樹需要 git 儲存庫。請改為在新分頁中啟動。',
+      worktreeNoBase: '無法讀取此簽出的目前提交，因此未建立工作樹',
+      worktreeOtherBackend: '只能為此視窗後端上的對話建立工作樹；請改為在新分頁中啟動'
+    },
     startChat: {
       starting: title => `正在啟動「${title}」…`,
       startingUntitled: '正在啟動聊天…',
