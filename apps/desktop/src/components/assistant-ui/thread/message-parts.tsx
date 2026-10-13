@@ -15,6 +15,7 @@ import { ConnectorExecution, ConnectorTool } from '@/components/assistant-ui/con
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
 import { SpawnTaskTool } from '@/components/assistant-ui/spawn-task-tool'
+import { StartChatTool } from '@/components/assistant-ui/start-chat-tool'
 import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
@@ -94,6 +95,19 @@ const ClarifyToolPart: FC<TimelineToolCallProps> = props => {
   )
 }
 
+const StartChatToolPart: FC<TimelineToolCallProps> = props => {
+  if (props.isError || settledWithoutResult(props)) {
+    return <ToolFallback {...props} />
+  }
+
+  return (
+    <>
+      <TimelineTimestamp className="mb-0.5 block" completedAt={props.completedAt} timestamp={props.timestamp} />
+      <StartChatTool {...props} />
+    </>
+  )
+}
+
 const ConnectionsToolPart: FC<TimelineToolCallProps> = props =>
   mcpTargets(props.toolName, props.args).length > 0 ? <McpSetupTool {...props} /> : <ConnectorTool {...props} />
 
@@ -103,7 +117,9 @@ const TOOL_CARDS: Record<CardToolName, FC<TimelineToolCallProps>> = {
   image_generate: ImageGenerateTool,
   manage_catalog: CatalogInstallTool,
   manage_connections: ConnectionsToolPart,
-  spawn_task: SpawnTaskTool
+  setup_choose: ClarifyToolPart,
+  spawn_task: SpawnTaskTool,
+  start_chat: StartChatToolPart
 }
 
 // A failure the user still has to see. The gateway's tool.complete carries the
@@ -340,7 +356,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
   // The guide's reasoning is it reading its own runbook ("Now step 4: offer
-  // the tour with ::ask"), and a first-time user reading that alongside the
+  // the layout picker"), and a first-time user reading that alongside the
   // greeting breaks the one conversation the guide is trying to have.
   const guidedChat = useOnboardingChatActive()
 

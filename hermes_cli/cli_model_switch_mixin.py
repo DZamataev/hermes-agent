@@ -296,6 +296,13 @@ def _show_model_picker(cli, ctx, force_refresh: bool) -> None:
             ctx, probe_custom_providers=force_refresh,
             probe_current_custom_provider=not force_refresh,
             capabilities=True,  # the effort step hides itself on reasoning-free routes
+            # Keep providers whose pool is entirely in cooldown visible: limits are
+            # per-model for many providers, so another model may work (#103829) —
+            # same contract as the gateway picker (#66584) and aux pickers (#66624).
+            for_picker=True,
+            # Visibility only, not a faster probe: this call live-probes the current custom
+            # endpoint, which historically enjoyed the full 5s discovery budget (#103843).
+            fast_custom_probe=False,
         )["providers"]
     except Exception:
         providers = []
@@ -479,7 +486,7 @@ class CLIModelSwitchMixin:
                     requested=self.provider, target_model=stored_model,
                     explicit_base_url=None if managed_repin else (stored_base_url or None),
                 )
-            except Exception:
+            except Exception:  # health: allow BLE001 -- resumed-session re-resolution is best-effort: a failure keeps the ambient credentials and is logged with the traceback
                 if managed_repin and stored_base_url:
                     self.base_url = stored_base_url
                 logger.debug("Runtime re-resolution for resumed session failed", exc_info=True)

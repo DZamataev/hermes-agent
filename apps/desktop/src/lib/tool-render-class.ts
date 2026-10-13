@@ -35,7 +35,9 @@ const CARD_TOOL_NAMES = [
   'image_generate',
   'manage_catalog',
   'manage_connections',
-  'spawn_task'
+  'setup_choose',
+  'spawn_task',
+  'start_chat'
 ] as const
 
 export type CardToolName = (typeof CARD_TOOL_NAMES)[number]

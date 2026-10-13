@@ -173,10 +173,10 @@ function SpawnTaskChip({ prompt, title, tldr, toolCallId }: SpawnTaskChipProps) 
             <DropdownMenuTrigger asChild>
               <Button
                 aria-label={copy.modelLabel}
-                className="max-w-56 gap-1 font-normal"
+                className="max-w-56 gap-1 font-normal hover:shadow-[inset_0_0_0_0.5px_var(--ui-stroke-secondary)]"
                 disabled={launching}
                 size="xs"
-                variant="chip"
+                variant="secondary"
               >
                 <span className="min-w-0 truncate">{modelLabel}</span>
                 {effortLabel ? <span className="shrink-0 text-(--ui-text-tertiary)">{effortLabel}</span> : null}
