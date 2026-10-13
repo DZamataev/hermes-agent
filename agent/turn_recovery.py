@@ -1356,6 +1356,10 @@ def interruptible_backoff_sleep(
     On interrupt with ``_retry`` given and a redirect pending: preserve the redirect, arm
     ``_retry.restart_with_redirected_messages`` and return ``None`` (caller rebuilds the
     turn). Otherwise return the ``interrupted`` result dict. ``None`` when the wait completed."""
+    from agent.turn_api_call import provider_request_budget_spent
+
+    if provider_request_budget_spent(agent):
+        wait_time = 0  # every wait precedes a retry, and perform_api_call refuses it: nothing to wait for
     sleep_end = time.time() + wait_time
     _touch_counter = 0
     while time.time() < sleep_end:

@@ -64,6 +64,15 @@ def _should_stream(agent: Any) -> bool:
     return True
 
 
+def provider_request_budget_spent(agent: Any) -> bool:
+    """True once an agent with ``_provider_request_budget`` has issued that many provider
+    requests. Unset (every ordinary agent) means unlimited."""
+    budget = getattr(agent, "_provider_request_budget", None)
+    if not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0:
+        return False
+    return int(getattr(agent, "_provider_requests_made", 0) or 0) >= budget
+
+
 def perform_api_call(
     agent: Any, *, api_kwargs: Any, _original_api_kwargs: Any, _llm_middleware_trace: Any,
     _moa_prepared_request: Any, _retry: Any, thinking_spinner: Any, retry_count: Any,
@@ -71,6 +80,14 @@ def perform_api_call(
     interrupted: Any,
 ) -> ApiCallVerdict:
     """Issue the request (see ``_should_stream`` for the streaming decision)."""
+    # Every request of the turn loop passes here: the first attempt and each recovery (error
+    # retry, truncated tool-call retry, length continuation, fallback, post-compaction retry). A
+    # single-shot fork (composer prediction) therefore bounds its spend with one counter instead
+    # of opting out of each recovery path; a spent budget ends the turn as an interrupt.
+    if provider_request_budget_spent(agent):
+        raise InterruptedError("provider request budget spent")
+    if getattr(agent, "_provider_request_budget", None):
+        agent._provider_requests_made = int(getattr(agent, "_provider_requests_made", 0) or 0) + 1
     response = None
 
     def _verdict(action: str) -> ApiCallVerdict:

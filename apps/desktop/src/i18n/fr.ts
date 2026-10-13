@@ -5,6 +5,7 @@ import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
+import { frDisplaySettings } from './fr_display_settings'
 import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
 import { frNotices } from './fr_notices'
@@ -1179,10 +1180,7 @@ export const frOverrides = {
       fallbackProviders: 'Modèles de secours',
       toolsets: "Ensembles d'outils activés",
       timezone: 'Fuseau horaire',
-      display: {
-        personality: 'Personnalité',
-        showReasoning: 'Blocs de raisonnement'
-      },
+      display: frDisplaySettings.labels,
       desktop: {
         repoScanEnabled: 'Découverte automatique de dépôts',
         repoScanRoots: 'Racines de découverte de dépôts',
@@ -1356,10 +1354,7 @@ export const frOverrides = {
       modelContextLength:
         'Remplace la fenêtre de contexte détectée du modèle de conversation PRINCIPAL uniquement (en jetons). Laissez 0 pour utiliser la valeur détectée du modèle sélectionné. N’affecte pas les modèles auxiliaires/MoA.',
       fallbackProviders: 'Entrées fournisseur:modèle de secours à essayer si le modèle par défaut échoue.',
-      display: {
-        personality: "Style par défaut de l'assistant pour les nouvelles sessions.",
-        showReasoning: 'Afficher les sections de raisonnement quand le backend les fournit.'
-      },
+      display: frDisplaySettings.descriptions,
       desktop: {
         repoScanEnabled: 'Analyser les dossiers locaux à la recherche de dépôts Git à afficher dans Projets.',
         repoScanRoots: 'Dossiers à analyser. Laissez vide pour analyser votre répertoire personnel.',

@@ -5,6 +5,7 @@ import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
 import { esConnectorAccounts } from './es_connector_accounts'
 import { esConnectorCard } from './es_connector_card'
+import { esDisplaySettings } from './es_display_settings'
 import { esLocalModels } from './es_local_models'
 import { esModelMenu } from './es_model_menu'
 import { esNotices } from './es_notices'
@@ -1176,10 +1177,7 @@ export const esOverrides = {
       fallbackProviders: 'Modelos de respaldo',
       toolsets: 'Conjuntos de herramientas activados',
       timezone: 'Zona horaria',
-      display: {
-        personality: 'Personalidad',
-        showReasoning: 'Bloques de razonamiento'
-      },
+      display: esDisplaySettings.labels,
       desktop: {
         repoScanEnabled: 'Detección automática de repositorios',
         repoScanRoots: 'Carpetas de búsqueda de repositorios',
@@ -1353,10 +1351,7 @@ export const esOverrides = {
       modelContextLength:
         'Sustituye la ventana de contexto detectada solo del modelo de chat PRINCIPAL (en tokens). Déjalo en 0 para usar el valor detectado del modelo seleccionado. No afecta a los modelos auxiliares/MoA.',
       fallbackProviders: 'Entradas proveedor:model de respaldo para probar si falla el modelo predeterminado.',
-      display: {
-        personality: 'Estilo predeterminado del asistente para sesiones nuevas.',
-        showReasoning: 'Muestra secciones de razonamiento cuando el backend las proporcione.'
-      },
+      display: esDisplaySettings.descriptions,
       desktop: {
         repoScanEnabled: 'Busca repositorios Git en carpetas locales para mostrarlos en Proyectos.',
         repoScanRoots: 'Carpetas que se buscarán. Déjalo vacío para buscar en tu directorio de inicio.',

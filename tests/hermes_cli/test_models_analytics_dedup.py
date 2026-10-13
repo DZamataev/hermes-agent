@@ -96,3 +96,20 @@ def test_distinct_models_counts_aux_only_models(db, analytics):
 
     assert {m["model"] for m in result["models"]} == {"gpt-5.6-terra", "gpt-5.4-mini"}
     assert result["totals"]["distinct_models"] == len({m["model"] for m in result["models"]})
+
+
+def test_task_summary_reports_cache_hit_rate_across_models(db):
+    """``by_task`` sums a task over its models; input excludes cached tokens, so the hit rate is
+    the cached share of the whole prompt, and a task with no prompt tokens has no rate."""
+    _session(db, "s1", "main-model", "p")
+    db.record_auxiliary_usage("s1", task="composer_predictions", model="main-model", billing_provider="p",
+                              input_tokens=300, output_tokens=10, cache_read_tokens=9_000, api_call_count=1)
+    db.record_auxiliary_usage("s1", task="composer_predictions", model="other-model", billing_provider="p",
+                              input_tokens=200, output_tokens=5, cache_read_tokens=500, api_call_count=1)
+    db.record_auxiliary_usage("s1", task="tts", model="tts-model", billing_provider="p", api_call_count=1)
+
+    summary = {row["task"]: row for row in web_server._aux_task_summary(web_server._aux_usage_rows(db, 0))}
+    predictions = summary["composer_predictions"]
+    assert (predictions["api_calls"], predictions["input_tokens"], predictions["cache_read_tokens"]) == (2, 500, 9_500)
+    assert predictions["cache_hit_pct"] == 95 and sorted(predictions["models"]) == ["main-model", "other-model"]
+    assert summary["tts"]["cache_hit_pct"] is None

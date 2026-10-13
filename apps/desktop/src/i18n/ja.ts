@@ -4,6 +4,7 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaAuxTasks } from './ja_aux_tasks'
 import { jaConnectors } from './ja_connectors'
+import { jaDisplaySettings } from './ja_display_settings'
 import { jaLocalModels } from './ja_local_models'
 import { jaModelMenu } from './ja_model_menu'
 import { jaNotices } from './ja_notices'
@@ -725,10 +726,7 @@ export const jaOverrides = {
       fallbackProviders: 'フォールバックモデル',
       toolsets: '有効なツールセット',
       timezone: 'タイムゾーン',
-      display: {
-        personality: '人格',
-        showReasoning: '推論ブロック'
-      },
+      display: jaDisplaySettings.labels,
       desktop: {
         repoScanEnabled: 'リポジトリの自動検出',
         repoScanRoots: 'リポジトリの検索ルート',
@@ -890,10 +888,7 @@ export const jaOverrides = {
       model: 'コンポーザーで別のモデルを選ばない限り、新しいチャットで使用されます。',
       modelContextLength: '0 のままにすると、選択したモデルから検出されたコンテキストウィンドウを使用します。',
       fallbackProviders: 'デフォルトモデルが失敗したときに試す provider:model 形式のバックアップです。',
-      display: {
-        personality: '新しいセッションのデフォルトのアシスタントスタイルです。',
-        showReasoning: 'バックエンドが推論内容を提供したときに表示します。'
-      },
+      display: jaDisplaySettings.descriptions,
       desktop: {
         repoScanEnabled: 'ローカルフォルダを検索して Git リポジトリをプロジェクトに表示します。',
         repoScanRoots: '検索するフォルダです。空の場合はホームディレクトリを検索します。',

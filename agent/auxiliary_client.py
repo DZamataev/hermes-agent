@@ -2758,7 +2758,7 @@ def _runtime_main_value(field: str) -> Any:
 def set_runtime_main(
     provider: str, model: str, *, requested_provider: str = "", base_url: str = "",
     api_key: Any = "", api_mode: str = "", auth_mode: str = "", session_id: str = "",
-    cache_scope: str = "", capabilities: Optional[Dict[str, bool]] = None,
+    cache_scope: str = "", capabilities: Optional[dict[str, bool]] = None,
 ) -> contextvars.Token:
     """Record the current context's live main runtime for auxiliary routing.
 
@@ -3561,6 +3561,8 @@ def _is_statusless_structured_provider_error(exc: Exception) -> bool:
 # ``auxiliary.title_generation.timeout`` (~4x: three full windows plus backoff) on a slow local
 # model, and the auto-title thread outlived the deadline the user thought they had set (#89445, #66251).
 _TIMEOUT_NO_RETRY_TASKS = frozenset({"compression", "vision", "title_generation"})
+# Decorative one-shots: output cap always forwarded, no same-provider retry, no recovery ladder.
+_SINGLE_ATTEMPT_TASKS = frozenset({"composer_predictions"})
 
 
 def _should_skip_same_provider_retry(task: Optional[str], exc: Exception) -> bool:
@@ -6566,7 +6568,7 @@ def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effectiv
         or _nous_on_messages_wire(provider_norm, model)
         or provider_norm in _NVIDIA_PROVIDER_NAMES
         or base_url_host_matches(effective_base, "integrate.api.nvidia.com")
-        or str(task) == "moa_reference"
+        or str(task) == "moa_reference" or task in _SINGLE_ATTEMPT_TASKS
         or _is_gemini_native_route(provider_norm, effective_base)
         or provider_norm == "openrouter"
         or base_url_host_matches(effective_base, "openrouter.ai")
@@ -8119,9 +8121,8 @@ def _plan_aux_call(
 
 def _should_retry_same_provider(task: Optional[str], exc: Exception, tag: str) -> bool:
     """True when ``exc`` is a transient transport blip worth a same-provider retry; critical-path
-    tasks skip it on a full-budget timeout (``_should_skip_same_provider_retry``) and go straight
-    to fallback."""
-    if not _is_transient_transport_error(exc):
+    tasks skip it on a full-budget timeout and go to fallback, single-attempt tasks always."""
+    if task in _SINGLE_ATTEMPT_TASKS or not _is_transient_transport_error(exc):
         return False
     if _should_skip_same_provider_retry(task, exc):
         logger.info("Auxiliary %s%s: timeout on the critical path; "
@@ -8196,11 +8197,9 @@ def _call_llm_impl(
         # matters for pinned auxiliary calls like MoA reference advisors, where "fallback to another
         # provider" is not a meaningful recovery (the advisor is a specific model), so a transient blip that
         # isn't retried simply loses that advisor for the turn (root of the run2 double-advisor "Connection
-        # error" collapse — a genuine upstream blip hitting both parallel advisors at once). Attempts are
-        # bounded and use exponential backoff. Count is configurable via auxiliary.transient_retries
-        # (default 2 retries → 3 total attempts); a second/third failure or any non-transient error falls
-        # through to ``first_err`` and the existing fallback handling unchanged. Unified home for the
-        # transient retry every auxiliary task shares. (PR #16587)
+        # error" collapse — a genuine upstream blip hitting both parallel advisors at once). Bounded,
+        # exponential backoff, count from auxiliary.transient_retries (default 2 → 3 attempts); a later
+        # failure or any non-transient error falls through to ``first_err``. (PR #16587)
         return _validate_llm_response(
             _relay_sync_completion(
                 client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode,
@@ -8213,9 +8212,8 @@ def _call_llm_impl(
             task, **validate_kw,
         )
     try:
-        # Bounded same-provider retry (exponential backoff, auxiliary.transient_retries) for
-        # transient blips before escalating to fallback — a dropped connection shouldn't
-        # abandon a healthy provider (matters for pinned MoA advisors).
+        # Bounded same-provider retry (auxiliary.transient_retries, exponential backoff) before
+        # fallback: a dropped connection shouldn't abandon a healthy provider (pinned MoA advisors).
         try:
             return _primary(provider=request_provider, base_url=req.base_info)
         except Exception as transient_err:
@@ -8237,6 +8235,8 @@ def _call_llm_impl(
                     _last_transient = retry_transient
             raise _last_transient
     except Exception as first_err:
+        if task in _SINGLE_ATTEMPT_TASKS:
+            raise
         def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":

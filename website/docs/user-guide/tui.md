@@ -225,6 +225,69 @@ The status line also shows:
 - **`▶ N`** — number of `/bg` tasks currently running in this session. Appears whenever at least one task is in flight.
 - **`⚠ YOLO`** — visible warning whenever YOLO mode is on (`hermes --yolo`, `/yolo`, or `HERMES_YOLO_MODE=1`). The same badge also appears in the startup banner so you cannot launch an auto-approving session without noticing.
 
+## Reply suggestions
+
+When a turn ends and the composer is empty, the TUI (and the [Desktop](desktop.md) composer) may show
+a likely reply as dim ghost text in place of the placeholder. **`Tab`** (in Desktop also
+**`Right arrow`**) puts it into the input so you can edit it; nothing is ever sent until you press
+Enter. **`Esc`** dismisses it until the next turn, and typing replaces it.
+
+Suggestions come from two sources:
+
+1. **Deterministic (free, on by default).** If the agent's last message ends in a question, Hermes
+   offers the file path it asked about, the first option of a trailing numbered list, or
+   `Yes, go ahead` for a yes/no confirmation ("Want me to push?"). Questions that ask for a choice
+   ("Which file should I keep?") never get a bare yes. No model is called.
+2. **Model prediction (on by default).** Unless `display.composer_predictions` is `false`
+   (Settings → Chat → Next-Message Predictions in Desktop), Hermes asks the model
+   to guess your next message after every completed turn and shows that instead; the deterministic
+   reply is the fallback when the model has no guess. A prediction that arrives after a new turn has
+   started is discarded.
+
+By default the prediction runs on **the session's own model** as a detached fork of the
+conversation (the same rail as `/btw`): the request replays the conversation byte-for-byte and adds
+one short instruction, so it is a prompt-cache read plus a few output tokens, and the model sees the
+whole conversation. Tools are disabled for it, nothing is written to the session, and its usage is
+recorded on the session as `composer_predictions`. The fork keeps the session's reasoning settings,
+because changing them would miss the cache.
+
+Hermes prefers silence to a bad guess. No request is sent after the first exchange of a
+conversation, after a turn that ended in an error, or when the session's prompt cache is cold
+(more than 10k input tokens would be billed at full price). The model is told to predict what *you*
+would type (2-12 words, in your language) and to output nothing when the next step is not obvious;
+a reply that reads as praise, a question to itself, the assistant's own voice, several sentences
+or formatted text is dropped.
+
+A prediction is exactly one provider request: an error, a truncated reply or a (denied) tool call
+never earns a retry or a follow-up, and a conversation too long to replay gets no prediction rather
+than a compaction pass. It asks for at most 1024 output tokens. Some providers cannot take that limit
+(a model with a manual thinking budget needs a larger one; the Codex backend accepts none), so Hermes
+also estimates the streamed reply and reasoning and cuts the request off past the cap; reasoning a
+provider does not stream cannot be counted. The request is cancelled as soon as you send the next
+message.
+`auxiliary.composer_predictions.timeout` (60 seconds) only guards against a hung request: the
+input is paid for as soon as the request is sent, so a slow reply is waited for.
+
+A session on a mixture-of-agents (MoA) model cannot be forked into one request (one MoA turn is
+several by design), so its prediction is the short-transcript request below, sent to the preset's
+aggregator model alone.
+
+Routing `auxiliary.composer_predictions` anywhere else (another `provider`, `model` or `base_url`,
+or another `api_key` / `key_env` under a pinned provider, exactly as the other auxiliary tasks read
+those keys) switches to a cheaper shape instead: that model has no warm cache, so it gets only a short transcript of the last few
+turns in one small request, capped at 80 output tokens and, like the fork, never retried or failed over.
+
+```yaml
+display:
+  composer_suggestions: true    # false turns all ghost suggestions off
+  composer_predictions: true    # false keeps only the free deterministic replies
+auxiliary:
+  composer_predictions:
+    provider: auto              # auto = the session's model on its warm prompt cache
+    model: ""                   # pin another provider/model for a short-transcript request instead
+    timeout: 60                 # hung-request guard, not a latency budget
+```
+
 ## Configuration
 
 The TUI respects all standard Hermes config: `~/.hermes/config.yaml`, profiles, personalities, skins, quick commands, credential pools, memory providers, tool/skill enablement. No TUI-specific config file exists.

@@ -43,6 +43,7 @@ import { OverlayBreadcrumbHeader } from '../overlays/overlay-breadcrumb-header'
 import { OverlayMain, OverlayNav, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
+import { auxTaskUsageRows } from './aux-task-usage'
 import { MaintenancePanel } from './maintenance'
 
 export type CommandCenterSection = 'maintenance' | 'sessions' | 'system' | 'usage'
@@ -605,6 +606,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
   const totals = usage?.totals
   const byModel = usage?.by_model ?? []
   const topSkills = usage?.skills?.top_skills ?? []
+  const auxTasks = auxTaskUsageRows(usage?.by_task)
 
   const maxTokens = useMemo(() => {
     if (!daily.length) {
@@ -721,24 +723,39 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
           }))}
           title={cc.topSkills}
         />
+        {auxTasks.length > 0 && (
+          <UsageList
+            className="sm:col-span-2"
+            emptyLabel=""
+            hint={`${cc.statApiCalls} · ${cc.statTokens} · ${t.shell.statusbar.toggleCacheHitRate}`}
+            rows={auxTasks}
+            title={t.settings.model.auxiliaryTitle}
+          />
+        )}
       </div>
     </div>
   )
 }
 
 function UsageList({
+  className,
   emptyLabel,
+  hint,
   rows,
   title
 }: {
+  className?: string
   emptyLabel: string
+  /** What the value column holds, when it is not self-evident. */
+  hint?: string
   rows: Array<{ key: string; label: string; value: string }>
   title: string
 }) {
   return (
-    <section className="min-w-0">
-      <div className="mb-1.5 text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
-        {title}
+    <section className={cn('min-w-0', className)}>
+      <div className="mb-1.5 flex items-baseline justify-between gap-2 text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
+        <span>{title}</span>
+        {hint && <span className="truncate font-normal normal-case tracking-normal">{hint}</span>}
       </div>
       {rows.length === 0 ? (
         <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">

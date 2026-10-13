@@ -425,7 +425,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   timezone: 'Timezone',
   display: {
     personality: 'Personality',
-    showReasoning: 'Reasoning Blocks'
+    showReasoning: 'Reasoning Blocks',
+    composerPredictions: 'Next-Message Predictions'
   },
   desktop: {
     repoScanEnabled: 'Automatic Repository Discovery',
@@ -611,7 +612,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   fallbackProviders: 'Backup provider:model entries to try if the default model fails.',
   display: {
     personality: 'Default assistant style for new sessions.',
-    showReasoning: 'Show reasoning sections when the backend provides them.'
+    showReasoning: 'Show reasoning sections when the backend provides them.',
+    composerPredictions:
+      'After each reply, show a predicted next message as dim text in the empty composer (Tab or Right arrow accepts it). Costs one small, mostly cached request per turn on the session model.'
   },
   desktop: {
     repoScanEnabled: 'Scan local folders for Git repositories to show in Projects.',
@@ -718,7 +721,13 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'chat',
     label: 'Chat',
     icon: MessageCircle,
-    keys: ['display.personality', 'timezone', 'display.show_reasoning', 'agent.image_input_mode']
+    keys: [
+      'display.personality',
+      'timezone',
+      'display.show_reasoning',
+      'display.composer_predictions',
+      'agent.image_input_mode'
+    ]
   },
   {
     id: 'appearance',
