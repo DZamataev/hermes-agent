@@ -12,6 +12,7 @@ const TREE: Record<string, string[]> = {
 }
 
 vi.mock('@/lib/desktop-fs', () => ({
+  desktopFsCacheKey: () => 'local:',
   // Only paths inside the repo have this root; /elsewhere is outside it.
   desktopGitRoot: (path: string) => Promise.resolve(path.startsWith('/work/looky') ? '/work/looky' : null),
   isDesktopFsRemoteMode: () => false,

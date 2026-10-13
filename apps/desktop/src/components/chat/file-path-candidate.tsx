@@ -3,7 +3,7 @@ import { type MouseEvent as ReactMouseEvent, type ReactNode, useEffect, useState
 
 import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
-import { desktopGitRoot, readDesktopDir } from '@/lib/desktop-fs'
+import { desktopFsCacheKey, desktopGitRoot, readDesktopDir } from '@/lib/desktop-fs'
 import { type ResolvedFilePath, resolveFilePath } from '@/lib/file-path-resolve'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { canOpenPathInEditor, openPathInEditor, wantsExternalEditor } from '@/lib/open-in-editor'
@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { $pathModifierHeld } from '@/store/path-modifier'
 import { openPreview } from '@/store/preview'
+import { $connection } from '@/store/session'
 
 interface FilePathCandidateProps {
   children: ReactNode
@@ -27,29 +28,77 @@ export const RESOLVED_DIR_ATTR = 'data-file-directory'
  *  crosses many tokens; only a rest probes the filesystem. */
 const HOVER_INTENT_MS = 200
 
-const io = {
-  gitRoot: (path: string) => desktopGitRoot(path),
-  listDir: async (dir: string) => {
-    const result = await readDesktopDir(dir)
-
-    return result.error
-      ? null
-      : result.entries.map(entry => ({ isDirectory: entry.isDirectory, name: entry.name, path: entry.path }))
-  }
-}
+/** How long "nothing there" is believed. A miss is a fact about a moment —
+ *  the agent names files it is about to write — so it only spares the disk a
+ *  burst of repeat hovers and then has to be asked again. */
+const MISS_TTL_MS = 3_000
 
 /**
- * Answers already paid for, keyed by the cwd they were taken against.
+ * Answers already paid for, keyed by the backend and cwd they were taken
+ * against.
  *
  * Module scope on purpose: a transcript names the same file repeatedly and
  * remounts rows as it virtualizes, so a per-component cache would re-probe the
- * disk on every scroll. Keying by cwd is what makes an answer from another
- * working directory unreachable rather than something to invalidate.
+ * disk on every scroll. Keying by connection and cwd is what makes an answer
+ * from another machine or working directory unreachable rather than something
+ * to invalidate. A hit is kept; a miss expires (`MISS_TTL_MS`).
  */
-const probed = new Map<string, ResolvedFilePath | null>()
+const probed = new Map<string, { expires: number; match: ResolvedFilePath | null }>()
 
-function probeKey(cwd: string, path: string) {
-  return `${cwd}\u0000${path}`
+function probeKey(connectionKey: string, cwd: string, path: string) {
+  return `${connectionKey}\u0000${cwd}\u0000${path}`
+}
+
+/** The remembered answer for *key*, or undefined when there is none to trust. */
+function recall(key: string): ResolvedFilePath | null | undefined {
+  const known = probed.get(key)
+
+  if (known && known.expires <= Date.now()) {
+    probed.delete(key)
+
+    return undefined
+  }
+
+  return known?.match
+}
+
+/**
+ * Ask the filesystem about *path* and remember what it said.
+ *
+ * A miss is remembered only when every listing actually answered: a directory
+ * that could not be read (a dropped connection, a folder not created yet)
+ * proves nothing about the file, so that outcome is asked again next time.
+ */
+async function probe(key: string, path: string, cwd: string): Promise<ResolvedFilePath | null> {
+  let unreadable = false
+
+  const match = await resolveFilePath(path, cwd, {
+    gitRoot: dir =>
+      desktopGitRoot(dir).catch(() => {
+        unreadable = true
+
+        return null
+      }),
+    listDir: async dir => {
+      const result = await readDesktopDir(dir).catch(() => null)
+
+      if (!result || result.error) {
+        unreadable = true
+
+        return null
+      }
+
+      return result.entries.map(entry => ({ isDirectory: entry.isDirectory, name: entry.name, path: entry.path }))
+    }
+  })
+
+  if (match) {
+    probed.set(key, { expires: Infinity, match })
+  } else if (!unreadable) {
+    probed.set(key, { expires: Date.now() + MISS_TTL_MS, match: null })
+  }
+
+  return match
 }
 
 /**
@@ -73,12 +122,14 @@ export function FilePathCandidate({ children, path }: FilePathCandidateProps) {
   // session's cwd, not the primary chat's.
   const cwd = useStore(useSessionView().$cwd)
   const armed = useStore($pathModifierHeld)
-  const [resolved, setResolved] = useState<ResolvedFilePath | null>(() => probed.get(probeKey(cwd, path)) ?? null)
+  // Subscribed, not read: switching backend must drop what this token learned
+  // from the previous one's filesystem.
+  const key = probeKey(desktopFsCacheKey(useStore($connection)), cwd, path)
+  const [resolved, setResolved] = useState<ResolvedFilePath | null>(() => recall(key) ?? null)
   const [hovered, setHovered] = useState(false)
 
   useEffect(() => {
-    const key = probeKey(cwd, path)
-    const known = probed.get(key)
+    const known = recall(key)
 
     if (known !== undefined) {
       setResolved(known)
@@ -86,8 +137,8 @@ export function FilePathCandidate({ children, path }: FilePathCandidateProps) {
       return
     }
 
-    // Nothing is known about this (cwd, path) yet, so the token must not claim
-    // anything either until a hover pays for the answer.
+    // Nothing is known about this (backend, cwd, path) right now, so the token
+    // must not claim anything either until a hover pays for the answer.
     setResolved(null)
 
     if (!hovered) {
@@ -97,9 +148,7 @@ export function FilePathCandidate({ children, path }: FilePathCandidateProps) {
     let cancelled = false
 
     const timer = setTimeout(() => {
-      void resolveFilePath(path, cwd, io).then(match => {
-        probed.set(key, match)
-
+      void probe(key, path, cwd).then(match => {
         if (!cancelled) {
           setResolved(match)
         }
@@ -110,7 +159,7 @@ export function FilePathCandidate({ children, path }: FilePathCandidateProps) {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [hovered, cwd, path])
+  }, [hovered, key, cwd, path])
 
   const target = resolved?.path ?? null
   // A directory has nothing to render in the rail, so the click gesture is not

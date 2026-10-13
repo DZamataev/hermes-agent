@@ -16,6 +16,7 @@ const TREE: Record<string, string[]> = {
 const opened: string[] = []
 
 vi.mock('@/lib/desktop-fs', () => ({
+  desktopFsCacheKey: () => 'local:',
   desktopGitRoot: (path: string) => Promise.resolve(path.startsWith('/work/looky') ? '/work/looky' : null),
   isDesktopFsRemoteMode: () => false,
   readDesktopDir: (dir: string) =>
