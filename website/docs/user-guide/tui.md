@@ -258,8 +258,11 @@ would type (2-12 words, in your language) and to output nothing when the next st
 a reply that reads as praise, a question to itself, the assistant's own voice, several sentences
 or formatted text is dropped.
 
-Pinning `auxiliary.composer_predictions` to a different provider/model switches to a cheaper
-shape instead: that model has no warm cache, so it gets only a short transcript of the last few
+The request is capped at 1024 output tokens and is cancelled when you send the next message or
+when `auxiliary.composer_predictions.timeout` passes.
+
+Pinning any of `provider`, `model` or `base_url` under `auxiliary.composer_predictions` to
+something other than the session's switches to a cheaper shape instead: that model has no warm cache, so it gets only a short transcript of the last few
 turns in one small request.
 
 ```yaml

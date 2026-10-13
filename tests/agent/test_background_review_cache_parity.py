@@ -33,6 +33,8 @@ def _make_agent_stub(agent_cls):
         "PARENT-SYSTEM-PROMPT-BYTES — must be inherited verbatim "
         "for prefix-cache parity"
     )
+    # The stable tier of that prompt: it decides the system-block split in the outbound request.
+    agent._cached_system_prompt_static = "PARENT-SYSTEM-PROMPT-BYTES"
     agent.ephemeral_system_prompt = (
         "WebUI session context:\n- Pinned per-request gateway context"
     )
@@ -150,6 +152,8 @@ def test_review_fork_inherits_parent_cached_system_prompt():
         def _spy_setattr(self, name, value):
             if name == "_cached_system_prompt":
                 captured["written_prompt"] = value
+            if name == "_cached_system_prompt_static":
+                captured["written_static"] = value
             orig_setattr(self, name, value)
 
         with patch.object(_Recorder, "__setattr__", _spy_setattr):
@@ -167,6 +171,9 @@ def test_review_fork_inherits_parent_cached_system_prompt():
         f"Got {captured['written_prompt']!r}, expected {parent_prompt!r}. "
         "This breaks Anthropic/OpenRouter prefix-cache parity (#25322)."
     )
+    # Same text split differently is a different request: the fork must reuse the parent's
+    # stable tier, or its system prompt goes out as one block and loses the early breakpoint.
+    assert captured.get("written_static") == agent._cached_system_prompt_static
 
 
 def test_review_fork_inherits_parent_ephemeral_system_prompt():

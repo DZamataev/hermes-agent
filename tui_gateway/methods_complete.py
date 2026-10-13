@@ -300,7 +300,8 @@ def _(rid, params: dict) -> dict:
 
         agent = session.get("agent")
         prediction = predict_next_message(
-            history, _coerce_message_text, main_runtime=_main_runtime_from_agent(agent), agent=agent)
+            history, _coerce_message_text, main_runtime=_main_runtime_from_agent(agent), agent=agent,
+            stale=lambda: int(session.get("history_version", 0)) != version)
         # A turn that started while the model was predicting makes every guess stale.
         if snapshot()[1] != version:
             return _ok(rid, {"candidates": [], "history_version": version})

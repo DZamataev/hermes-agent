@@ -980,7 +980,8 @@ export interface AnalyticsTaskEntry {
   /** Cached share of the task's whole prompt, 0-100; null when it sent no prompt tokens. */
   cache_hit_pct?: null | number
   cache_read_tokens?: number
-  /** Uncached input only: cached input is counted in `cache_read_tokens`. */
+  cache_write_tokens?: number
+  /** Uncached input only: cached input is in `cache_read_tokens` / `cache_write_tokens`. */
   input_tokens: number
   models: string[]
   output_tokens: number

@@ -18,8 +18,11 @@ Two paths, picked by ``auxiliary.composer_predictions``:
 from __future__ import annotations
 
 import logging
+import math
 import re
-from typing import Any
+import threading
+import time
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,11 @@ _PER_MESSAGE_CHARS = 1500
 _NONE = "NONE"
 # The model may spend its first iteration on a (denied) tool call; a third request is never worth it.
 _FORK_MAX_ITERATIONS = 2
+# The fork keeps the session's reasoning settings (cache parity), so this caps thinking plus the
+# reply; the parent's own limit would let a decorative guess spend a whole turn's output budget.
+_FORK_MAX_OUTPUT_TOKENS = 1024
+_DEFAULT_TIMEOUT_SECONDS = 15.0
+_WATCH_INTERVAL_SECONDS = 0.25
 # A reply needs a conversation to continue: the first exchange has no pattern to predict from.
 _MIN_ASSISTANT_MESSAGES = 2
 # Above this many input tokens outside the prompt cache, a decorative guess is not worth its price.
@@ -72,9 +80,12 @@ _FORK_PROMPT = (
 # One-word replies that are complete messages on their own.
 _SHORT_OK = frozenset({
     "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "no", "push", "commit", "deploy", "stop", "continue",
-    "check", "exit", "quit", "да", "нет", "ок", "окей", "ага", "давай", "продолжай", "дальше", "стоп",
-    "коммить", "закоммить", "пуш", "запушь", "деплой", "проверь",
+    "check", "exit", "quit", "да", "нет", "ок", "окей", "ага", "давай", "делай", "сделай", "продолжай", "продолжи",
+    "дальше", "стоп", "отмена", "коммить", "закоммить", "пуш", "запушь", "деплой", "проверь", "покажи", "запусти",
+    "исправь",
 })
+# Scripts written without spaces between words (kana, CJK ideographs, hangul).
+_UNSPACED_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
 _WRAPPER_TAG_RE = re.compile(r"^<(suggestion|response|output|answer|result)>(.*)</\1>$", re.IGNORECASE | re.DOTALL)
 _LABEL_RE = re.compile(
     r"^\s*(?:suggested\s+(?:response|reply|input|prompt)|suggestion|response|reply|answer|output|result"
@@ -95,19 +106,26 @@ _ASSISTANT_VOICE_RE = re.compile(
     r"|давайте я|сейчас я|я сейчас|я могу|я сделаю|я думаю|вот |вы можете|ты можешь|конечно,)", re.IGNORECASE)
 
 
+def _word_count(text: str) -> int:
+    """Words in ``text``; unspaced scripts count about two characters to a word, so a normal
+    Chinese or Japanese phrase is neither "one word" nor rejected for it."""
+    unspaced = len(_UNSPACED_RE.findall(text))
+    return len(_UNSPACED_RE.sub(" ", text).split()) + math.ceil(unspaced / 2)
+
+
 def reject_reason(text: str) -> str | None:
     """Why a raw model reply is not a usable ghost, else ``None``. A model that ignored the task
     announces silence, praises, answers in its own voice or writes a paragraph; showing any of that
     as the user's next message is worse than showing nothing."""
     lower = text.lower()
-    words = text.split()
+    words = _word_count(text)
     checks = (
         ("meta_text", lambda: bool(_META_RE.search(lower))),
         ("meta_wrapped", lambda: bool(_BRACKETED_RE.match(text))),
         ("error_message", lambda: lower.startswith(_ERROR_PREFIXES)),
         ("prefixed_label", lambda: bool(re.match(r"^\w+:\s", text))),
-        ("too_few_words", lambda: len(words) < 2 and not text.startswith("/") and lower.strip(".!") not in _SHORT_OK),
-        ("too_many_words", lambda: len(words) > MAX_PREDICTION_WORDS),
+        ("too_few_words", lambda: words < 2 and not text.startswith("/") and lower.strip(".!") not in _SHORT_OK),
+        ("too_many_words", lambda: words > MAX_PREDICTION_WORDS),
         ("too_long", lambda: len(text) >= MAX_PREDICTION_CHARS),
         ("multiple_sentences", lambda: bool(_SENTENCE_BREAK_RE.search(text))),
         ("has_formatting", lambda: "\n" in text or "*" in text),
@@ -131,13 +149,11 @@ def _clean(text: str) -> str:
     return text
 
 
-def skip_reason(history: list[dict], agent: Any = None) -> str | None:
-    """Why no request should be sent at all, else ``None``: the cheapest prediction is the one
-    never asked for."""
+def skip_reason(history: list[dict]) -> str | None:
+    """Why no request should be sent on either path, else ``None``: the cheapest prediction is
+    the one never asked for."""
     if sum(1 for m in history if m.get("role") == "assistant") < _MIN_ASSISTANT_MESSAGES:
         return "early_conversation"
-    if agent is not None and _uncached_tokens(agent) > _COLD_CACHE_TOKENS:
-        return "cache_cold"
     return None
 
 
@@ -165,25 +181,70 @@ def _task_config() -> dict[str, Any]:
     return task if isinstance(task, dict) else {}
 
 
-def _predict_via_fork(agent: Any, history: list[dict], task_cfg: dict[str, Any]) -> str:
+def _timeout_seconds(task_cfg: dict[str, Any]) -> float:
+    try:
+        timeout = float(task_cfg.get("timeout") or 0)
+    except (TypeError, ValueError):
+        timeout = 0.0
+    return timeout if timeout > 0 else _DEFAULT_TIMEOUT_SECONDS
+
+
+def _watch_fork(fork: Any, done: threading.Event, timeout: float, stale: Callable[[], bool] | None) -> None:
+    """Interrupt ``fork`` once its answer can no longer be shown: the task timeout passed, or
+    ``stale()`` says a new turn started. Dropping a late reply is not enough, it would still be
+    generated and billed."""
+    deadline = time.monotonic() + timeout
+    while not done.wait(_WATCH_INTERVAL_SECONDS):
+        if time.monotonic() >= deadline or (stale is not None and stale()):
+            fork.interrupt(tool_reason="composer prediction superseded")
+            return
+
+
+def _set_child(agent: Any, fork: Any, *, register: bool) -> None:
+    """Track the fork as a child of ``agent`` so stopping the session stops the prediction too."""
+    children, lock = getattr(agent, "_active_children", None), getattr(agent, "_active_children_lock", None)
+    if children is None or lock is None:
+        return
+    with lock:
+        if register:
+            children.append(fork)
+        elif fork in children:
+            children.remove(fork)
+
+
+def _predict_via_fork(
+    agent: Any, history: list[dict], task_cfg: dict[str, Any], stale: Callable[[], bool] | None = None,
+) -> str:
     """One prediction from a cache-parity fork of ``agent``. An empty thread tool whitelist denies
     every tool call at dispatch, so ``tools[]`` stays byte-identical for the cache but nothing runs."""
     from agent.background_review import (
         _record_review_usage_to_parent, _snapshot_review_usage, build_cache_parity_fork,
     )
+    from agent.memory_provider import spawn_context_thread
     from hermes_cli.plugins import clear_thread_tool_whitelist, set_thread_tool_whitelist
 
     fork, _rt, _routed = build_cache_parity_fork(
         agent, task_cfg, max_iterations=_FORK_MAX_ITERATIONS, write_origin=TASK)
+    # The output limit is not part of the cached prefix, so capping it keeps the cache read.
+    parent_limit = getattr(fork, "max_tokens", None)
+    fork.max_tokens = min(parent_limit, _FORK_MAX_OUTPUT_TOKENS) if isinstance(parent_limit, int) and parent_limit > 0 \
+        else _FORK_MAX_OUTPUT_TOKENS
+    done = threading.Event()
+    watcher = spawn_context_thread(
+        _watch_fork, name="composer-prediction-watch", args=(fork, done, _timeout_seconds(task_cfg), stale))
     try:
+        _set_child(agent, fork, register=True)
+        watcher.start()
         set_thread_tool_whitelist(set(), deny_msg_fmt=(
             "Composer prediction denied tool call: {tool_name}. Tools are disabled here; reply with "
             "the predicted message text only."))
         result = fork.run_conversation(user_message=_FORK_PROMPT, conversation_history=list(history))
         return _clean((result or {}).get("final_response", "") or "")
     finally:
+        done.set()
         clear_thread_tool_whitelist()
-        for step in (lambda: _record_review_usage_to_parent(agent, _snapshot_review_usage(fork), task=TASK),
+        for step in (lambda: _set_child(agent, fork, register=False),
+                     lambda: _record_review_usage_to_parent(agent, _snapshot_review_usage(fork), task=TASK),
                      fork.shutdown_memory_provider, fork.close):
             try:
                 step()
@@ -192,9 +253,18 @@ def _predict_via_fork(agent: Any, history: list[dict], task_cfg: dict[str, Any])
 
 
 def _same_model(agent: Any, task_cfg: dict[str, Any]) -> bool:
-    from agent.background_review import _resolve_review_runtime
-
-    return not _resolve_review_runtime(agent, task_cfg).get("routed")
+    """True when ``auxiliary.composer_predictions`` routes nowhere else. Any pinned provider, model
+    or endpoint that differs from the session's sends the task through the ordinary auxiliary
+    router, which honours each key on its own (a model without a provider, a provider without a
+    model, the same model on another endpoint)."""
+    provider, model, base_url = (str(task_cfg.get(key) or "").strip() for key in ("provider", "model", "base_url"))
+    own_providers = {str(getattr(agent, attr, None) or "") for attr in ("provider", "requested_provider")}
+    if provider and provider != "auto" and provider not in own_providers:
+        return False
+    if model and model != str(getattr(agent, "model", None) or ""):
+        return False
+    own_base_url = str(getattr(agent, "base_url", None) or "").rstrip("/")
+    return not base_url or base_url.rstrip("/") == own_base_url
 
 
 def _transcript(history: list[dict], coerce) -> list[str]:
@@ -211,24 +281,30 @@ def _transcript(history: list[dict], coerce) -> list[str]:
 
 def predict_next_message(
     history: list[dict], coerce, *, main_runtime: dict | None = None, agent: Any = None,
+    stale: Callable[[], bool] | None = None,
 ) -> str:
     """One prediction, or ``""`` when the model abstains, fails, or the transcript has no reply yet.
-    With a live ``agent`` on the session's own model the request rides its warm prompt cache."""
+    With a live ``agent`` on the session's own model the request rides its warm prompt cache;
+    ``stale`` (a new turn started) cancels that request instead of letting it finish unread."""
     turns = _transcript(history, coerce)
     # Predict only right after an agent reply; a trailing user turn means the reply never landed.
     if not turns or not turns[-1].startswith("ASSISTANT:"):
         return ""
-    if (reason := skip_reason(history, agent)):
+    if (reason := skip_reason(history)):
         logger.debug("composer prediction skipped: %s", reason)
         return ""
     last = history[-1] if history else {}
+    task_cfg = _task_config()
     # The fork replays history verbatim, so it needs a finished turn: a mid-turn tail (pending
     # tool calls, a tool result) breaks role alternation and has no reply to predict from.
-    if agent is not None and last.get("role") == "assistant" and not last.get("tool_calls"):
-        task_cfg = _task_config()
+    if (agent is not None and last.get("role") == "assistant" and not last.get("tool_calls")
+            and _same_model(agent, task_cfg)):
+        # Only this path replays the whole conversation, so only it depends on the session's cache.
+        if _uncached_tokens(agent) > _COLD_CACHE_TOKENS:
+            logger.debug("composer prediction skipped: cache_cold")
+            return ""
         try:
-            if _same_model(agent, task_cfg):
-                return _predict_via_fork(agent, history, task_cfg)
+            return _predict_via_fork(agent, history, task_cfg, stale)
         except Exception:  # health: allow BLE001 -- decorative: no second billed attempt, just no ghost
             logger.debug("composer prediction fork failed", exc_info=True)
             return ""
