@@ -38,6 +38,7 @@ export type {
   AnalyticsResponse,
   AnalyticsSkillEntry,
   AnalyticsSkillsSummary,
+  AnalyticsTaskEntry,
   AnalyticsTotals,
   AudioSpeakResponse,
   AudioTranscriptionResponse,

@@ -974,8 +974,23 @@ export interface AnalyticsModelEntry {
   sessions: number
 }
 
+/** Auxiliary-model usage for one task (vision, compression, composer_predictions, ...). */
+export interface AnalyticsTaskEntry {
+  api_calls: number
+  /** Cached share of the task's whole prompt, 0-100; null when it sent no prompt tokens. */
+  cache_hit_pct?: null | number
+  cache_read_tokens?: number
+  /** Uncached input only: cached input is counted in `cache_read_tokens`. */
+  input_tokens: number
+  models: string[]
+  output_tokens: number
+  task: string
+}
+
 export interface AnalyticsResponse {
   by_model: AnalyticsModelEntry[]
+  /** Absent on older backends. */
+  by_task?: AnalyticsTaskEntry[]
   daily: AnalyticsDailyEntry[]
   period_days: number
   skills: {

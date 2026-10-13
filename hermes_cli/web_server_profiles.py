@@ -385,6 +385,7 @@ def _aux_usage_rows(db, cutoff: float) -> list[dict[str, Any]]:
                    SUM(u.input_tokens) as input_tokens,
                    SUM(u.output_tokens) as output_tokens,
                    SUM(u.cache_read_tokens) as cache_read_tokens,
+                   SUM(u.cache_write_tokens) as cache_write_tokens,
                    SUM(u.reasoning_tokens) as reasoning_tokens,
                    COALESCE(SUM(u.estimated_cost_usd), 0) as estimated_cost,
                    COUNT(DISTINCT u.session_id) as sessions,
@@ -421,17 +422,21 @@ def _merge_aux_into_by_model(
 
 
 def _aux_task_summary(aux_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Aggregate aux usage rows across models into a per-task summary."""
+    """Aggregate aux usage rows across models into a per-task summary. ``input_tokens`` excludes
+    cached input, so ``cache_hit_pct`` is the cached share of the whole prompt (None: no prompt)."""
+    counters = (*_AUX_COUNTERS, "cache_read_tokens", "cache_write_tokens")
     by_task: dict[str, dict[str, Any]] = {}
     for aux in aux_rows:
         task = aux.get("task") or ""
-        d = by_task.setdefault(task, {"task": task, "input_tokens": 0, "output_tokens": 0,
-                                      "estimated_cost": 0, "api_calls": 0, "models": []})
-        for key in _AUX_COUNTERS:
+        d = by_task.setdefault(task, {"task": task, **dict.fromkeys(counters, 0), "models": []})
+        for key in counters:
             d[key] += aux.get(key) or 0
         model = aux.get("model") or "unknown"
         if model not in d["models"]:
             d["models"].append(model)
+    for d in by_task.values():
+        prompt = d["input_tokens"] + d["cache_read_tokens"] + d["cache_write_tokens"]
+        d["cache_hit_pct"] = round(100 * d["cache_read_tokens"] / prompt) if prompt else None
     return sorted(by_task.values(), key=_token_volume, reverse=True)
 
 
