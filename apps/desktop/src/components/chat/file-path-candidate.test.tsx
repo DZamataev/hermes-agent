@@ -1,10 +1,11 @@
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import type { HermesConnection } from '@/global'
+import { $pathModifierHeld } from '@/store/path-modifier'
 import { $connection, $currentCwd } from '@/store/session'
 
-import { FilePathCandidate, RESOLVED_PATH_ATTR } from './file-path-candidate'
+import { FilePathCandidate, probeFileReferenceAt, RESOLVED_PATH_ATTR } from './file-path-candidate'
 
 type Listing = { entries: { isDirectory: boolean; name: string; path: string }[]; error?: string }
 
@@ -48,7 +49,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   vi.restoreAllMocks()
+  $pathModifierHeld.set(false)
   fs.listed.length = 0
   fs.readDir = () => Promise.resolve({ entries: [] })
   $connection.set(null)
@@ -111,4 +114,72 @@ it('does not carry an answer from one backend to another', async () => {
   await waitFor(() => expect(token.hasAttribute(RESOLVED_PATH_ATTR)).toBe(false))
   await hover(token)
   expect(token.hasAttribute(RESOLVED_PATH_ATTR)).toBe(false)
+})
+
+/** Let the mocked listing settle WITHOUT letting the hover timer fire: with
+ *  timers frozen, an answer that arrives proves nothing waited for the rest. */
+async function settle() {
+  await act(async () => {
+    for (let turn = 0; turn < 20; turn += 1) {
+      await Promise.resolve()
+    }
+  })
+}
+
+it('probes at once when the pointer arrives with the modifier already down', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  fs.readDir = dir => Promise.resolve(found(dir, 'armed.md'))
+
+  const token = mount('notes/armed.md')
+
+  // The control: without the modifier a hover is still only a hover.
+  fireEvent.mouseEnter(token)
+  await settle()
+  expect(fs.listed).toEqual([])
+
+  act(() => $pathModifierHeld.set(true))
+  await settle()
+  expect(token.getAttribute(RESOLVED_PATH_ATTR)).toBe('/work/looky/notes/armed.md')
+})
+
+it.each([
+  ['the secondary button', { button: 2 }],
+  ['the primary button with the modifier', { button: 0, metaKey: true }]
+])('probes at once on a press of %s', async (_label, press) => {
+  // The click or the menu follows the press by milliseconds; the probe must
+  // already be on its way rather than starting after a hover rest.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  fs.readDir = dir => Promise.resolve(found(dir, 'pressed.md'))
+
+  const token = mount(`notes/${press.button}/pressed.md`)
+
+  fireEvent.mouseDown(token, press)
+  await settle()
+  expect(token.getAttribute(RESOLVED_PATH_ATTR)).toBe(`/work/looky/notes/${press.button}/pressed.md`)
+})
+
+it('leaves a plain press alone, which is how a text selection starts', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+
+  const token = mount('notes/plain.md')
+
+  fireEvent.mouseDown(token, { button: 0 })
+  await settle()
+  expect(fs.listed).toEqual([])
+})
+
+it('hands the context menu an answer for a token nothing has probed yet', async () => {
+  fs.readDir = dir => Promise.resolve(found(dir, 'menu.md'))
+
+  const token = mount('notes/menu.md')
+
+  await expect(probeFileReferenceAt(token)).resolves.toMatchObject({ path: '/work/looky/notes/menu.md' })
+  expect(probeFileReferenceAt(token.ownerDocument.body)).toBeNull()
+})
+
+it('gives the context menu nothing to wait for on a path just found missing', async () => {
+  const token = mount('notes/absent.md')
+
+  await expect(probeFileReferenceAt(token)).resolves.toBeNull()
+  expect(probeFileReferenceAt(token)).toBeNull()
 })

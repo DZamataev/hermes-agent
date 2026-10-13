@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { openStarMapNodeMenuFor } from '@/app/starmap/context-menu-handle'
+import { probeFileReferenceAt } from '@/components/chat/file-path-candidate'
 import { DROPDOWN_KIT } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
@@ -43,6 +44,11 @@ import { isWebUrl, resolveDomTarget } from './target'
  *  reaction bubble). Owned targets inside it — links, images, editables,
  *  selections — still get the app menu. */
 export const CONTEXT_MENU_SKIP_ATTR = 'data-context-menu-skip'
+
+/** How long a right-click waits to learn whether the path under it exists.
+ *  A local listing answers in milliseconds; past this (a slow gateway) the
+ *  ordinary menu opens rather than leaving the click visibly unanswered. */
+const FILE_PROBE_WAIT_MS = 1_000
 
 const LOOPBACK_HOST_RE = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)$/i
 
@@ -622,6 +628,12 @@ export function AppContextMenu() {
   const open = useStore($contextMenu)
 
   useEffect(() => {
+    // Counts gestures, so a file probe that answers after the user has moved
+    // on opens nothing; `replayed` marks the events this listener re-sent.
+    let gesture = 0
+    const replayed = new WeakSet<Event>()
+    const onPointerDown = () => void (gesture += 1)
+
     // stopPropagation beats other renderer handlers; preventDefault is never
     // called because Chromium emits the main-process context-menu event (the
     // spellcheck + image-coordinate source) only for unprevented gestures —
@@ -658,6 +670,54 @@ export function AppContextMenu() {
       }
 
       const target = resolveDomTarget(element)
+
+      // A path the pointer never rested on has no verdict in the DOM yet. Hold
+      // the gesture until the filesystem answers: a hit opens the file menu,
+      // anything else re-sends the click so it resolves exactly as it would
+      // have — including to a pane's or the reaction bubble's own menu, which
+      // this listener can only yield to synchronously.
+      const probing = element && !target.filePath && !replayed.has(event) ? probeFileReferenceAt(element) : null
+
+      if (element && probing) {
+        const turn = (gesture += 1)
+        const { clientX, clientY } = event
+
+        event.stopPropagation()
+
+        void Promise.race([
+          probing,
+          new Promise<null>(resolve => setTimeout(() => resolve(null), FILE_PROBE_WAIT_MS))
+        ]).then(match => {
+          if (turn !== gesture || !element.isConnected) {
+            return
+          }
+
+          if (match) {
+            openDomContextMenu(clientX, clientY, {
+              ...resolveDomTarget(element),
+              filePath: match.path,
+              filePathIsDirectory: match.isDirectory
+            })
+
+            return
+          }
+
+          const replay = new MouseEvent('contextmenu', {
+            bubbles: true,
+            button: 2,
+            cancelable: true,
+            clientX,
+            clientY,
+            composed: true
+          })
+
+          replayed.add(replay)
+          element.dispatchEvent(replay)
+        })
+
+        return
+      }
+
       const selection = window.getSelection()
 
       const selected = Boolean(
@@ -689,8 +749,12 @@ export function AppContextMenu() {
     }
 
     window.addEventListener('contextmenu', onContextMenu, true)
+    window.addEventListener('pointerdown', onPointerDown, true)
 
-    return () => window.removeEventListener('contextmenu', onContextMenu, true)
+    return () => {
+      window.removeEventListener('contextmenu', onContextMenu, true)
+      window.removeEventListener('pointerdown', onPointerDown, true)
+    }
   }, [])
 
   // Spell-check facts arrive from main after the menu opens (Chromium reports
