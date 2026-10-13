@@ -44,7 +44,7 @@ def claude_code_session_id(session_id: Optional[str] = None) -> str:
         key = _cache_scope_from_session_id(
             get_affinity_scope() or get_conversation_context() or session_id
         )
-    except Exception:
+    except ImportError:  # the context modules are optional — fall back to the physical id
         key = str(session_id or "")
     key = key.strip()
     if not key:

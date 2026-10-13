@@ -37,7 +37,7 @@ PLUGIN_MIRRORED_PROVIDERS: set[str] = set()
 
 def _api_key_env_fields(pp: Any) -> tuple[tuple, str]:
     """Split a profile's ``env_vars`` into (api-key vars, base-URL var); the URL var may be ""."""
-    is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")  # noqa: E731
+    is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")
     return (tuple(v for v in pp.env_vars if not is_url(v)) or pp.env_vars,
             next((v for v in pp.env_vars if is_url(v)), None) or "")
 
@@ -145,6 +145,22 @@ def registry_lookup(provider_id: str) -> Optional[Any]:
     if pconfig is None and sync_plugin_provider_registry():
         pconfig = PROVIDER_REGISTRY.get(provider_id)
     return pconfig
+
+
+def known_provider_id(requested: Optional[str]) -> Optional[str]:
+    """The canonical id when *requested* names a built-in/plugin provider (aliases applied), else None.
+
+    The non-raising half of :func:`hermes_cli.auth.resolve_provider` for an explicit name:
+    route-identity checks run on every auxiliary call and must not pay for the unknown-provider hint
+    (a full config validation). Late-imports the auth facade's aliases so discovery stays owned there.
+    """
+    from hermes_cli.auth import _plugin_aliases
+
+    normalized = (requested or "").strip().lower()
+    normalized = _plugin_aliases().get(normalized, normalized)
+    if normalized in ("openrouter", "custom") or registry_lookup(normalized) is not None:
+        return normalized
+    return None
 
 
 def plugin_profile(provider: str) -> Optional[Any]:
