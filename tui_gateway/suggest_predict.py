@@ -37,7 +37,9 @@ _FORK_MAX_ITERATIONS = 2
 # The fork keeps the session's reasoning settings (cache parity), so this caps thinking plus the
 # reply; the parent's own limit would let a decorative guess spend a whole turn's output budget.
 _FORK_MAX_OUTPUT_TOKENS = 1024
-_DEFAULT_TIMEOUT_SECONDS = 15.0
+# A guard against a hung request holding an RPC worker, not a latency budget: the input is
+# already paid for once the request is sent, so a slow but arriving reply is worth waiting for.
+_DEFAULT_TIMEOUT_SECONDS = 60.0
 _WATCH_INTERVAL_SECONDS = 0.25
 # A reply needs a conversation to continue: the first exchange has no pattern to predict from.
 _MIN_ASSISTANT_MESSAGES = 2

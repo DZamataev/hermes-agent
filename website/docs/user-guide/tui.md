@@ -258,8 +258,9 @@ would type (2-12 words, in your language) and to output nothing when the next st
 a reply that reads as praise, a question to itself, the assistant's own voice, several sentences
 or formatted text is dropped.
 
-The request is capped at 1024 output tokens and is cancelled when you send the next message or
-when `auxiliary.composer_predictions.timeout` passes.
+The request is capped at 1024 output tokens and is cancelled when you send the next message.
+`auxiliary.composer_predictions.timeout` (60 seconds) only guards against a hung request: the
+input is paid for as soon as the request is sent, so a slow reply is waited for.
 
 Pinning any of `provider`, `model` or `base_url` under `auxiliary.composer_predictions` to
 something other than the session's switches to a cheaper shape instead: that model has no warm cache, so it gets only a short transcript of the last few
@@ -273,7 +274,7 @@ auxiliary:
   composer_predictions:
     provider: auto              # auto = the session's model on its warm prompt cache
     model: ""                   # pin another provider/model for a short-transcript request instead
-    timeout: 15
+    timeout: 60                 # hung-request guard, not a latency budget
 ```
 
 ## Configuration

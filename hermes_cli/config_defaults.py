@@ -793,7 +793,7 @@ DEFAULT_CONFIG = {
         "triage_specifier": _aux(120),
         "kanban_decomposer": _aux(180),
         "profile_describer": _aux(60),   # 1-2 sentence profile blurb; short, cheap
-        "composer_predictions": _aux(15),  # auto = session model on its warm cache (fork, like /btw)
+        "composer_predictions": _aux(60),  # auto = session model on its warm cache (fork, like /btw)
         "goal_judge": _aux(60),          # /goal satisfaction + contract drafting; JSON calls
         # Curator review can take minutes on reasoning models; route cheaper via `hermes model`.
         "curator": _aux(600),
