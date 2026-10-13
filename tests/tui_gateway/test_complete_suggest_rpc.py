@@ -105,6 +105,9 @@ def _fork_harness(monkeypatch, *, task_cfg=None, run=None, routed=False):
     monkeypatch.setattr(review, "_snapshot_review_usage", lambda fork: {"input_tokens": 9})
     monkeypatch.setattr(review, "_record_review_usage_to_parent", lambda agent, usage, *, task: recorded.append((agent, usage, task)))
     monkeypatch.setattr(predict, "_task_config", lambda: dict(task_cfg or {}))
+    # The route is decided by the real auxiliary resolver, reading this same task config.
+    monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda task: dict(task_cfg or {}))
+    monkeypatch.setattr(aux, "_scoped_key_env", lambda name: {"OTHER_KEY": "other-account", "MAIN_KEY": "main-key"}.get(name, ""))
     return predict, parent, events, recorded
 
 
@@ -153,6 +156,8 @@ def test_prediction_rides_the_parent_cache_through_a_fork(monkeypatch):
     {"provider": "openrouter"},                                      # a provider without a model
     {"provider": "teamclaude", "model": "main-model", "base_url": "https://other.example/v1"},  # another endpoint
     {"provider": "teamclaude", "model": "main-model", "api_key": "other-account"},              # another account
+    {"provider": "teamclaude", "key_env": "OTHER_KEY"},                                         # ... named by env var
+    {"provider": "teamclaude", "api_key_env": "OTHER_KEY"},
 ])
 def test_any_pinned_route_uses_the_short_transcript_call(monkeypatch, task_cfg):
     """Each routing key counts on its own, and the session's cold cache is not the routed model's
@@ -167,6 +172,10 @@ def test_any_pinned_route_uses_the_short_transcript_call(monkeypatch, task_cfg):
 @pytest.mark.parametrize("task_cfg", [
     {}, {"provider": "auto", "model": ""}, {"provider": "teamclaude", "model": "main-model"},
     {"provider": "custom", "base_url": "https://main.example/v1/"}, {"model": "main-model", "api_key": "main-key"},
+    {"provider": "teamclaude", "key_env": "MAIN_KEY"},
+    # A bare credential under provider auto is dropped by the auxiliary router, so the short call
+    # would run on the session's account anyway: nothing is routed elsewhere.
+    {"api_key": "other-account"}, {"provider": "auto", "key_env": "OTHER_KEY"},
 ])
 def test_unrouted_task_config_stays_on_the_session_model(monkeypatch, task_cfg):
     predict, parent, events, _ = _fork_harness(monkeypatch, task_cfg=task_cfg)
@@ -241,6 +250,33 @@ def test_only_a_finished_answer_is_a_prediction(monkeypatch, result):
     predict, parent, _, _ = _fork_harness(monkeypatch, run=lambda fork: result)
 
     assert predict.predict_next_message(_HISTORY, _coerce, agent=parent) == ""
+
+
+def test_a_moa_session_gets_no_model_prediction(monkeypatch):
+    """One mixture-of-agents turn is several requests (advisors, then the aggregator), all issued
+    before the request budget is consulted: there is no one-request prediction on it."""
+    predict, parent, events, _ = _fork_harness(monkeypatch)
+    parent.provider = parent.requested_provider = "moa"
+    monkeypatch.setattr(aux, "call_llm", lambda **kw: (_ for _ in ()).throw(AssertionError("aux path used")))
+
+    assert predict.predict_next_message(_HISTORY, _coerce, agent=parent) == "" and events == []
+
+
+@pytest.mark.parametrize("reasoning", ["Considering what the user asked for earlier. " * 49, "思考" * 500])
+def test_output_estimate_does_not_depend_on_how_the_stream_is_sliced(reasoning):
+    """Rounding each delta on its own made the same reasoning pass in one chunk and trip in
+    four-character chunks; the estimate is taken of everything streamed so far."""
+    import tui_gateway.suggest_predict as predict
+
+    verdicts = set()
+    for size in (1, 2, 3, 4, 5, 8, 64, len(reasoning)):
+        fork = types.SimpleNamespace(interrupt=lambda **kw: None)
+        guard = predict._OutputGuard(fork)
+        for start in range(0, len(reasoning), size):
+            guard.on_reasoning(reasoning[start:start + size])
+        guard.on_reply("run the tests")
+        verdicts.add(guard.tripped)
+    assert verdicts == {False}
 
 
 def test_reasoning_under_the_cap_is_left_alone(monkeypatch):
@@ -326,12 +362,14 @@ def test_reply_filters_and_cache_estimate():
 
     kept = {"run the tests": "run the tests", "Suggestion: run the tests": "run the tests", "да": "да",
             "покажи": "покажи", "运行测试": "运行测试", "テストを実行して": "テストを実行して",
-            "继续": "继续", "提交": "提交", "해줘": "해줘", "停": "停", "네": "네",
+            "继续": "继续", "提交": "提交", "해줘": "해줘", "停": "停", "네": "네", "可": "可", "否": "否",
+            "fix a[0] and b[1]": "fix a[0] and b[1]", "покажи x < y": "покажи x < y",
             "<suggestion>push it</suggestion>": "push it", "/compact": "/compact",
             "Да, покажи пример теста.": "Да, покажи пример теста."}
     assert {raw: predict._clean(raw) for raw in kept} == kept
     rejected = {"NONE": None, "Nothing to suggest": "meta_text", "(no obvious next step)": "meta_wrapped",
-                "API Error: overloaded": "error_message", "hmm": "too_few_words", "呃": "too_few_words", "测试" * 13: "too_many_words", "word " * 13: "too_many_words",
+                "API Error: overloaded": "error_message", "парсер в файле [путь к файлу]": "placeholder",
+                "open <file name> please": "placeholder", "hmm": "too_few_words", "呃": "too_few_words", "测试" * 13: "too_many_words", "word " * 13: "too_many_words",
                 "Fix it. Then push": "multiple_sentences", "**run** it": "has_formatting",
                 "Thanks, looks good": "evaluative", "Спасибо, отлично": "evaluative",
                 "Let me check the logs": "assistant_voice", "Я сейчас проверю логи": "assistant_voice"}

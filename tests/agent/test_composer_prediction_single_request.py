@@ -86,6 +86,23 @@ def test_without_the_request_budget_recovery_issues_more_requests(first):
     assert create.call_count > 1
 
 
+@pytest.mark.parametrize("first", [TimeoutError("timed out"), RuntimeError("HTTP 503: upstream unavailable")])
+def test_no_backoff_before_an_attempt_the_budget_forbids(monkeypatch, first):
+    from agent import turn_api_error
+
+    waits = []
+    real_sleep = turn_api_error.interruptible_backoff_sleep
+
+    def sleep(agent, wait_time, *args, **kwargs):
+        waits.append(wait_time)
+        return real_sleep(agent, 0, *args, **kwargs)
+
+    monkeypatch.setattr(turn_api_error, "interruptible_backoff_sleep", sleep)
+    create, _ = _run_fork(first)
+
+    assert create.call_count == 1 and waits and set(waits) == {0}
+
+
 def test_an_ordinary_agent_has_no_request_budget():
     from agent.turn_api_call import provider_request_budget_spent
 

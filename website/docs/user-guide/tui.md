@@ -268,8 +268,12 @@ message.
 `auxiliary.composer_predictions.timeout` (60 seconds) only guards against a hung request: the
 input is paid for as soon as the request is sent, so a slow reply is waited for.
 
-Pinning any of `provider`, `model`, `base_url` or `api_key` under `auxiliary.composer_predictions`
-to something other than the session's switches to a cheaper shape instead: that model has no warm cache, so it gets only a short transcript of the last few
+A session on a mixture-of-agents (MoA) model gets no model prediction: one MoA turn is several
+requests by design.
+
+Routing `auxiliary.composer_predictions` anywhere else (another `provider`, `model` or `base_url`,
+or another `api_key` / `key_env` under a pinned provider, exactly as the other auxiliary tasks read
+those keys) switches to a cheaper shape instead: that model has no warm cache, so it gets only a short transcript of the last few
 turns in one small request.
 
 ```yaml

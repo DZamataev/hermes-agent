@@ -48,13 +48,6 @@ _FORK_MAX_OUTPUT_TOKENS = 1024
 # session's own model, so they are withheld from its runtime resolver, which would read an alias
 # of the session's provider as a different one and build a cold, routed fork.
 _ROUTING_KEYS = frozenset({"provider", "model", "base_url", "api_key"})
-
-
-def _estimate_tokens(text: str) -> int:
-    """Upper-leaning token estimate without a tokenizer: an unspaced-script character is about a
-    token, other text about three characters to a token."""
-    unspaced = len(_UNSPACED_RE.findall(text))
-    return unspaced + math.ceil((len(text) - unspaced) / 3)
 # A guard against a hung request holding an RPC worker, not a latency budget: the input is
 # already paid for once the request is sent, so a slow but arriving reply is worth waiting for.
 _DEFAULT_TIMEOUT_SECONDS = 60.0
@@ -65,6 +58,13 @@ _MIN_ASSISTANT_MESSAGES = 2
 _COLD_CACHE_TOKENS = 10_000
 # Models echo the transcript's role labels back ("USER: ...").
 _ROLE_PREFIX_RE = re.compile(r"^(?:user|assistant)\s*:\s*", re.IGNORECASE)
+
+
+def _estimate_tokens(unspaced_chars: int, other_chars: int) -> int:
+    """Upper-leaning token estimate without a tokenizer: an unspaced-script character is about a
+    token, other text about three characters to a token."""
+    return unspaced_chars + math.ceil(other_chars / 3)
+
 
 # The rules are shared by both paths; the heuristics follow Claude Code's prompt suggestions:
 # predict the user's own next message, prefer silence, and never speak in the assistant's voice.
@@ -102,7 +102,7 @@ _SHORT_OK = frozenset({
     "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "no", "push", "commit", "deploy", "stop", "continue",
     "check", "exit", "quit", "да", "нет", "ок", "окей", "ага", "давай", "делай", "сделай", "продолжай", "продолжи",
     "дальше", "стоп", "отмена", "коммить", "закоммить", "пуш", "запушь", "деплой", "проверь", "покажи", "запусти",
-    "исправь", "好", "是", "对", "停", "走", "네", "예", "はい",
+    "исправь", "好", "是", "对", "不", "停", "走", "可", "否", "네", "예", "はい",
 })
 # Scripts written without spaces between words (kana, CJK ideographs, hangul).
 _UNSPACED_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
@@ -114,6 +114,8 @@ _META_RE = re.compile(
     r"^nothing (?:found|to suggest)|^no suggestion|\bsilence is\b|\bstay(?:s|ing)? silent\b|^\W*silence\W*$"
     r"|^\W*(?:done|готово|молчу|молчание|нет предложени[йя]|нечего предложить)\W*$", re.IGNORECASE)
 _BRACKETED_RE = re.compile(r"^(?:\(.*\)|\[.*\]|（.*）|【.*】)$", re.DOTALL)
+# A fill-in-the-blank template ("the parser is in [path to file]") is not a message anyone types.
+_PLACEHOLDER_RE = re.compile(r"\[[^\]\n]{2,}\]|<[^>\n]{2,}>|\{[^}\n]{2,}\}|…{2,}|_{3,}")
 _ERROR_PREFIXES = ("api error:", "prompt is too long", "request timed out", "invalid api key", "image was too large")
 _SENTENCE_BREAK_RE = re.compile(r"[.!?]\s+[A-ZА-ЯЁ]|[。！？]\s*\w")
 _EVALUATIVE_RE = re.compile(
@@ -151,6 +153,7 @@ def reject_reason(text: str) -> str | None:
         ("meta_text", lambda: bool(_META_RE.search(lower))),
         ("meta_wrapped", lambda: bool(_BRACKETED_RE.match(text))),
         ("error_message", lambda: lower.startswith(_ERROR_PREFIXES)),
+        ("placeholder", lambda: bool(_PLACEHOLDER_RE.search(text))),
         ("prefixed_label", lambda: bool(re.match(r"^\w+:\s", text))),
         ("too_few_words", lambda: _too_short(text, lower, words)),
         ("too_many_words", lambda: words > MAX_PREDICTION_WORDS),
@@ -243,17 +246,21 @@ def _set_child(agent: Any, fork: Any, *, register: bool) -> None:
 class _OutputGuard:
     """Estimates what the fork streams (reply and visible reasoning) and interrupts it past the
     cap: the provider-side limit is not enforceable on every transport, and a reply already
-    longer than a ghost can be is rejected anyway."""
+    longer than a ghost can be is rejected anyway. Characters are accumulated and the estimate
+    is taken of the whole, so how a provider slices its deltas cannot change the verdict."""
 
     def __init__(self, fork: Any) -> None:
-        self._fork, self._tokens, self._reply_chars, self.tripped = fork, 0, 0, False
+        self._fork, self._unspaced, self._other, self._reply_chars, self.tripped = fork, 0, 0, 0, False
 
     def _count(self, delta: Any, *, reply: bool) -> None:
         if not isinstance(delta, str) or self.tripped:
             return
-        self._tokens += _estimate_tokens(delta)
+        unspaced = len(_UNSPACED_RE.findall(delta))
+        self._unspaced += unspaced
+        self._other += len(delta) - unspaced
         self._reply_chars += len(delta) if reply else 0
-        if self._tokens > _FORK_MAX_OUTPUT_TOKENS or self._reply_chars > MAX_PREDICTION_CHARS * 2:
+        if (_estimate_tokens(self._unspaced, self._other) > _FORK_MAX_OUTPUT_TOKENS
+                or self._reply_chars > MAX_PREDICTION_CHARS * 2):
             self.tripped = True
             self._fork.interrupt(tool_reason="composer prediction over its output cap")
 
@@ -319,13 +326,15 @@ def _predict_via_fork(
                 logger.debug("composer prediction fork teardown step failed", exc_info=True)
 
 
-def _same_model(agent: Any, task_cfg: dict[str, Any]) -> bool:
-    """True when ``auxiliary.composer_predictions`` routes nowhere else. Any pinned provider,
-    model, endpoint or credential that differs from the session's sends the task through the
-    ordinary auxiliary router, which honours each key on its own (a model without a provider, a
-    provider without a model, the same model on another endpoint or under another account)."""
-    provider, model, base_url, api_key = (
-        str(task_cfg.get(key) or "").strip() for key in ("provider", "model", "base_url", "api_key"))
+def _same_model(agent: Any) -> bool:
+    """True when ``auxiliary.composer_predictions`` routes nowhere else, as decided by the
+    auxiliary router itself: the short-transcript call goes through it, so asking it is the only
+    way the two paths cannot disagree. It honours a model without a provider, a provider without
+    a model, another endpoint, and a credential (``api_key`` or ``key_env``) under a pinned
+    provider; a bare credential under ``provider: auto`` it drops, and so do we."""
+    from agent.auxiliary_client import _resolve_task_provider_model
+
+    provider, model, base_url, api_key, _api_mode = _resolve_task_provider_model(task=TASK)
     own_providers = {str(getattr(agent, attr, None) or "") for attr in ("provider", "requested_provider")}
     if provider and provider != "auto" and provider not in own_providers:
         return False
@@ -365,10 +374,19 @@ def predict_next_message(
         return ""
     last = history[-1] if history else {}
     task_cfg = _task_config()
+    try:
+        same_model = agent is not None and _same_model(agent)
+    except Exception:  # health: allow BLE001 -- decorative: an unresolvable route means no ghost
+        logger.debug("composer prediction route could not be resolved", exc_info=True)
+        return ""
+    if same_model and str(getattr(agent, "provider", None) or "").lower() == "moa":
+        # A mixture-of-agents turn is several model requests by design (advisors, then the
+        # aggregator); there is no one-request prediction on it. Pin another model to get one.
+        logger.debug("composer prediction skipped: moa session")
+        return ""
     # The fork replays history verbatim, so it needs a finished turn: a mid-turn tail (pending
     # tool calls, a tool result) breaks role alternation and has no reply to predict from.
-    if (agent is not None and last.get("role") == "assistant" and not last.get("tool_calls")
-            and _same_model(agent, task_cfg)):
+    if same_model and last.get("role") == "assistant" and not last.get("tool_calls"):
         # Only this path replays the whole conversation, so only it depends on the session's cache.
         if _uncached_tokens(agent) > _COLD_CACHE_TOKENS:
             logger.debug("composer prediction skipped: cache_cold")
