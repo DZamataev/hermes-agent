@@ -793,7 +793,7 @@ DEFAULT_CONFIG = {
         "triage_specifier": _aux(120),
         "kanban_decomposer": _aux(180),
         "profile_describer": _aux(60),   # 1-2 sentence profile blurb; short, cheap
-        "composer_predictions": _aux(15),  # display.composer_predictions; a cheap model is fine
+        "composer_predictions": _aux(15),  # auto = session model on its warm cache (fork, like /btw)
         "goal_judge": _aux(60),          # /goal satisfaction + contract drafting; JSON calls
         # Curator review can take minutes on reasoning models; route cheaper via `hermes model`.
         "curator": _aux(600),
@@ -828,7 +828,7 @@ DEFAULT_CONFIG = {
         "resume_skip_tool_only": True,
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
         "composer_suggestions": True,   # Desktop/TUI ghost-text replies after a turn (complete.suggest)
-        "composer_predictions": False,  # opt-in aux-model next-message guess: +1 request per turn
+        "composer_predictions": True,   # model next-message guess: +1 cached request per turn
         # steer mode: false hides only the "Steered into current run" bubble (steering still happens).
         "busy_steer_ack_enabled": True,
         # Classic CLI multiline beyond Alt+Enter: Ctrl+J newline, trailing backslash+Enter

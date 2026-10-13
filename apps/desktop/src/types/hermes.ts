@@ -486,6 +486,7 @@ export interface HermesConfig {
   }
   display?: {
     show_reasoning?: boolean | string
+    composer_predictions?: boolean
     personality?: string
     skin?: string
     interim_assistant_messages?: boolean

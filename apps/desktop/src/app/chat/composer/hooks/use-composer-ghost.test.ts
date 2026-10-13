@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { firstGhostCandidate, ghostVisible } from './use-composer-ghost'
+import { firstGhostCandidate, ghostVisible, isGhostAcceptKey } from './use-composer-ghost'
 
 describe('firstGhostCandidate', () => {
   it('returns the first candidate text', () => {
@@ -49,5 +49,29 @@ describe('ghostVisible', () => {
 
   it('never shows an empty ghost', () => {
     expect(ghostVisible({ ...base, ghost: '' })).toBe(false)
+  })
+})
+
+describe('isGhostAcceptKey', () => {
+  const key = (k: string, mods: Partial<Record<'altKey' | 'ctrlKey' | 'metaKey' | 'shiftKey', boolean>> = {}) => ({
+    altKey: false,
+    ctrlKey: false,
+    key: k,
+    metaKey: false,
+    shiftKey: false,
+    ...mods
+  })
+
+  it('accepts on plain Tab and plain Right arrow', () => {
+    expect(isGhostAcceptKey(key('Tab'))).toBe(true)
+    expect(isGhostAcceptKey(key('ArrowRight'))).toBe(true)
+  })
+
+  it('leaves modified keys and other keys alone', () => {
+    expect(isGhostAcceptKey(key('Tab', { shiftKey: true }))).toBe(false)
+    expect(isGhostAcceptKey(key('ArrowRight', { metaKey: true }))).toBe(false)
+    expect(isGhostAcceptKey(key('ArrowRight', { altKey: true }))).toBe(false)
+    expect(isGhostAcceptKey(key('ArrowLeft'))).toBe(false)
+    expect(isGhostAcceptKey(key('Enter'))).toBe(false)
   })
 })

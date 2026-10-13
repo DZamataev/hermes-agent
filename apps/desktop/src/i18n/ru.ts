@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
+import { ruDisplaySettings } from './ru_display_settings'
 import { ruModelMenu } from './ru_model_menu'
 import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
@@ -736,10 +737,7 @@ export const ruOverrides = {
       fallbackProviders: 'Резервные модели',
       toolsets: 'Включённые наборы инструментов',
       timezone: 'Часовой пояс',
-      display: {
-        personality: 'Личность',
-        showReasoning: 'Блоки рассуждений'
-      },
+      display: ruDisplaySettings.labels,
       desktop: {
         repoScanEnabled: 'Автоматическое обнаружение репозиториев',
         repoScanRoots: 'Корни обнаружения репозиториев',
@@ -907,10 +905,7 @@ export const ruOverrides = {
       modelContextLength: 'Оставьте 0, чтобы использовать обнаруженное окно контекста выбранной модели.',
       fallbackProviders:
         'Резервные записи provider:model, которые будут пробоваться, если модель по умолчанию не сработает.',
-      display: {
-        personality: 'Стиль ассистента по умолчанию для новых сеансов.',
-        showReasoning: 'Показывать блоки рассуждений, когда бэкенд их предоставляет.'
-      },
+      display: ruDisplaySettings.descriptions,
       desktop: {
         repoScanEnabled: 'Сканировать локальные папки на Git-репозитории, чтобы показывать их в Проектах.',
         repoScanRoots: 'Папки для сканирования. Оставьте пустым, чтобы сканировать домашний каталог.',

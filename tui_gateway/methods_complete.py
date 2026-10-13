@@ -277,8 +277,9 @@ def _(rid, params: dict) -> dict:
 
 @method("complete.suggest")
 def _(rid, params: dict) -> dict:
-    """Ghost-text replies for an empty composer: the free deterministic extractor first, then (opt-in
-    ``display.composer_predictions``) one aux-model prediction of the user's next message."""
+    """Ghost-text replies for an empty composer. ``display.composer_predictions`` (default on): one model
+    prediction of the user's next message (on the session's own warm prompt cache), with the free
+    deterministic extractor as the fallback when the model abstains. Otherwise the extractor alone."""
     empty = {"candidates": [], "history_version": 0}
     session = _sessions.get(params.get("session_id") or "")
     display = _load_cfg().get("display") or {}
@@ -293,19 +294,24 @@ def _(rid, params: dict) -> dict:
             return list(session.get("history", [])), int(session.get("history_version", 0))
 
     history, version = snapshot()
-    assistant_text = next(
-        (_coerce_message_text(m.get("content")) or "" for m in reversed(history) if m.get("role") == "assistant"), "")
-    from tui_gateway.suggest import extract_suggestions
-
-    candidates = [{"text": c.text, "kind": c.kind} for c in extract_suggestions(assistant_text)]
-    if not candidates and bool(display.get("composer_predictions", False)):
+    candidates: list[dict] = []
+    if bool(display.get("composer_predictions", True)):
         from tui_gateway.suggest_predict import predict_next_message
 
+        agent = session.get("agent")
         prediction = predict_next_message(
-            history, _coerce_message_text, main_runtime=_main_runtime_from_agent(session.get("agent")))
-        # A turn that started while the model was predicting makes the guess stale.
-        if prediction and snapshot()[1] == version:
+            history, _coerce_message_text, main_runtime=_main_runtime_from_agent(agent), agent=agent)
+        # A turn that started while the model was predicting makes every guess stale.
+        if snapshot()[1] != version:
+            return _ok(rid, {"candidates": [], "history_version": version})
+        if prediction:
             candidates = [{"text": prediction, "kind": "prediction"}]
+    if not candidates:
+        from tui_gateway.suggest import extract_suggestions
+
+        assistant_text = next(
+            (_coerce_message_text(m.get("content")) or "" for m in reversed(history) if m.get("role") == "assistant"), "")
+        candidates = [{"text": c.text, "kind": c.kind} for c in extract_suggestions(assistant_text)]
     return _ok(rid, {"candidates": candidates, "history_version": version})
 
 

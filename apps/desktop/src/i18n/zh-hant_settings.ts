@@ -415,7 +415,8 @@ export const zhHantSettings = {
       timezone: '時區',
       display: {
         personality: '人格',
-        showReasoning: '推理區塊'
+        showReasoning: '推理區塊',
+        composerPredictions: '下一則訊息預測'
       },
       desktop: {
         repoScanEnabled: '自動探索程式碼儲存庫',
@@ -591,7 +592,9 @@ export const zhHantSettings = {
       fallbackProviders: '預設模型失敗時要嘗試的備用 provider:model 項目。',
       display: {
         personality: '新工作階段的預設助手風格。',
-        showReasoning: '後端提供推理內容時顯示該區塊。'
+        showReasoning: '後端提供推理內容時顯示該區塊。',
+        composerPredictions:
+          '每次回覆後，在空的輸入框中以淺色文字顯示預測的下一則訊息（按 Tab 或右方向鍵採用）。每輪會在工作階段模型上產生一次小型且大部分命中快取的請求。'
       },
       desktop: {
         repoScanEnabled: '掃描本機資料夾，並在「專案」中顯示 Git 程式碼儲存庫。',

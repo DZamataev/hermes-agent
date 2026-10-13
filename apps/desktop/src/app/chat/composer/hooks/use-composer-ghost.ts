@@ -7,8 +7,8 @@ import type { HermesGateway } from '@/hermes'
  *
  * When an agent turn completes (busy true → false) and the composer is empty,
  * ask the gateway's deterministic `complete.suggest` for a likely reply and
- * surface the first candidate as ghost text in the placeholder slot. Tab
- * accepts it into real text; typing or a new turn clears it; Esc dismisses it
+ * surface the first candidate as ghost text in the placeholder slot. Tab or
+ * Right arrow accepts it into real text; typing or a new turn clears it; Esc dismisses it
  * until the next turn. Decorative by contract — any RPC failure resolves to
  * "no ghost", never an error, and never blocks the composer.
  *
@@ -39,8 +39,10 @@ export function ghostVisible(o: { busy: boolean; dismissed: boolean; empty: bool
   return o.empty && !o.busy && !o.dismissed && o.ghost !== ''
 }
 
-/** Plain Tab only: a modified Tab keeps its native meaning. */
-const isPlainTab = (e: KeyboardEvent) => e.key === 'Tab' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey
+/** Plain Tab or Right arrow only: a modified key keeps its native meaning. The ghost shows only in
+ *  an empty composer, where Right arrow has no caret to move. */
+export const isGhostAcceptKey = (e: Pick<KeyboardEvent, 'altKey' | 'ctrlKey' | 'key' | 'metaKey' | 'shiftKey'>) =>
+  (e.key === 'Tab' || e.key === 'ArrowRight') && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey
 
 export function useComposerGhost(opts: {
   busy: boolean
@@ -57,7 +59,7 @@ export function useComposerGhost(opts: {
   acceptGhost: () => null | string
   dismissGhost: () => boolean
   ghost: string
-  /** Tab accepts / Esc dismisses a visible ghost; true when the key was consumed. */
+  /** Tab or Right arrow accepts / Esc dismisses a visible ghost; true when the key was consumed. */
   handleGhostKeyDown: (event: { key: string; nativeEvent: KeyboardEvent; preventDefault: () => void }) => boolean
   /** The ghost while visible, else the regular placeholder. */
   placeholder: string
@@ -144,7 +146,7 @@ export function useComposerGhost(opts: {
         return false
       }
 
-      if (isPlainTab(event.nativeEvent)) {
+      if (isGhostAcceptKey(event.nativeEvent)) {
         // preventDefault keeps Tab from moving focus to the model picker.
         event.preventDefault()
         setGhost('')

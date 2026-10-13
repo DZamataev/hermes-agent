@@ -765,7 +765,9 @@ def _snapshot_review_usage(review_agent: Any) -> dict[str, Any]:
     }
 
 
-def _record_review_usage_to_parent(parent_agent: Any, usage: dict[str, Any]) -> None:
+def _record_review_usage_to_parent(
+    parent_agent: Any, usage: dict[str, Any], *, task: str = "background_review",
+) -> None:
     """Record a fork's usage against the parent session (best-effort, never raises). The fork has
     ``_session_db = None`` so conversation_loop's DB-gated accounting never sees its calls; route
     them through the aux-accounting chokepoint, which writes only ``session_model_usage`` — never
@@ -777,7 +779,7 @@ def _record_review_usage_to_parent(parent_agent: Any, usage: dict[str, Any]) -> 
         if session_db is None or not session_id or not any(counts.values()):
             return  # no DB, or the fork made no successful API calls (e.g. failed at spawn)
         session_db.record_auxiliary_usage(
-            session_id, task="background_review", model=usage.get("model"),
+            session_id, task=task, model=usage.get("model"),
             billing_provider=usage.get("provider"), billing_base_url=usage.get("base_url"),
             estimated_cost_usd=usage.get("estimated_cost_usd"),
             api_call_count=counts.pop("api_calls"), **counts,

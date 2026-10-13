@@ -4,6 +4,7 @@ import { deAuxTasks } from './de_aux_tasks'
 import { deBoot } from './de_boot'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
+import { deDisplaySettings } from './de_display_settings'
 import { deLocalModels } from './de_local_models'
 import { deModelMenu } from './de_model_menu'
 import { deNotices } from './de_notices'
@@ -1175,10 +1176,7 @@ export const deOverrides = {
       fallbackProviders: 'Fallback-Modelle',
       toolsets: 'Aktivierte Toolsets',
       timezone: 'Zeitzone',
-      display: {
-        personality: 'Persönlichkeit',
-        showReasoning: 'Denkblöcke'
-      },
+      display: deDisplaySettings.labels,
       desktop: {
         repoScanEnabled: 'Automatische Repository-Erkennung',
         repoScanRoots: 'Repository-Erkennungs-Wurzeln',
@@ -1351,10 +1349,7 @@ export const deOverrides = {
       model: 'Wird für neue Chats verwendet, sofern Sie im Composer kein anderes Modell wählen.',
       modelContextLength: 'Auf 0 lassen, um das erkannte Kontextfenster des gewählten Modells zu verwenden.',
       fallbackProviders: 'Backup-Anbieter:Modell-Einträge, die versucht werden, wenn das Standardmodell fehlschlägt.',
-      display: {
-        personality: 'Standard-Assistentenstil für neue Sessions.',
-        showReasoning: 'Denkabschnitte anzeigen, wenn das Backend sie liefert.'
-      },
+      display: deDisplaySettings.descriptions,
       desktop: {
         repoScanEnabled: 'Lokale Ordner nach Git-Repositories durchsuchen, die in Projekten angezeigt werden.',
         repoScanRoots: 'Zu durchsuchende Ordner. Leer lassen, um Ihr Home-Verzeichnis zu durchsuchen.',
