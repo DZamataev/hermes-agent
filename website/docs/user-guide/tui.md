@@ -268,8 +268,9 @@ message.
 `auxiliary.composer_predictions.timeout` (60 seconds) only guards against a hung request: the
 input is paid for as soon as the request is sent, so a slow reply is waited for.
 
-A session on a mixture-of-agents (MoA) model gets no model prediction: one MoA turn is several
-requests by design.
+A session on a mixture-of-agents (MoA) model cannot be forked into one request (one MoA turn is
+several by design), so its prediction is the short-transcript request below, sent to the preset's
+aggregator model alone.
 
 Routing `auxiliary.composer_predictions` anywhere else (another `provider`, `model` or `base_url`,
 or another `api_key` / `key_env` under a pinned provider, exactly as the other auxiliary tasks read

@@ -381,9 +381,10 @@ def predict_next_message(
         return ""
     if same_model and str(getattr(agent, "provider", None) or "").lower() == "moa":
         # A mixture-of-agents turn is several model requests by design (advisors, then the
-        # aggregator); there is no one-request prediction on it. Pin another model to get one.
-        logger.debug("composer prediction skipped: moa session")
-        return ""
+        # aggregator), so a fork of it cannot be one request. The auxiliary router runs every
+        # task of a MoA session on the preset's aggregator model alone; the short-transcript
+        # call below goes through it.
+        same_model = False
     # The fork replays history verbatim, so it needs a finished turn: a mid-turn tail (pending
     # tool calls, a tool result) breaks role alternation and has no reply to predict from.
     if same_model and last.get("role") == "assistant" and not last.get("tool_calls"):

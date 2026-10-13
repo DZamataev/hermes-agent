@@ -252,14 +252,29 @@ def test_only_a_finished_answer_is_a_prediction(monkeypatch, result):
     assert predict.predict_next_message(_HISTORY, _coerce, agent=parent) == ""
 
 
-def test_a_moa_session_gets_no_model_prediction(monkeypatch):
+def test_a_moa_session_predicts_with_one_call_to_its_aggregator(monkeypatch):
     """One mixture-of-agents turn is several requests (advisors, then the aggregator), all issued
-    before the request budget is consulted: there is no one-request prediction on it."""
+    before the request budget is consulted: no fork. The short-transcript call goes out instead,
+    and the auxiliary router sends a MoA session's tasks to the aggregator model alone."""
     predict, parent, events, _ = _fork_harness(monkeypatch)
     parent.provider = parent.requested_provider = "moa"
-    monkeypatch.setattr(aux, "call_llm", lambda **kw: (_ for _ in ()).throw(AssertionError("aux path used")))
+    parent.model = "my-preset"
+    calls = []
 
-    assert predict.predict_next_message(_HISTORY, _coerce, agent=parent) == "" and events == []
+    def fake_llm(**kw):
+        calls.append((kw["task"], kw["main_runtime"]["provider"], kw["max_tokens"]))
+        return _reply("Ship it")
+
+    monkeypatch.setattr(aux, "call_llm", fake_llm)
+    runtime = {"provider": "moa", "model": "my-preset", "base_url": "moa://local", "api_key": "placeholder"}
+
+    assert predict.predict_next_message(_HISTORY, _coerce, agent=parent, main_runtime=runtime) == "Ship it"
+    assert events == [] and calls == [("composer_predictions", "moa", 80)]
+
+    # What the router does with that runtime: the aggregator's own provider and model, with the
+    # facade's endpoint and placeholder key dropped.
+    monkeypatch.setattr(aux, "_resolve_moa_aggregator", lambda preset: ("openrouter", "agg-model"))
+    assert aux._main_route_target(runtime, "composer_predictions") == ("openrouter", "agg-model", "", "", "")
 
 
 @pytest.mark.parametrize("reasoning", ["Considering what the user asked for earlier. " * 49, "思考" * 500])
