@@ -15,6 +15,7 @@ from typing import Any, Callable, List, Optional, Tuple
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.interrupt_control import interrupted_during_api_call_reason
+from agent.turn_api_call import provider_request_budget_spent as _provider_request_budget_spent
 from agent.turn_failure_copy import exit_reason_failure, stamp_failure
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_content import flatten_message_text
@@ -147,9 +148,9 @@ def _resolve_budget_fallback(
                 # Reuses the candidate the user already saw sealed as an interim (#130396).
                 agent._reused_response_text = final_response
             preserved_verification_fallback = True
-        elif getattr(agent, "_no_iteration_summary", False):
-            # A single-request fork (composer prediction) prefers no answer to paying for one more
-            # request: the summary below would be a second full replay of the conversation.
+        elif _provider_request_budget_spent(agent):
+            # The summary below is one more provider request, issued outside perform_api_call:
+            # a fork that has spent its request budget takes no answer instead.
             pass
         else:
             # _handle_max_iterations makes one extra toolless request for a summary.

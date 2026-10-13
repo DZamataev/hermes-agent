@@ -258,16 +258,18 @@ would type (2-12 words, in your language) and to output nothing when the next st
 a reply that reads as praise, a question to itself, the assistant's own voice, several sentences
 or formatted text is dropped.
 
-A prediction is exactly one provider request: a truncated reply or a (denied) tool call never earns a
-follow-up. It asks for at most 1024 output tokens, and Hermes also counts the streamed output and
-cuts the request off past that, because some providers cannot take the limit (a model with a manual
-thinking budget needs a larger one; the Codex backend accepts none). Reasoning a provider does not
-stream cannot be counted. The request is cancelled as soon as you send the next message.
+A prediction is exactly one provider request: an error, a truncated reply or a (denied) tool call
+never earns a retry or a follow-up, and a conversation too long to replay gets no prediction rather
+than a compaction pass. It asks for at most 1024 output tokens. Some providers cannot take that limit
+(a model with a manual thinking budget needs a larger one; the Codex backend accepts none), so Hermes
+also estimates the streamed reply and reasoning and cuts the request off past the cap; reasoning a
+provider does not stream cannot be counted. The request is cancelled as soon as you send the next
+message.
 `auxiliary.composer_predictions.timeout` (60 seconds) only guards against a hung request: the
 input is paid for as soon as the request is sent, so a slow reply is waited for.
 
-Pinning any of `provider`, `model` or `base_url` under `auxiliary.composer_predictions` to
-something other than the session's switches to a cheaper shape instead: that model has no warm cache, so it gets only a short transcript of the last few
+Pinning any of `provider`, `model`, `base_url` or `api_key` under `auxiliary.composer_predictions`
+to something other than the session's switches to a cheaper shape instead: that model has no warm cache, so it gets only a short transcript of the last few
 turns in one small request.
 
 ```yaml

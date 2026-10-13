@@ -75,6 +75,7 @@ def _fork_harness(monkeypatch, *, task_cfg=None, run=None, routed=False):
     events, recorded = [], []
     parent = types.SimpleNamespace(
         provider="custom", requested_provider="teamclaude", model="main-model", base_url="https://main.example/v1",
+        api_key="main-key",
         _active_children=[], _active_children_lock=threading.Lock(), interrupted=threading.Event())
 
     class Fork:
@@ -82,7 +83,8 @@ def _fork_harness(monkeypatch, *, task_cfg=None, run=None, routed=False):
 
         def run_conversation(self, user_message, conversation_history):
             events.append(("run", user_message, conversation_history, plugins._thread_tool_whitelist.allowed,
-                           self.max_tokens, self in parent._active_children))
+                           self.max_tokens, self in parent._active_children,
+                           (self._provider_request_budget, self.compression_enabled)))
             return run(self) if run else {"final_response": '"Open the PR too"', "completed": True}
 
         def interrupt(self, message=None, **kw):
@@ -124,11 +126,13 @@ def test_prediction_rides_the_parent_cache_through_a_fork(monkeypatch):
 
     assert predict.predict_next_message(_HISTORY, _coerce, agent=parent) == "Open the PR too"
     assert events[0] == ("build", parent, 1, "composer_predictions", {})
-    _, prompt, replayed, whitelist, output_cap, tracked = events[1]
+    _, prompt, replayed, whitelist, output_cap, tracked, spend = events[1]
     # History replays verbatim (tool rounds included) with every tool denied at dispatch.
     assert prompt == predict._FORK_PROMPT and replayed == _HISTORY and whitelist == set()
     # The guess never inherits the session's output budget, and stopping the session reaches it.
     assert output_cap == predict._FORK_MAX_OUTPUT_TOKENS and tracked
+    # One provider request in total, and no compaction request on the side.
+    assert spend == (1, False)
     assert events[2:] == ["shutdown", "close"] and plugins._thread_tool_whitelist.allowed is None
     assert parent._active_children == [] and recorded == [(parent, {"input_tokens": 9}, "composer_predictions")]
 
@@ -148,6 +152,7 @@ def test_prediction_rides_the_parent_cache_through_a_fork(monkeypatch):
     {"provider": "auto", "model": "cheap-model"},                    # a model without a provider
     {"provider": "openrouter"},                                      # a provider without a model
     {"provider": "teamclaude", "model": "main-model", "base_url": "https://other.example/v1"},  # another endpoint
+    {"provider": "teamclaude", "model": "main-model", "api_key": "other-account"},              # another account
 ])
 def test_any_pinned_route_uses_the_short_transcript_call(monkeypatch, task_cfg):
     """Each routing key counts on its own, and the session's cold cache is not the routed model's
@@ -161,7 +166,7 @@ def test_any_pinned_route_uses_the_short_transcript_call(monkeypatch, task_cfg):
 
 @pytest.mark.parametrize("task_cfg", [
     {}, {"provider": "auto", "model": ""}, {"provider": "teamclaude", "model": "main-model"},
-    {"provider": "custom", "base_url": "https://main.example/v1/"},
+    {"provider": "custom", "base_url": "https://main.example/v1/"}, {"model": "main-model", "api_key": "main-key"},
 ])
 def test_unrouted_task_config_stays_on_the_session_model(monkeypatch, task_cfg):
     predict, parent, events, _ = _fork_harness(monkeypatch, task_cfg=task_cfg)
@@ -187,7 +192,8 @@ def test_fork_never_inherits_the_task_routing_keys(monkeypatch):
     """The session's provider is known under two names (``custom`` / ``teamclaude``). Naming the
     alias in the task config is still the session's own model, and the fork's runtime resolver,
     which knows only one of the names, must not get the chance to disagree."""
-    task_cfg = {"provider": "teamclaude", "model": "main-model", "api_key": "k", "timeout": 30, "max_input_tokens": 9}
+    task_cfg = {"provider": "teamclaude", "model": "main-model", "api_key": "main-key", "timeout": 30,
+                "max_input_tokens": 9}
     predict, parent, events, _ = _fork_harness(monkeypatch, task_cfg=task_cfg)
 
     assert predict.predict_next_message(_HISTORY, _coerce, agent=parent) == "Open the PR too"
@@ -204,7 +210,11 @@ def test_a_routed_fork_is_never_fed_the_conversation(monkeypatch):
     assert [e for e in events if isinstance(e, tuple) and e[0] == "run"] == [] and events[-2:] == ["shutdown", "close"]
 
 
-@pytest.mark.parametrize(("reply", "reasoning"), [("x" * 300, ""), ("", "y" * 5000)])
+@pytest.mark.parametrize(("reply", "reasoning"), [
+    ("x" * 300, ""),      # a reply longer than any ghost
+    ("", "y" * 3500),     # ~1170 tokens of reasoning at three characters a token
+    ("", "思" * 1100),    # an unspaced script is about a token per character
+])
 def test_runaway_output_is_cut_off_on_our_side(monkeypatch, reply, reasoning):
     """Not every transport honours the output limit, so the stream is counted too: a reply longer
     than any ghost, or reasoning past the cap, interrupts the request and yields nothing."""
@@ -231,6 +241,53 @@ def test_only_a_finished_answer_is_a_prediction(monkeypatch, result):
     predict, parent, _, _ = _fork_harness(monkeypatch, run=lambda fork: result)
 
     assert predict.predict_next_message(_HISTORY, _coerce, agent=parent) == ""
+
+
+def test_reasoning_under_the_cap_is_left_alone(monkeypatch):
+    def stream(fork):
+        fork.reasoning_callback("y" * 2400)  # ~800 tokens
+        fork.stream_delta_callback("Open the PR too")
+        return {"final_response": "Open the PR too", "completed": True}
+
+    predict, parent, events, _ = _fork_harness(monkeypatch, run=stream)
+
+    assert predict.predict_next_message(_HISTORY, _coerce, agent=parent) == "Open the PR too"
+    assert not [e for e in events if isinstance(e, tuple) and e[0] == "interrupt"]
+
+
+def test_a_turn_admitted_right_after_the_snapshot_is_seen_as_new(monkeypatch):
+    """History, version and the in-flight turn are read under ``history_lock``, which admission
+    holds too: a turn that starts the moment the lock is released cannot be taken for the turn
+    the prediction started from."""
+    import tui_gateway.suggest_predict as predict
+
+    done = [{"role": "user", "content": "plan it"}, {"role": "assistant", "content": "Planned."},
+            {"role": "user", "content": "fix it"}, {"role": "assistant", "content": "Fixed and pushed."}]
+    session = {"history": done, "history_version": 7, "agent": None, "inflight_turn": None}
+
+    class AdmitOnRelease:
+        """Stands in for ``history_lock``: a new turn is admitted as soon as the reader lets go."""
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            session["inflight_turn"] = {"started_at": 300.0}
+
+    session["history_lock"] = AdmitOnRelease()
+    monkeypatch.setitem(srv._sessions, "s3", session)
+    monkeypatch.setattr(srv, "_load_cfg", lambda: {"display": {}})
+    seen = []
+    monkeypatch.setattr(predict, "predict_next_message",
+                        lambda history, coerce, *, main_runtime=None, agent=None, stale=None: seen.append(stale()) or "x y")
+
+    assert srv._methods["complete.suggest"](1, {"session_id": "s3"})["result"]["candidates"] == [] and seen == [True]
+
+    # A turn record without a timestamp is still a turn that was not there at the start.
+    session.update(history_lock=None, inflight_turn=None)
+    monkeypatch.setattr(predict, "predict_next_message",
+                        lambda history, coerce, *, main_runtime=None, agent=None, stale=None:
+                        session.update(inflight_turn={"assistant": "", "streaming": True}) or "x y")
+    assert srv._methods["complete.suggest"](1, {"session_id": "s3"})["result"]["candidates"] == []
 
 
 def test_a_new_turn_supersedes_the_prediction_before_history_moves(monkeypatch):
@@ -269,12 +326,12 @@ def test_reply_filters_and_cache_estimate():
 
     kept = {"run the tests": "run the tests", "Suggestion: run the tests": "run the tests", "да": "да",
             "покажи": "покажи", "运行测试": "运行测试", "テストを実行して": "テストを実行して",
-            "继续": "继续", "提交": "提交", "해줘": "해줘",
+            "继续": "继续", "提交": "提交", "해줘": "해줘", "停": "停", "네": "네",
             "<suggestion>push it</suggestion>": "push it", "/compact": "/compact",
             "Да, покажи пример теста.": "Да, покажи пример теста."}
     assert {raw: predict._clean(raw) for raw in kept} == kept
     rejected = {"NONE": None, "Nothing to suggest": "meta_text", "(no obvious next step)": "meta_wrapped",
-                "API Error: overloaded": "error_message", "hmm": "too_few_words", "好": "too_few_words", "测试" * 13: "too_many_words", "word " * 13: "too_many_words",
+                "API Error: overloaded": "error_message", "hmm": "too_few_words", "呃": "too_few_words", "测试" * 13: "too_many_words", "word " * 13: "too_many_words",
                 "Fix it. Then push": "multiple_sentences", "**run** it": "has_formatting",
                 "Thanks, looks good": "evaluative", "Спасибо, отлично": "evaluative",
                 "Let me check the logs": "assistant_voice", "Я сейчас проверю логи": "assistant_voice"}

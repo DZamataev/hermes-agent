@@ -32,20 +32,29 @@ MAX_PREDICTION_WORDS = 12
 _CONTEXT_MESSAGES = 6
 _PER_MESSAGE_CHARS = 1500
 _NONE = "NONE"
-# One prediction is ONE provider request: a single iteration, so a denied tool call or a truncated
-# reply never earns a follow-up, and ``_no_iteration_summary`` so that running out of iterations
-# does not buy the loop's extra "summarise" request either.
+# One prediction is ONE provider request, enforced where requests are issued
+# (``_provider_request_budget`` in ``agent.turn_api_call``): error retries, a retried truncated
+# tool call, a length continuation, a fallback provider and the "summarise" request on a spent
+# iteration budget would each be another full replay of the conversation.
+_FORK_PROVIDER_REQUESTS = 1
 _FORK_MAX_ITERATIONS = 1
 # The fork keeps the session's reasoning settings (cache parity), so this caps thinking plus the
 # reply; the parent's own limit would let a decorative guess spend a whole turn's output budget.
 # Not every transport can honour it (manual thinking budgets need a larger max_tokens, the Codex
-# backend takes no output limit), so the streamed output is also counted on our side.
+# backend takes no output limit), so the streamed output is also estimated on our side. That is
+# an estimate, not a tokenizer: it errs toward cutting early.
 _FORK_MAX_OUTPUT_TOKENS = 1024
-_FORK_MAX_STREAMED_CHARS = _FORK_MAX_OUTPUT_TOKENS * 4
 # Routing keys of the task config. The fork is only built once they are known to point at the
 # session's own model, so they are withheld from its runtime resolver, which would read an alias
 # of the session's provider as a different one and build a cold, routed fork.
 _ROUTING_KEYS = frozenset({"provider", "model", "base_url", "api_key"})
+
+
+def _estimate_tokens(text: str) -> int:
+    """Upper-leaning token estimate without a tokenizer: an unspaced-script character is about a
+    token, other text about three characters to a token."""
+    unspaced = len(_UNSPACED_RE.findall(text))
+    return unspaced + math.ceil((len(text) - unspaced) / 3)
 # A guard against a hung request holding an RPC worker, not a latency budget: the input is
 # already paid for once the request is sent, so a slow but arriving reply is worth waiting for.
 _DEFAULT_TIMEOUT_SECONDS = 60.0
@@ -93,7 +102,7 @@ _SHORT_OK = frozenset({
     "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "no", "push", "commit", "deploy", "stop", "continue",
     "check", "exit", "quit", "да", "нет", "ок", "окей", "ага", "давай", "делай", "сделай", "продолжай", "продолжи",
     "дальше", "стоп", "отмена", "коммить", "закоммить", "пуш", "запушь", "деплой", "проверь", "покажи", "запусти",
-    "исправь",
+    "исправь", "好", "是", "对", "停", "走", "네", "예", "はい",
 })
 # Scripts written without spaces between words (kana, CJK ideographs, hangul).
 _UNSPACED_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
@@ -127,11 +136,9 @@ def _word_count(text: str) -> int:
 def _too_short(text: str, lower: str, words: int) -> bool:
     """One word is rarely a message: a slash command and a few stock replies are. In unspaced
     scripts two characters already make a command ("继续", "提交", "해줘")."""
-    if words >= 2 or text.startswith("/"):
+    if words >= 2 or text.startswith("/") or lower.strip(".!。！") in _SHORT_OK:
         return False
-    if (unspaced := len(_UNSPACED_RE.findall(text))):
-        return unspaced < 2
-    return lower.strip(".!") not in _SHORT_OK
+    return len(_UNSPACED_RE.findall(text)) < 2
 
 
 def reject_reason(text: str) -> str | None:
@@ -234,20 +241,19 @@ def _set_child(agent: Any, fork: Any, *, register: bool) -> None:
 
 
 class _OutputGuard:
-    """Counts what the fork streams (reply and visible reasoning) and interrupts it past the cap:
-    the provider-side limit is not enforceable on every transport, and a reply already longer
-    than a ghost can be is rejected anyway."""
+    """Estimates what the fork streams (reply and visible reasoning) and interrupts it past the
+    cap: the provider-side limit is not enforceable on every transport, and a reply already
+    longer than a ghost can be is rejected anyway."""
 
     def __init__(self, fork: Any) -> None:
-        self._fork, self._chars, self._reply_chars, self.tripped = fork, 0, 0, False
+        self._fork, self._tokens, self._reply_chars, self.tripped = fork, 0, 0, False
 
     def _count(self, delta: Any, *, reply: bool) -> None:
-        size = len(delta) if isinstance(delta, str) else 0
-        self._chars += size
-        self._reply_chars += size if reply else 0
-        if not self.tripped and (
-            self._chars > _FORK_MAX_STREAMED_CHARS or self._reply_chars > MAX_PREDICTION_CHARS * 2
-        ):
+        if not isinstance(delta, str) or self.tripped:
+            return
+        self._tokens += _estimate_tokens(delta)
+        self._reply_chars += len(delta) if reply else 0
+        if self._tokens > _FORK_MAX_OUTPUT_TOKENS or self._reply_chars > MAX_PREDICTION_CHARS * 2:
             self.tripped = True
             self._fork.interrupt(tool_reason="composer prediction over its output cap")
 
@@ -279,7 +285,9 @@ def _predict_via_fork(
             # Unreachable while the routing keys are withheld; a routed fork has none of the
             # parent's prompt or tools, so replaying the conversation into it would be a cold request.
             raise RuntimeError("cache-parity fork resolved to a different model")
-        fork._no_iteration_summary = True
+        fork._provider_request_budget = _FORK_PROVIDER_REQUESTS
+        # Compaction is a model request of its own; a conversation too long to replay gets no guess.
+        fork.compression_enabled = False
         # The output limit is not part of the cached prefix, so capping it keeps the cache read.
         parent_limit = getattr(fork, "max_tokens", None)
         fork.max_tokens = (min(parent_limit, _FORK_MAX_OUTPUT_TOKENS)
@@ -312,15 +320,18 @@ def _predict_via_fork(
 
 
 def _same_model(agent: Any, task_cfg: dict[str, Any]) -> bool:
-    """True when ``auxiliary.composer_predictions`` routes nowhere else. Any pinned provider, model
-    or endpoint that differs from the session's sends the task through the ordinary auxiliary
-    router, which honours each key on its own (a model without a provider, a provider without a
-    model, the same model on another endpoint)."""
-    provider, model, base_url = (str(task_cfg.get(key) or "").strip() for key in ("provider", "model", "base_url"))
+    """True when ``auxiliary.composer_predictions`` routes nowhere else. Any pinned provider,
+    model, endpoint or credential that differs from the session's sends the task through the
+    ordinary auxiliary router, which honours each key on its own (a model without a provider, a
+    provider without a model, the same model on another endpoint or under another account)."""
+    provider, model, base_url, api_key = (
+        str(task_cfg.get(key) or "").strip() for key in ("provider", "model", "base_url", "api_key"))
     own_providers = {str(getattr(agent, attr, None) or "") for attr in ("provider", "requested_provider")}
     if provider and provider != "auto" and provider not in own_providers:
         return False
     if model and model != str(getattr(agent, "model", None) or ""):
+        return False
+    if api_key and api_key != str(getattr(agent, "api_key", None) or ""):
         return False
     own_base_url = str(getattr(agent, "base_url", None) or "").rstrip("/")
     return not base_url or base_url.rstrip("/") == own_base_url

@@ -286,21 +286,29 @@ def _(rid, params: dict) -> dict:
     if session is None or not bool(display.get("composer_suggestions", True)):
         return _ok(rid, empty)
 
-    def snapshot() -> tuple[list, int]:
+    def snapshot() -> tuple:
+        """History, its version and the in-flight turn, read together: turn admission holds
+        ``history_lock`` too, so a turn starting right after is always seen as new."""
+        def read() -> tuple:
+            return (list(session.get("history", [])), int(session.get("history_version", 0)),
+                    session.get("inflight_turn"))
+
         lock = session.get("history_lock")
         if lock is None:
-            return list(session.get("history", [])), int(session.get("history_version", 0))
+            return read()
         with lock:
-            return list(session.get("history", [])), int(session.get("history_version", 0))
+            return read()
 
-    history, version = snapshot()
-    turn_at_start = (session.get("inflight_turn") or {}).get("started_at")
+    history, version, turn_at_start = snapshot()
+    had_turn = isinstance(turn_at_start, dict)
+    started_at = turn_at_start.get("started_at") if had_turn else None
 
     def superseded() -> bool:
         """A new turn makes any guess stale. Admission marks it at once (a fresh in-flight turn);
-        ``history_version`` only moves when that turn's result is committed."""
+        ``history_version`` only moves when that turn's result is committed. The turn that was
+        still being cleared when the client asked is not a new one."""
         turn = session.get("inflight_turn")
-        started = isinstance(turn, dict) and turn.get("started_at") != turn_at_start
+        started = isinstance(turn, dict) and (not had_turn or turn.get("started_at") != started_at)
         return started or int(session.get("history_version", 0)) != version
 
     candidates: list[dict] = []
