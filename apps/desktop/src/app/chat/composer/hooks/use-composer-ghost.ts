@@ -47,10 +47,15 @@ export function useComposerGhost(opts: {
   gateway: HermesGateway | null | undefined
   hasText: boolean
   placeholder: string
-  /** Accepted ghost text goes into the composer (never sent), then focus returns to it. */
-  requestMainFocus: () => void
   sessionId: null | string | undefined
-  setComposerText: (text: string) => void
+  /**
+   * Makes the accepted ghost text the draft (never sent). It must be the draft's own programmatic
+   * write path (`loadIntoComposer` → `paintDraft`, what history recall uses): that mirrors the
+   * text, repaints the editor and puts the caret at the end. Setting only the composer state
+   * leaves a FOCUSED editor blank, because the state → DOM sync deliberately skips the focused
+   * editor: the ghost vanished and nothing appeared in its place.
+   */
+  writeDraft: (text: string) => void
   /** An open `/` or `@` drawer owns Tab/Escape. */
   trigger: unknown
 }): {
@@ -62,7 +67,7 @@ export function useComposerGhost(opts: {
   /** The ghost while visible, else the regular placeholder. */
   placeholder: string
 } {
-  const { busy, gateway, hasText, placeholder, requestMainFocus, sessionId, setComposerText, trigger } = opts
+  const { busy, gateway, hasText, placeholder, sessionId, trigger, writeDraft } = opts
   const empty = !hasText
   const [ghost, setGhost] = useState('')
   const [dismissed, setDismissed] = useState(false)
@@ -148,8 +153,7 @@ export function useComposerGhost(opts: {
         // preventDefault keeps Tab from moving focus to the model picker.
         event.preventDefault()
         setGhost('')
-        setComposerText(ghost)
-        requestMainFocus()
+        writeDraft(ghost)
 
         return true
       }
@@ -163,7 +167,7 @@ export function useComposerGhost(opts: {
 
       return false
     },
-    [ghost, requestMainFocus, setComposerText, trigger, visible]
+    [ghost, trigger, visible, writeDraft]
   )
 
   return {
