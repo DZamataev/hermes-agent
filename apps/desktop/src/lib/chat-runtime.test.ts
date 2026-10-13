@@ -10,9 +10,11 @@ import {
   coerceThinkingText,
   createClientSessionState,
   createToolMergeCache,
+  isSlashCommandText,
   messageCreatedAt,
   optimisticAttachmentRef,
   personalityNamesFromConfig,
+  stripAttachmentRefs,
   toRuntimeMessage
 } from './chat-runtime'
 
@@ -89,28 +91,14 @@ describe('optimisticAttachmentRef', () => {
     expect(optimisticAttachmentRef(attachment({ kind: 'image', previewUrl: 'https://example.com/x.png' }))).toBeNull()
   })
 
-  it('keeps the path ref for a paste/OS-drop image whose chip preview is a blob: url', () => {
-    // The sent bubble's attachment row renders refs through DirectiveContent,
-    // which does not parse markdown: a `![alt](blob:…)` ref painted as raw
-    // text and the pasted image never showed. The path ref renders through
-    // DirectiveImage like a reloaded turn.
+  it('renders an OS-drop blob: preview as a markdown image (no IPC data URL)', () => {
+    const blobUrl = 'blob:https://desktop/preview-1'
+
     const ref = optimisticAttachmentRef(
-      attachment({
-        kind: 'image',
-        label: 'Lattice.png',
-        detail: 'C:\\shot.png',
-        path: 'C:\\shot.png',
-        previewUrl: 'blob:https://desktop/preview-1'
-      })
+      attachment({ kind: 'image', label: 'Lattice.png', detail: 'C:\\shot.png', previewUrl: blobUrl })
     )
 
-    expect(ref).toBe('@image:C:\\shot.png')
-  })
-
-  it('never emits a blob: url for a path-less image (it would render as raw text)', () => {
-    const ref = optimisticAttachmentRef(attachment({ kind: 'image', previewUrl: 'blob:https://desktop/preview-1' }))
-
-    expect(ref).toBeNull()
+    expect(ref).toBe(`![Lattice.png](${blobUrl})`)
   })
 
   it('percent-encodes a blob ref alt so brackets in a filename cannot break it', () => {
@@ -312,5 +300,63 @@ describe('personalityNamesFromConfig', () => {
     })
 
     expect(names).toEqual(['catgirl', 'spaced'])
+  })
+})
+
+describe('stripAttachmentRefs', () => {
+  it('strips a single leading image ref line', () => {
+    expect(stripAttachmentRefs('@image:/tmp/screenshot.png\n\n/moa what is this?')).toBe('\n/moa what is this?')
+  })
+
+  it('strips multiple ref lines joined by a single newline (producer format)', () => {
+    expect(stripAttachmentRefs('@image:a.png\n@file:b.pdf\n\n/moa hi')).toBe('\n/moa hi')
+  })
+
+  it('strips backtick-quoted ref values (formatRefValue output for spaced paths)', () => {
+    expect(stripAttachmentRefs('@image:`C:\\Users\\John Doe\\photo.png`\n\n/moa hi')).toBe('\n/moa hi')
+  })
+
+  it('strips folder/terminal/line refs from the inline palette', () => {
+    expect(stripAttachmentRefs('@folder:`apps/desktop/`\n\n/moa hi')).toBe('\n/moa hi')
+    expect(stripAttachmentRefs('@terminal:main\n\n/status')).toBe('\n/status')
+    expect(stripAttachmentRefs('@line:src/a.ts:12\n\n/moa')).toBe('\n/moa')
+  })
+
+  it('does not strip a ref-looking token in the middle of the text', () => {
+    expect(stripAttachmentRefs('look at @image:x /moa hi')).toBe('look at @image:x /moa hi')
+  })
+
+  it('leaves plain text untouched', () => {
+    expect(stripAttachmentRefs('hello world')).toBe('hello world')
+  })
+
+  it('handles an empty string', () => {
+    expect(stripAttachmentRefs('')).toBe('')
+  })
+})
+
+describe('isSlashCommandText', () => {
+  it('detects a plain slash command', () => {
+    expect(isSlashCommandText('/new')).toBe(true)
+  })
+
+  it('detects a command after an image ref (composer wire format)', () => {
+    expect(isSlashCommandText('@image:/tmp/foo.png\n\n/moa something')).toBe(true)
+  })
+
+  it('detects a command after a folder ref from the inline palette', () => {
+    expect(isSlashCommandText('@folder:`apps/desktop/`\n\n/moa hi')).toBe(true)
+  })
+
+  it('detects a command after multiple refs with one newline each', () => {
+    expect(isSlashCommandText('@image:a.png\n@file:b.pdf\n\n/compress')).toBe(true)
+  })
+
+  it('rejects plain text that merely contains a slash later', () => {
+    expect(isSlashCommandText('what is this?')).toBe(false)
+  })
+
+  it('rejects a ref-only message (no command)', () => {
+    expect(isSlashCommandText('@image:/tmp/foo.png')).toBe(false)
   })
 })

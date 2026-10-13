@@ -6,6 +6,7 @@ import { useSearchParams } from 'react-router'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -23,7 +24,7 @@ import {
 import { recordSettingsSaved } from '@/store/desktop-metrics'
 import { $disableF12, setDisableF12 } from '@/store/disable-f12'
 import { $alwaysExternalLinks, setAlwaysExternalLinks } from '@/store/external-links'
-import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
+import { $keepAwakeMode, type KeepAwakeMode, setKeepAwakeMode } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
@@ -37,6 +38,7 @@ import { PanelEmpty } from '../overlays/panel'
 import { ConfigField } from './config-field'
 import { configSubpageForField } from './config-subpages'
 import { DelegationTierSettings } from './delegation-tier-settings'
+import { DeveloperSettings } from './developer-settings'
 import { FileOpenAppSetting } from './file-open-app-setting'
 import {
   clearsEnabledToolsets,
@@ -104,7 +106,14 @@ function ConfigSettingsInner({
 }: ConfigSettingsProps & { scopeProfile: string | undefined }) {
   const { t } = useI18n()
   const c = t.settings.config
-  const keepAwake = useStore($keepAwake)
+  const keepAwakeMode = useStore($keepAwakeMode)
+
+  const keepAwakeOptions = [
+    { id: 'off', label: c.keepAwakeOff },
+    { id: 'while-working', label: c.keepAwakeWhileWorking },
+    { id: 'always', label: c.keepAwakeAlways }
+  ] as const satisfies readonly { id: KeepAwakeMode; label: string }[]
+
   const disableF12 = useStore($disableF12)
   const alwaysExternalLinks = useStore($alwaysExternalLinks)
   // The editable draft is local (debounced autosave watches it), but it's seeded
@@ -454,12 +463,20 @@ function ConfigSettingsInner({
           power-user, this-computer-only knobs. */}
       {showDesktopSettings && (
         <>
-          <ToggleRow
-            checked={keepAwake}
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={mode => {
+                  triggerHaptic('selection')
+                  setKeepAwakeMode(mode)
+                }}
+                options={keepAwakeOptions}
+                value={keepAwakeMode}
+              />
+            }
             description={c.keepAwakeDesc}
             id={settingElementId(SETTING_IDS.advanced.keepAwake)}
-            label={c.keepAwakeTitle}
-            onChange={setKeepAwake}
+            title={c.keepAwakeTitle}
           />
           <ToggleRow
             checked={disableF12}
@@ -476,13 +493,13 @@ function ConfigSettingsInner({
           />
           <PoolLimitsSetting />
           <QuickEntrySettings />
+          <DeveloperSettings />
         </>
       )}
       {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is
           where image-attachment behavior already lives, so this sits above the
           schema fields for that section. */}
       {showAttachments ? <AttachmentSizeSetting /> : null}
-      {showFileOpenApp ? <FileOpenAppSetting /> : null}
       {/* Shared metrics are two coupled opt-ins with a consent side effect, so they
           go through their own RPC rather than the generic field autosave. */}
       {showSharedMetrics ? <SharedMetricsSettings /> : null}
@@ -497,6 +514,7 @@ function ConfigSettingsInner({
       {activeSectionId === 'voice' ? (
         <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
       ) : null}
+      {showFileOpenApp ? <FileOpenAppSetting /> : null}
       {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : visibleFields.length === 0 ? null : (

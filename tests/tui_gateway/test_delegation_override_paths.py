@@ -168,7 +168,7 @@ def test_eager_resume_puts_the_stored_pick_on_the_agent(tmp_path, monkeypatch):
 
 def test_fallback_info_reports_the_pick():
     """A warm reattach to a live lazy session answers from _fallback_session_info."""
-    with patch.object(server, "_session_default_model", return_value="m"):
+    with patch.object(server, "_session_default_route", return_value=("m", "")):
         info = server._fallback_session_info({"cwd": "/tmp", "delegation_override": dict(PICK)})
     assert info["delegation_override"] == PICK
 

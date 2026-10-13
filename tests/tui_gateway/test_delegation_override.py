@@ -69,8 +69,18 @@ class TestConfigSetDelegation:
         resp, *_ = _call(session, dict(PICK))
         assert session["delegation_override"] == PICK
         agent = _agent()
-        server._attach_built_agent(session, agent)
+        with patch.dict(server._sessions, {"sid-1": session}):
+            assert server._attach_built_agent("sid-1", session, agent) is True
         assert agent._delegation_override == PICK
+
+    def test_session_closed_mid_build_gets_no_agent(self):
+        """session.close popped the record while the agent was building (#49852): nothing is attached, and the
+        caller closes the orphan — the pick must not be stamped onto an agent the session never owns."""
+        session = {"session_key": "k1", "agent": None, "delegation_override": dict(PICK)}
+        agent = _agent()
+        assert server._attach_built_agent("sid-gone", session, agent) is False
+        assert session["agent"] is None
+        assert getattr(agent, "_delegation_override", None) is None
 
     def test_missing_model_is_refused(self):
         session = {"session_key": "k1", "agent": _agent()}
