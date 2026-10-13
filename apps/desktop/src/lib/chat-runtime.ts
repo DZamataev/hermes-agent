@@ -1,5 +1,6 @@
 import type { ThreadMessage } from '@assistant-ui/react'
 import type { ModelOptionsResult } from '@hermes/shared'
+import { SLASH_COMMAND_RE } from '@hermes/shared'
 
 import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState } from '@/app/types'
@@ -222,7 +223,8 @@ export function attachmentDisplayText(attachment: ComposerAttachment): string | 
  * URL renders inline with zero network, while an `@image:<localpath>` ref would
  * route through `/api/media` and can 403 in remote mode. Full-resolution bytes
  * are loaded separately for the model and on-demand lightbox, not retained in
- * the optimistic message. `blob:` chip previews (#63682) are never emitted.
+ * the optimistic message. `blob:` previews from OS drops bypass the data-URL
+ * extract path and render as a markdown image instead (#63682).
  *
  * Everything else (files, folders, terminals, post-sync `@file:` refs) falls
  * through to `attachmentDisplayText`.
@@ -233,12 +235,18 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
   }
 
   if (attachment.kind === 'image') {
-    // A `blob:` chip preview (paste / OS drop, #63682) is never used here: the
-    // bubble's attachment row renders refs through DirectiveContent, which has
-    // no markdown, so a `![alt](blob:…)` ref painted as raw text instead of the
-    // image. Pasted and dropped images always carry a path, so they take the
-    // path ref below like every other image.
-    //
+    // Object-URL previews from OS drops take precedence over the path ref:
+    // markdown image keeps them out of the data-URL extract path while still
+    // rendering inline in the optimistic bubble (#63682).
+    if (attachment.previewUrl?.startsWith('blob:')) {
+      // Percent-encode the alt text: a filename with `]` or parens in it would
+      // otherwise break the Markdown-image form the directive parser matches
+      // below, and the raw expression would leak into visible text (#123368).
+      const alt = encodeURIComponent(attachment.label || 'image')
+
+      return `![${alt}](${attachment.previewUrl})`
+    }
+
     // Prefer a filesystem-backed `@image:<path>` ref so the in-flight bubble
     // renders through the same DirectiveImage path as a reloaded turn. That
     // component shows a bounded thumbnail inline (no full-resolution paint, so
@@ -307,6 +315,33 @@ export function normalizePersonalityValue(value: string): string {
   // Share the runtime's canonical form with the dropdown reader (foldPersonalityName),
   // which also folds the `neutral` spelling this previously missed.
   return foldPersonalityName(value)
+}
+
+// Desktop prepends attachment ref tags (@image:, @file:, @url:, @folder:,
+// @terminal:, @line:, @session:, @tool:, ...) to the submitted wire text. A
+// slash command typed after those refs must still be detected — strip leading
+// ref lines before testing the text for a command. Mirrors the gateway's
+// _ATTACHMENT_REF_RE, but covers every ref kind the composer can emit.
+const ATTACHMENT_REF_LINE_RE = /^@[a-z][a-z0-9-]*:[^\n]*\n?/i
+
+export function stripAttachmentRefs(text: string): string {
+  let current = text ?? ''
+
+  while (true) {
+    const next = current.replace(ATTACHMENT_REF_LINE_RE, '')
+
+    if (next === current) {
+      break
+    }
+
+    current = next
+  }
+
+  return current
+}
+
+export function isSlashCommandText(text: string): boolean {
+  return SLASH_COMMAND_RE.test(stripAttachmentRefs(text).trimStart())
 }
 
 export function quickModelOptions(
@@ -455,6 +490,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       // Carries ChatMessage.interim to AssistantMessage's footer gate.
       custom: {
         ...(message.interim ? { interim: true } : {}),
+        ...(message.interrupted ? { interrupted: true } : {}),
         ...timelineMeta,
         ...(message.completedAt !== undefined ? { timelineCompletedAt: message.completedAt } : {}),
         ...(message.durationS !== undefined ? { durationS: message.durationS } : {}),

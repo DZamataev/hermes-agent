@@ -3,9 +3,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from hermes_cli.kanban_workflow import ARCHIVED, DEFAULT_WORKFLOW
+
 _DESC_TASK_ID_DEFAULT = (
-    "Task id. If omitted, defaults to HERMES_KANBAN_TASK from the env "
-    "(the task the dispatcher spawned you to work on)."
+    "Task id. If omitted, defaults to HERMES_KANBAN_TASK from the env — the "
+    "task the dispatcher spawned you to work on. That default only exists for "
+    "a dispatcher-spawned worker; any other caller has no default and must "
+    "pass an explicit task_id (use kanban_list to discover ids)."
 )
 
 _DESC_BOARD = (
@@ -48,7 +52,9 @@ KANBAN_SHOW_SCHEMA = _schema(
         "and recent events. Use this to (re)orient yourself before "
         "starting work, especially on retries. The response includes a "
         "pre-formatted ``worker_context`` string suitable for inclusion "
-        "verbatim in your reasoning."
+        "verbatim in your reasoning. Outside a dispatcher-spawned worker "
+        "there is no default task: a bare call returns a pointer to "
+        "``kanban_list`` instead of task state."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
@@ -72,10 +78,7 @@ KANBAN_LIST_SCHEMA = _schema(
         "assignee": _prop("string", "Optional assignee/profile filter."),
         "status": {
             "type": "string",
-            "enum": [
-                "triage", "todo", "ready", "running",
-                "blocked", "done", "archived",
-            ],
+            "enum": [*DEFAULT_WORKFLOW.keys(), ARCHIVED],
             "description": "Optional task status filter.",
         },
         "tenant": _prop("string", "Optional tenant/project namespace filter."),
@@ -199,6 +202,26 @@ KANBAN_BLOCK_SCHEMA = _schema(
     ["reason"],
 )
 
+KANBAN_SCHEDULE_SCHEMA = _schema(
+    "kanban_schedule",
+    (
+        "Park your current task in the 'scheduled' state while it waits for "
+        "time or an external event. This ends the current run and makes the "
+        "task non-dispatchable until an orchestrator unblocks it; it does not "
+        "create a timer. Put any wake-up marker such as "
+        "``SCHEDULED_UNTIL=<ISO8601>`` in ``reason``."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "reason": _prop("string", (
+            "Optional reason or machine-readable wake-up marker recorded on "
+            "the completed run and scheduled event."
+        )),
+    },
+    [],
+)
+
+
 KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
     "kanban_request_review",
     (
@@ -295,14 +318,25 @@ KANBAN_COMMENT_SCHEMA = _schema(
         "Append a comment to a task's thread. Use for durable notes "
         "that should outlive this run (questions for the next worker, "
         "partial findings, rationale). Ephemeral reasoning doesn't "
-        "belong here — use your normal response instead."
+        "belong here — use your normal response instead. "
+        "To ask the orchestrator a question and get the answer in THIS run, comment on your own task with "
+        "await_reply_minutes: the orchestrator is notified, the call waits for the next comment on the card and "
+        "returns it in `replies` (empty on timeout or when the card stops being yours, with what to do next; "
+        "earlier notes you had not seen yet come back in `notes`). Prefer this to kanban_block "
+        "when you can keep working once answered; block only if nobody answers."
     ),
     {
         "task_id": _prop("string", (
                 "Task id. Required (may be your own task or "
-                "another's — comment threads are per-task)."
+                "another's — comment threads are per-task). Outside a "
+                "dispatcher-spawned worker there is no default; use "
+                "kanban_list to discover ids."
         )),
         "body": _prop("string", "Markdown-supported comment body."),
+        "await_reply_minutes": _prop("integer", (
+                "Only on your own task: post the body as a question to the orchestrator and wait up to this "
+                "many minutes (1-30) for a reply. Omit for a plain note."
+        )),
     },
     ["task_id", "body"],
 )

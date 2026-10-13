@@ -205,7 +205,8 @@ _SPECS = [
                   "the worker). Requires --model."),
         _arg("--completion-contract", metavar="CONTRACT",
              help="local-only (default), local-commit (done needs a clean tree and a commit made during "
-                  "the run), OWNER/REPO for publication, or exact GitHub PR URL; required CI gates done."),
+                  "the run), local-commit-or-none (the same, or a clean unmoved tree with metadata.no_change), "
+                  "OWNER/REPO for publication, or exact GitHub PR URL; required CI gates done."),
         _arg("--goal", action="store_true", dest="goal_mode",
              help="Run the worker in a goal loop: after each turn a judge checks the "
                   "response against the card title/body and, if not done, the worker "
@@ -309,8 +310,11 @@ _SPECS = [
              help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                   '"tests_run": 12}\'). Stored on the closing run.'),
         _arg("--force", action="store_true",
-             help="Override the live-claim guard: complete a running, claimed task "
-                  "even without owning its run (closes the worker's run)."),
+             help="Operator override: complete a running, claimed task even without owning its run "
+                  "(closes the worker's run). Does not bypass the completion contract."),
+        _arg("--override-acceptance", action="store_true", dest="override_acceptance",
+             help="Complete past a failed completion-contract check (local-commit, CI); recorded as an "
+                  "acceptance_overridden event with the refused receipt."),
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,

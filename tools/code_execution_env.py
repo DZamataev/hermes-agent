@@ -61,9 +61,9 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     try:
         from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value, scoped_passthrough_additions
     except Exception:
-        is_env_passthrough = lambda _: False  # noqa: E731
-        resolve_passthrough_value = lambda _name, _fallback: None  # noqa: E731
-        scoped_passthrough_additions = lambda _present: {}  # noqa: E731
+        is_env_passthrough = lambda _: False
+        resolve_passthrough_value = lambda _name, _fallback: None
+        scoped_passthrough_additions = lambda _present: {}
     if is_passthrough is None:
         is_passthrough = is_env_passthrough
     if is_windows is None:
@@ -114,7 +114,7 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
 
 
 def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
-                     child_python: str) -> Dict[str, str]:
+                     child_python: str) -> dict[str, str]:
     """Build the scrubbed child environment both execution paths share."""
     from hermes_constants import apply_scratch_tmp_env, apply_subprocess_home_env, get_hermes_home_override
     child_env = _scrub_child_env(os.environ)
@@ -135,6 +135,21 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     if _tz_name and not _IS_WINDOWS:
         child_env["TZ"] = _tz_name
     child_env.pop("HERMES_TIMEZONE", None)
+    # The calling session's routing handles are not secrets: scripts that subscribe the session to Kanban
+    # cards read the key, and tell a messenger chat from a desktop session by the platform/chat — as they
+    # do from a terminal child. Same rule as the terminal's _inject_session_context_env: a bound value
+    # wins; once any session is bound in this process the os.environ mirror is another turn's, so an
+    # unbound context passes nothing; an unengaged CLI keeps the mirror.
+    from gateway.session_context import _UNSET, _VAR_MAP, session_context_engaged
+    _engaged = session_context_engaged()
+    for _name in ("HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID",
+                  "HERMES_SESSION_THREAD_ID"):
+        child_env.pop(_name, None)
+        _bound = _VAR_MAP[_name].get()
+        _value = (os.environ.get(_name, "") if _bound is _UNSET and not _engaged
+                  else "" if _bound is _UNSET or _bound is None else str(_bound))
+        if _value:
+            child_env[_name] = _value
     apply_subprocess_home_env(child_env)
     # Multiplexed gateway/Desktop (#110303): the server process env carries the machine-default
     # HERMES_HOME, but this turn runs under a per-profile override (ContextVar bound per turn).
@@ -211,6 +226,7 @@ def _probe_python(python_path: str, code: str, *, text: bool = False):
             [python_path, "-c", code], timeout=5, capture_output=True, text=text,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
             stdin=subprocess.DEVNULL, env=delegated_child_subprocess_env(),
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
         return None

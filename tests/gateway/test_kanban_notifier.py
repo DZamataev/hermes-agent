@@ -37,7 +37,7 @@ async def _run_one_notifier_tick(monkeypatch, runner):
 
     async def fake_sleep(delay):
         if delay == 5:
-            return None
+            return
         runner._running = False
         await real_sleep(0)
 
@@ -743,6 +743,32 @@ def test_review_requested_wakes_the_origin_session(tmp_path, monkeypatch):
     )
 
 
+def test_a_worker_question_pings_and_wakes_the_origin(tmp_path, monkeypatch):
+    """A worker waiting in ``kanban_comment(await_reply_minutes=…)`` needs an answer within minutes: the question
+    is sent whole with the command to answer, and wakes the origin session."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "question.db"))
+    kb.init_db()
+    question = "Which API version: v1 or v2? " + "context " * 40
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="implement the thing", assignee="worker",
+                             session_id="agent:main:telegram:dm:chat-1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm",
+                           delivery_mode="notify+wake")
+        kb._append_event(conn, tid, "question", {"author": "pwaimpl", "body": question, "await_minutes": 10})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    (sent,) = adapter.sent
+    assert "❓" in sent["text"] and question.strip() in sent["text"]
+    assert f"hermes kanban comment {tid}" in sent["text"]
+    assert question.strip() in _wake_text(adapter)
+
+
 def test_block_loop_detected_wakes_the_origin_session(tmp_path, monkeypatch):
     """A triage escalation wakes the origin so a decision gets made."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "triage-wake.db"))
@@ -1086,3 +1112,164 @@ def test_a_second_gateway_with_nothing_new_leaves_a_row_the_first_is_still_sendi
         assert kbn.rewind_notify_cursor(conn, claimed_cursor=claimed, old_cursor=old, **ident)  # gateway 1 failed
     finally:
         conn.close()
+
+
+def _telegram_card(title="blocked card"):
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title=title, assignee="worker", session_id="agent:main:telegram:dm:chat-1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="dm",
+                           delivery_mode="notify+wake")
+        return tid
+    finally:
+        conn.close()
+
+
+def test_a_long_block_reason_reaches_the_chat_whole(tmp_path, monkeypatch):
+    """A worker explains what it needs in the block reason; the chat gets all of it, as the desktop does."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "block-whole.db"))
+    kb.init_db()
+    tid = _telegram_card()
+    reason = "Run the migration on stage first: " + "details " * 60 + "END-OF-REASON"
+    conn = kbc.connect()
+    try:
+        assert kb.block_task(conn, tid, reason=reason)
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    (sent,) = adapter.sent
+    assert "END-OF-REASON" in sent["text"]
+
+
+def test_a_block_made_from_the_subscribed_chat_is_not_reported_back_to_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "own-block.db"))
+    kb.init_db()
+    tid = _telegram_card()
+    conn = kbc.connect()
+    try:
+        assert kb.block_task(conn, tid, reason="holding it while I close the chain",
+                             actor_chat=kbn.chat_tag("telegram", "chat-1", ""))
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert adapter.sent == [] and adapter.handled == []
+
+
+def _shared_chat_block(monkeypatch, tmp_path, *, thread: str, per_user: bool, sub_user: str, actor_user: str,
+                       with_session: bool = True, quiescent: bool = False):
+    """A group chat subscription (created by sub_user's turn) and a block made from the same chat by actor_user's
+    turn, as the gateway records it: the actor's session key under this gateway's session config."""
+    from types import SimpleNamespace
+    from gateway.session import SessionSource, build_session_key
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "shared-block.db"))
+    kb.init_db()
+    actor = SessionSource(platform=Platform.TELEGRAM, chat_id="chat-1", chat_type="group", thread_id=thread or None,
+                          user_id=actor_user)
+    actor_session = build_session_key(actor, group_sessions_per_user=per_user)
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="shared", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="group",
+                           thread_id=thread, user_id=sub_user, delivery_mode="notify")
+        held = kb.create_task(conn, title="held", assignee="worker") if quiescent else tid
+        assert kb.block_task(conn, held, reason="holding it", actor_chat=kbn.chat_tag("telegram", "chat-1", thread),
+                             **({"actor_session": actor_session} if with_session else {}))
+        if quiescent:
+            kb._append_event(conn, tid, "board_quiescent", {"counts": {"blocked": 1}, "attention": [held]})
+    finally:
+        conn.close()
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner.config = SimpleNamespace(group_sessions_per_user=per_user, thread_sessions_per_user=False,
+                                    multiplex_profiles=False)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    return [m["text"] for m in adapter.sent]
+
+
+def test_a_block_from_the_subscribed_chat_counts_as_its_own_whoever_typed(tmp_path, monkeypatch):
+    """Chat subscriptions match by chat: the documented limit is a group without topics that keeps a session per
+    user, where user X's block also silences user Y's subscription."""
+    assert _shared_chat_block(monkeypatch, tmp_path, thread="", per_user=True, sub_user="uY", actor_user="uX") == []
+
+
+def test_a_block_from_another_chat_is_delivered(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "other-chat.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="shared", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", chat_type="group",
+                           delivery_mode="notify")
+        assert kb.block_task(conn, tid, reason="holding it", actor_chat=kbn.chat_tag("telegram", "chat-2", ""),
+                             actor_session="agent:main:telegram:group:chat-2")
+    finally:
+        conn.close()
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert any("holding it" in m["text"] for m in adapter.sent)
+
+
+def test_your_own_block_in_a_per_user_group_is_not_reported_back(tmp_path, monkeypatch):
+    assert _shared_chat_block(monkeypatch, tmp_path, thread="", per_user=True, sub_user="uX", actor_user="uX") == []
+
+
+def test_a_block_from_a_shared_forum_topic_session_is_not_reported_back(tmp_path, monkeypatch):
+    """A forum topic keeps one session for everyone: X's block there is the subscriber's own session acting."""
+    assert _shared_chat_block(monkeypatch, tmp_path, thread="7", per_user=True, sub_user="uY", actor_user="uX") == []
+
+
+def test_a_block_from_a_shared_group_session_is_not_reported_back(tmp_path, monkeypatch):
+    """group_sessions_per_user=False: one session for the whole group, whoever typed."""
+    assert _shared_chat_block(monkeypatch, tmp_path, thread="", per_user=False, sub_user="uY", actor_user="uX") == []
+
+
+def test_an_older_block_without_a_session_still_matches_by_chat(tmp_path, monkeypatch):
+    """Blocks recorded before the actor session was stored name only the chat: they stay the chat's own."""
+    assert _shared_chat_block(monkeypatch, tmp_path, thread="", per_user=True, sub_user="uY", actor_user="uX",
+                              with_session=False) == []
+
+
+def test_an_idle_board_line_of_only_your_own_hold_says_nothing(tmp_path, monkeypatch):
+    assert _shared_chat_block(monkeypatch, tmp_path, thread="7", per_user=True, sub_user="uY", actor_user="uX",
+                              quiescent=True) == []
+
+
+def test_a_block_of_a_card_archived_before_delivery_is_not_reported(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "archived-block.db"))
+    kb.init_db()
+    tid = _telegram_card()
+    conn = kbc.connect()
+    try:
+        assert kb.block_task(conn, tid, reason="obsolete")
+        assert kb.archive_task(conn, tid)
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert not any("obsolete" in s["text"] for s in adapter.sent)
+
+
+def test_the_idle_board_line_leaves_out_cards_the_chat_holds_itself(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "quiescent-own.db"))
+    kb.init_db()
+    carrier = _telegram_card("carrier")
+    held, other = _telegram_card("held by the chat"), _telegram_card("blocked by a worker")
+    conn = kbc.connect()
+    try:
+        assert kb.block_task(conn, held, reason="hold", actor_chat=kbn.chat_tag("telegram", "chat-1", ""))
+        assert kb.block_task(conn, other, reason="needs creds")
+        conn.execute("UPDATE kanban_notify_subs SET last_event_id = (SELECT MAX(id) FROM task_events)")
+        kb._append_event(conn, carrier, "board_quiescent", {"counts": {"blocked": 2}, "attention": [held, other]})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    (sent,) = [s for s in adapter.sent if "🏁" in s["text"]]
+    assert other in sent["text"] and held not in sent["text"]

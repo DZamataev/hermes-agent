@@ -82,6 +82,20 @@ def anthropic_oauth_flag(token: Any, capabilities: Any, provider: Any, base_url:
             and not _is_third_party_anthropic_endpoint(base_url))
 
 
+def _rebind_route_capabilities(agent, base_url: str) -> None:
+    """A credential swap that moved the session to another endpoint carries that endpoint's declared
+    capabilities, not the ones the session had where it came from. The reactive rotation refuses an
+    off-endpoint entry, but the restore/rebind path re-selects one without that check; keeping
+    ``anthropic_oauth_proxy`` would send the sibling Bearer + OAuth identity it never opted into.
+    A module function: ``_swap_credential`` is called unbound on non-agent holders."""
+    from agent.auxiliary_oauth import rebound_capabilities
+    agent.capabilities = rebound_capabilities(
+        getattr(agent, "capabilities", None),
+        (getattr(agent, "requested_provider", None), getattr(agent, "provider", None)),
+        getattr(agent, "model", None), base_url,
+    )
+
+
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
     timeout = get_provider_request_timeout(fb_provider, fb_model)
@@ -219,7 +233,7 @@ class ClientLifecycleMixin:
 
     _create_openai_client = _forward("agent.agent_runtime_helpers", "create_openai_client")
     _force_close_tcp_sockets = _forward_static("agent.agent_runtime_helpers", "force_close_tcp_sockets")
-    _cleanup_dead_connections = _forward("agent.agent_runtime_helpers", "cleanup_dead_connections")
+    _cleanup_dead_connections = _forward("agent.agent_runtime_helpers_dead_connections", "cleanup_dead_connections")
     _run_codex_stream = _forward("agent.codex_runtime", "run_codex_stream")
     _recover_with_credential_pool = _forward("agent.agent_runtime_helpers", "recover_with_credential_pool")
 
@@ -715,7 +729,11 @@ class ClientLifecycleMixin:
         exp, account = claims.get("exp"), claims.get("sub")
         if not account or not isinstance(exp, (int, float)) or exp - time.time() > self._NOUS_KEY_ADOPT_SKEW_S:
             return False
-        return self._try_refresh_nous_client_credentials(force=False, require_account=str(account))
+        try:
+            return self._try_refresh_nous_client_credentials(force=False, require_account=str(account))
+        except Exception:
+            logger.debug("Nous key pre-expiry adoption failed", exc_info=True)
+            return False
 
 
     def _resolve_env_credentials(self) -> Optional[tuple]:
@@ -953,7 +971,25 @@ class ClientLifecycleMixin:
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
             return False
+        old_token = self._anthropic_api_key
         self._anthropic_api_key, self._is_anthropic_oauth = new_token, self._anthropic_oauth_flag(new_token)
+        # Claude Code revokes the old token on refresh: every holder of it (agent.api_key, the compressor's
+        # main_runtime, the fallback-restore snapshot) must move too, or compression 401s for the session's life.
+        if self.api_key == old_token:
+            self.api_key = new_token
+        cc = getattr(self, "context_compressor", None)
+        if cc is not None and getattr(cc, "api_key", None) == old_token:
+            cc.api_key = new_token
+        rt = getattr(self, "_primary_runtime", None) or {}
+        if rt.get("anthropic_api_key") == old_token:  # fallback restore rebuilds from the key + flag pair
+            rt["is_anthropic_oauth"] = self._is_anthropic_oauth
+        for k in ("api_key", "anthropic_api_key", "compressor_api_key"):
+            if rt.get(k) == old_token:
+                rt[k] = new_token
+        # The turn's aux runtime was published before the first request triggered this refresh, so
+        # same-turn `auto` aux calls (approvals, goal judge, plugin llm) would still send the revoked token.
+        from agent.auxiliary_key_rotation import rotate_runtime_main_api_key
+        rotate_runtime_main_api_key(old_token, new_token)
         return True
 
     # ------------------------------------------------------------------ route-derived client config
@@ -1017,6 +1053,8 @@ class ClientLifecycleMixin:
         from hermes_cli.route_identity import normalize_route_base_url
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(runtime_base)
         if self.api_mode == "anthropic_messages":
+            if route_changed:
+                _rebind_route_capabilities(self, stripped_base)
             with suppress(Exception):
                 self._anthropic_client.close()
             self._anthropic_api_key, self._anthropic_base_url = runtime_key, stripped_base
@@ -1046,6 +1084,9 @@ class ClientLifecycleMixin:
         # URL would call every rotation onto a query-bearing entry a route change (and drop the
         # user's default_headers each time).
         route_changed = old_route != (normalize_route_base_url(self.base_url), self._client_kwargs.get("default_query") or None)
+        if route_changed:
+            from hermes_cli.route_identity import url_with_query
+            _rebind_route_capabilities(self, url_with_query(self.base_url, self._client_kwargs.get("default_query")))
         self._reapply_route_client_config(route_changed=route_changed)
         self._replace_primary_openai_client(reason="credential_rotation")
         return True
