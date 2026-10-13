@@ -129,7 +129,7 @@ export function FilePathCandidate({ children, path }: FilePathCandidateProps) {
         throw new Error(`Could not open preview target: ${target}`)
       }
 
-      openPreview(preview, 'explicit-link')
+      openPreview(preview)
     } catch (error) {
       notifyError(error, t.preview.unavailable)
     }

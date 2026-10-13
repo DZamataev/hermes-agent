@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
-from urllib.parse import parse_qs, urlsplit, urlunsplit
+from typing import Any, Dict, List, Optional, Tuple, Union
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunparse, urlunsplit
 
 
 def normalize_route_base_url(base_url: Any) -> str:
@@ -51,29 +51,58 @@ def _route_path(base_url: str) -> str:
 
 
 def _same_query(own_url: str, target_url: str) -> bool:
-    """Queries agree, or one side has none.
+    """The two URLs select the same query: same keys, and per key the same values in the same order.
 
-    OpenAI-wire consumers (main agent, auxiliary) move the query into ``default_query`` and compare
-    the URL WITHOUT it while the entry keeps it — so a missing query cannot mean "another
-    endpoint". Two present queries are compared as parameter sets (order-insensitive): ``?team=a``
-    vs ``?team=b`` is another tenant. Consumers that compare with the query (the Anthropic wire,
-    an explicit ``--base-url``, delegation) get that check. Parsed exactly like the producers of
-    ``default_query`` (``parse_qs``, first value per key, blanks dropped), so a URL rebuilt from a
-    ``default_query`` compares equal to the entry it came from."""
-    # "Has a query" is decided on the raw string: ``?team=`` parses to {} but is still a tenant
-    # choice (the empty one), not an absent query.
-    if not urlsplit(own_url).query or not urlsplit(target_url).query:
-        return True
+    The query can select a tenant (``?team=a``), so it is part of the route's identity: adding,
+    dropping or changing a parameter is another route, and so is a blank (``?team=``) or a repeated
+    value (``?team=a&team=b`` — servers differ on which one wins). Only key order is ignored. A
+    consumer that moved the query into an SDK ``default_query`` must hand the URL back WITH it
+    (``url_with_query``) before asking; a query-less URL is not a wildcard."""
     return _query_params(own_url) == _query_params(target_url)
 
 
-def _query_params(url: str) -> dict:
-    return {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
+def _query_params(url: str) -> Dict[str, List[str]]:
+    return _query_lists(urlsplit(url).query)
+
+
+def _query_lists(query: str) -> Dict[str, List[str]]:
+    params: Dict[str, List[str]] = {}
+    for key, value in parse_qsl(query, keep_blank_values=True):
+        params.setdefault(key, []).append(value)
+    return params
+
+
+def split_url_query(url: str) -> Tuple[str, Optional[Dict[str, Union[str, List[str]]]]]:
+    """``(url without its query, SDK default_query or None)`` — the inverse of ``url_with_query``.
+
+    The SDKs join the request path onto ``base_url`` as text, so a query-bearing endpoint is handed
+    to them split. Nothing of the query is dropped: a repeated key keeps every value in order (as a
+    list) and a blank value stays ``""``. ``agent.sdk_query`` sends exactly these pairs."""
+    parsed = urlparse(url)
+    if not parsed.query:
+        return url, None
+    query = {k: v[0] if len(v) == 1 else v for k, v in _query_lists(parsed.query).items()}
+    return urlunparse(parsed._replace(query="")), query
+
+
+def url_with_query(url: Any, default_query: Any) -> str:
+    """*url* with an SDK ``default_query`` put back into it, for identity decisions.
+
+    OpenAI-wire clients carry a query-bearing base URL as a clean ``base_url`` plus
+    ``default_query``; comparing the clean half alone would drop the tenant choice. A list value is
+    a repeated key (``split_url_query``), one pair per value. A URL that already has a query is
+    returned unchanged."""
+    text = str(url or "")
+    if not text or not isinstance(default_query, dict) or not default_query or urlsplit(text).query:
+        return text
+    pairs = [(str(key), str(value)) for key, values in default_query.items()
+             for value in (values if isinstance(values, (list, tuple)) else [values])]
+    return f"{text}?{urlencode(pairs)}"
 
 
 def same_provider_endpoint(own: Any, target: Any) -> bool:
     """Whether *target* is the endpoint *own* declares: same origin, same path modulo one ``/v1``,
-    no conflicting query (``_same_query``).
+    same query (``_same_query``).
 
     Origin alone is not the trust boundary: one host commonly fronts several tenants or relays by
     path (Cloudflare AI Gateway ``/v1/<account>/<gateway>``, LiteLLM per-team prefixes, a reverse
@@ -107,7 +136,7 @@ def named_provider_owns_endpoint(provider: Any, base_url: Any) -> bool:
     try:
         from hermes_cli.runtime_provider_custom import named_custom_provider_endpoint
         own = named_custom_provider_endpoint(str(provider or ""))
-    except Exception:  # noqa: BLE001 — a malformed entry must not break client construction
+    except AttributeError:  # a malformed entry (a non-string endpoint) owns no endpoint
         return False
     return same_provider_endpoint(own, base_url)
 
@@ -151,7 +180,7 @@ def provider_owns_route(provider: Any, base_url: Any, config: Any = None) -> Opt
     return normalize_provider(inferred) == canonical
 
 
-def drop_stale_model_route(model_cfg: Any, provider: Any, config: Any = None) -> "tuple[dict[str, Any], bool]":
+def drop_stale_model_route(model_cfg: Any, provider: Any, config: Any = None) -> tuple[dict[str, Any], bool]:
     """Pop the route keys (``base_url``, ``api_mode``) a previous provider left in ``model:``
     when the block is re-pointed at *provider* without a fresh route (``hermes config set
     model.provider``). Mirrors what a persisted ``/model`` switch writes: the route is synced to

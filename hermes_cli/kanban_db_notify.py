@@ -208,13 +208,14 @@ def count_notify_subs(
     platform: Optional[str] = None,
     chat_id: Optional[str] = None,
     thread_id: Optional[str] = None,
+    chat_ids: Optional[Iterable[str]] = None,
 ) -> int:
     """Count ``kanban_notify_subs`` rows via a read-only connection — the
     notifier's cheap zero-subscription early exit. Unlike :func:`connect` it
     never creates the file, runs init/migration or opens writable; WAL rows are
     still visible so a fresh sub is never missed. Missing DB / missing table
     counts as zero; platform matches case-insensitively (as notifier routing),
-    chat/thread exactly. Raises :class:`sqlite3.Error` if the DB exists but is
+    chat/thread exactly (``chat_ids``: any of several). Raises :class:`sqlite3.Error` if the DB exists but is
     unreadable — callers pick their own fallback.
     """
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
@@ -236,6 +237,12 @@ def count_notify_subs(
         if value is not None:
             clauses.append(clause)
             params.append(value)
+    if chat_ids is not None:
+        chat_list = list(chat_ids)
+        if not chat_list:
+            return 0
+        clauses.append("chat_id IN (" + ",".join("?" * len(chat_list)) + ")")
+        params.extend(chat_list)
     query = "SELECT COUNT(*) FROM kanban_notify_subs"
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
@@ -268,13 +275,64 @@ def remove_notify_sub(
     return cur.rowcount > 0
 
 
+# A subscription of an archived card that nothing will ride on any more. Holds while the card took part in work the
+# idle-board decision has not ruled on (param: the claim mark), while a delivery is in flight (claimed past what was
+# delivered), until its own archival was delivered, and while an announcement waits on it unclaimed. Shared by the
+# notifiers' post-delivery release and the decision, so both apply exactly the same rule.
+_RELEASABLE_ARCHIVED_SUB = (
+    "kanban_notify_subs.task_id IN (SELECT id FROM tasks WHERE status = 'archived')"
+    " AND kanban_notify_subs.delivered_event_id >= kanban_notify_subs.last_event_id"
+    " AND EXISTS (SELECT 1 FROM task_events a WHERE a.task_id = kanban_notify_subs.task_id"
+    "             AND a.kind = 'archived' AND a.id <= kanban_notify_subs.delivered_event_id)"
+    " AND NOT EXISTS (SELECT 1 FROM task_events c WHERE c.task_id = kanban_notify_subs.task_id"
+    "                 AND c.kind = 'claimed' AND c.id > ?)"
+    " AND NOT EXISTS (SELECT 1 FROM task_events q WHERE q.task_id = kanban_notify_subs.task_id"
+    "                 AND q.kind = 'board_quiescent' AND q.id > kanban_notify_subs.last_event_id)"
+)
+
+
+def record_notify_delivered(
+    conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
+    thread_id: Optional[str] = None, event_id: int,
+) -> None:
+    """Checkpoint a finished delivery (or a claim that had nothing to deliver) up to ``event_id``."""
+    with _kb.write_txn(conn):
+        conn.execute(
+            "UPDATE kanban_notify_subs SET delivered_event_id = MAX(delivered_event_id, ?) " + _SUB_KEY_WHERE,
+            (int(event_id), *_sub_key(task_id, platform, chat_id, thread_id)),
+        )
+
+
+def release_archived_notify_sub(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+) -> bool:
+    """Drop an archived card's subscription after a delivery, unless the idle-board announcement may still ride on
+    it (see ``_RELEASABLE_ARCHIVED_SUB``: an orchestrator often archives its last card before the next tick). A row
+    kept here is dropped by the delivery of that announcement, by the decision that passes it by, by the gateway's
+    claim that only skips another follower's announcement, or by the stale-sub purge. One guarded DELETE, so a
+    delivery another notifier claimed meanwhile keeps the row. True when removed."""
+    with _kb.write_txn(conn):
+        cur = conn.execute(
+            "DELETE FROM kanban_notify_subs " + _SUB_KEY_WHERE + " AND " + _RELEASABLE_ARCHIVED_SUB,
+            (*_sub_key(task_id, platform, chat_id, thread_id), _quiescent_claim_mark(conn)),
+        )
+    return cur.rowcount > 0
+
+
 def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int = 30) -> int:
-    """Delete notify subs whose task sat in ``done``/``blocked`` untouched for
+    """Delete notify subs whose task sat in ``done``/``blocked``/``archived`` untouched for
     longer than ``max_age_days`` (``<= 0`` disables); returns rows deleted.
 
     Subs survive ``done`` because a reopened task must still notify its origin,
     which accumulates forever on never-archiving boards. ``blocked`` is
-    abandoned (unlike ``backlog``/``ready``) so it reaps on the same clock. Age
+    abandoned (unlike ``backlog``/``ready``) so it reaps on the same clock, and so
+    does an ``archived`` row held for an idle-board decision that never came
+    (``release_archived_notify_sub``). Age
     = latest event, else ``completed_at``, else ``created_at`` — any activity,
     including a reopen, exempts the sub.
 
@@ -297,7 +355,7 @@ def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int 
         cur = conn.execute(
             "DELETE FROM kanban_notify_subs WHERE task_id IN ("
             " SELECT t.id FROM tasks t"
-            " WHERE t.status IN ('done', 'blocked')"
+            " WHERE t.status IN ('done', 'blocked', 'archived')"
             " AND COALESCE("
             "  (SELECT MAX(e.created_at) FROM task_events e"
             "   WHERE e.task_id = t.id),"
@@ -400,8 +458,9 @@ def advance_notify_cursor(
 ) -> None:
     with _kb.write_txn(conn):
         conn.execute(
-            "UPDATE kanban_notify_subs SET last_event_id = ? " + _SUB_KEY_WHERE,
-            (int(new_cursor), *_sub_key(task_id, platform, chat_id, thread_id)),
+            "UPDATE kanban_notify_subs SET last_event_id = ?, delivered_event_id = MAX(delivered_event_id, ?) "
+            + _SUB_KEY_WHERE,
+            (int(new_cursor), int(new_cursor), *_sub_key(task_id, platform, chat_id, thread_id)),
         )
 
 
@@ -436,6 +495,377 @@ def rewind_notify_cursor(
     return cur.rowcount > 0
 
 
+# A board is working while any card is in one of these; ``todo``/``blocked``/``triage``/``scheduled`` wait on a
+# parent, a human or the clock, so a board holding only those has nothing left to run on its own. ``review`` counts
+# only while the dispatcher spawns reviewers (``kanban.review_dispatch``); otherwise it waits on a human too.
+_QUIESCENT_MARK_KEY = "quiescent_claim_mark"
+_QUIESCENT_ATTENTION_LIMIT = 20
+# A card created blocked (``initial_status``) is usually a chain being assembled (created held, linked, released a
+# few seconds later). While such a hold is this fresh the board is not idle yet: the decision waits for it.
+_CREATION_HOLD_GRACE_SECONDS = 120
+
+
+def _board_active_statuses() -> tuple[str, ...]:
+    from hermes_cli.kanban_db_dispatch import review_dispatch_enabled
+    return ("running", "ready", "review") if review_dispatch_enabled() else ("running", "ready")
+
+
+def _quiescent_claim_mark(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT value FROM kanban_board_state WHERE key = ?", (_QUIESCENT_MARK_KEY,)).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _fresh_creation_hold(conn: sqlite3.Connection) -> bool:
+    """A blocked card whose latest block is its creation hold, made within the grace window."""
+    return conn.execute(
+        "SELECT 1 FROM tasks t JOIN task_events e ON e.id = (SELECT MAX(id) FROM task_events"
+        "   WHERE task_id = t.id AND kind = 'blocked')"
+        " WHERE t.status = 'blocked' AND json_extract(e.payload, '$.reason') = 'initial_status'"
+        "   AND e.created_at > ? LIMIT 1", (int(time.time()) - _CREATION_HOLD_GRACE_SECONDS,)).fetchone() is not None
+
+
+def _newest_uncovered_claim(conn: sqlite3.Connection, active: tuple[str, ...]) -> Optional[tuple[int, int]]:
+    """``(mark, newest claimed event id)`` when the board is idle and a card was claimed past the mark, else None.
+    Both lookups are indexed (``tasks.status``, a rowid range over events newer than the mark)."""
+    marks = ",".join("?" * len(active))
+    if conn.execute(f"SELECT 1 FROM tasks WHERE status IN ({marks}) LIMIT 1", active).fetchone():
+        return None
+    mark = _quiescent_claim_mark(conn)
+    newest = conn.execute(
+        "SELECT MAX(id) FROM task_events WHERE id > ? AND kind = 'claimed'", (mark,)).fetchone()[0]
+    if not newest or _fresh_creation_hold(conn):
+        return None
+    return mark, int(newest)
+
+
+_QUIESCENT_SALT_KEY = "quiescent_tag_salt"
+# ``kanban_board_state`` key prefix (+ destination tag): hash of the last announcement that destination was given.
+_QUIESCENT_TOLD_PREFIX = "quiescent_told:"
+_WAKING_MODES = ("notify+wake", "wake")
+
+
+def _quiescent_salt(conn: sqlite3.Connection, *, create: bool = False) -> bytes:
+    """Board-local secret keying destination tags (a bare hash of a numeric chat id is trivially reversed). Created by
+    the first announcement; export strips it with the subscriptions."""
+    row = conn.execute("SELECT value FROM kanban_board_state WHERE key = ?", (_QUIESCENT_SALT_KEY,)).fetchone()
+    if row is None:
+        if not create:
+            return b""
+        import secrets
+        conn.execute("INSERT OR IGNORE INTO kanban_board_state (key, value) VALUES (?, ?)",
+                     (_QUIESCENT_SALT_KEY, secrets.randbits(62)))
+        row = conn.execute("SELECT value FROM kanban_board_state WHERE key = ?", (_QUIESCENT_SALT_KEY,)).fetchone()
+    return str(int(row[0])).encode()
+
+
+def _session_scoping() -> tuple[bool, bool]:
+    """``(group_sessions_per_user, thread_sessions_per_user)`` as the gateway reads them (defaults True, False)."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+    except Exception:
+        cfg = {}
+    return bool(cfg.get("group_sessions_per_user", True)), bool(cfg.get("thread_sessions_per_user", False))
+
+
+def _participant(sub: Mapping[str, Any], scoping: tuple[bool, bool]) -> str:
+    """The user whose own session a subscription wakes, when the gateway keys group sessions per user (mirrors
+    ``gateway.session.build_session_key``; the chat type is resolved the way the notifier rebuilds the source:
+    column, else ``delivery_metadata``, else group). Empty for a DM or a shared (per-chat or per-thread) session."""
+    chat_type = str(sub.get("chat_type") or "").strip()
+    if not chat_type:
+        meta = sub.get("delivery_metadata")
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except (TypeError, ValueError):
+                meta = None
+        chat_type = str((meta or {}).get("chat_type") or "").strip() if isinstance(meta, Mapping) else ""
+    if (chat_type or "group") == "dm":
+        return ""
+    per_group, per_thread = scoping
+    if not per_group or (str(sub.get("thread_id") or "") and not per_thread):
+        return ""
+    return str(sub.get("user_id_alt") or sub.get("user_id") or "")
+
+
+def _destination(sub: Mapping[str, Any], scoping: tuple[bool, bool] = (False, False)) -> tuple[str, str, str, str]:
+    """The session a subscription reports to: its chat/topic, plus the user when that is a per-user group session
+    (two people orchestrating one board from one group each have their own session, so each must be told). The
+    notifier profile is not part of it: legacy rows carry NULL and get stamped on re-subscribe, and a NULL row is
+    delivered by the dispatch owner, so it is not a recipient of its own. Profiles split a destination only when
+    several are stamped on it (see ``announce_board_quiescent``)."""
+    return (str(sub.get("platform") or "").lower(), str(sub.get("chat_id") or ""), str(sub.get("thread_id") or ""),
+            _participant(sub, scoping))
+
+
+def _profile(sub: Mapping[str, Any]) -> str:
+    return str(sub.get("notifier_profile") or "").strip()
+
+
+def quiescent_destination_tag(conn: sqlite3.Connection, sub: Mapping[str, Any]) -> str:
+    """Opaque tag of one subscription row on this board. Events are exported and shown to workers, so the
+    announcement carries this instead of a chat id or session key. It always includes the row's user, whatever the
+    session scoping: a card holds one row per chat/topic, so it still names exactly the carrier row, and matching
+    stays independent of config that the dispatcher and the notifier (other processes, maybe other profiles) could
+    read differently."""
+    import hashlib
+    import hmac
+    msg = "\x1f".join(_destination(sub, (True, True))).encode()
+    return hmac.new(_quiescent_salt(conn), msg, hashlib.sha256).hexdigest()[:24]
+
+
+def announce_board_quiescent(conn: sqlite3.Connection) -> list[str]:
+    """Record one ``board_quiescent`` event per destination that took part in the work that just drained.
+
+    Card events say "this card finished/blocked" but never "nothing is left to run", so a session supervising a board
+    had to poll it. Fires when no card is active and a card was claimed past the board's claim mark
+    (``kanban_board_state``, out of reach of event GC); every decision advances the mark, so a board that never ran
+    anything stays silent and new work re-arms it.
+
+    Recipients are the destinations (chat/topic, and the user in a per-user group session; see ``_destination``)
+    with a subscription on a card claimed since the mark; one on which several stamped notifier profiles took part
+    is told once per profile (two bots in one group each run their own orchestrator). Each gets one event on a card
+    it follows, addressed by an opaque tag (``payload["to"]``): a card whose subscription wakes the agent if any (so
+    being woken never depends on which card finished last), then one that took part in the work, then a live one
+    over an archived one, then the most recently active. A card holds one row per chat/topic, so the tag picks
+    exactly one follower of the carrier; a destination that is not split is carried only
+    by an unstamped row or one of a participating profile (another bot's row would wake the wrong orchestrator).
+    Notifiers hold an archived card's row past its archival while it took part in undecided work
+    (``release_archived_notify_sub``), so an orchestrator that archived its last card is still told; the decision
+    then drops the held rows it put nothing on that are fully delivered (a row mid-delivery stays, so a failed send
+    can still rewind). A stamped participant row outranks a legacy unstamped one: the latter is delivered by
+    whichever process owns the dispatcher, which may be another bot. The gateway notifier and the desktop poller
+    carry the event with no new subscription type; other followers of the carrier skip it. Returns the carrier task
+    ids.
+    """
+    active = _board_active_statuses()
+    if _newest_uncovered_claim(conn, active) is None:  # read-only fast path outside the writer lock
+        return []
+    with _kb.write_txn(conn):
+        found = _newest_uncovered_claim(conn, active)  # re-check: another dispatcher may have decided meanwhile
+        if found is None:
+            return []
+        mark, newest = found
+        conn.execute("INSERT OR REPLACE INTO kanban_board_state (key, value) VALUES (?, ?)",
+                     (_QUIESCENT_MARK_KEY, newest))
+        subs = [dict(r) for r in conn.execute(
+            "SELECT s.platform, s.chat_id, s.thread_id, s.notifier_profile, s.delivery_mode, s.task_id,"
+            " s.chat_type, s.user_id, s.user_id_alt, s.delivery_metadata,"
+            " t.status = 'archived' AS archived,"
+            " (SELECT COALESCE(MAX(e.id), 0) FROM task_events e WHERE e.task_id = s.task_id) AS latest,"
+            " EXISTS (SELECT 1 FROM task_events c WHERE c.task_id = s.task_id AND c.kind = 'claimed'"
+            "         AND c.id > ? AND c.id <= ?) AS took_part"
+            " FROM kanban_notify_subs s JOIN tasks t ON t.id = s.task_id", (mark, newest))]
+        scoping = _session_scoping()
+        profiles: dict = {}
+        for s in subs:
+            if s["took_part"]:
+                profiles.setdefault(_destination(s, scoping), set()).add(_profile(s))
+        recipients = {(dest, prof) for dest, profs in profiles.items()
+                      for prof in (sorted(profs - {""}) or [""])}
+        split = {dest for dest, profs in profiles.items() if len(profs - {""}) > 1}
+        best: dict = {}
+        for s in subs:
+            dest, prof = _destination(s, scoping), _profile(s)
+            if dest in split:
+                recipient = (dest, prof)  # an unstamped row cannot say which of the bots it belongs to
+            elif prof and prof not in profiles.get(dest, ()):
+                continue  # another bot's row in the same chat: its gateway would wake the wrong orchestrator
+            elif not prof and profiles.get(dest, set()) - {""}:
+                continue  # unstamped: delivered by the dispatcher's owner, maybe not the bot that did the work
+            else:
+                recipient = next((r for r in recipients if r[0] == dest), None)
+            if recipient not in recipients:
+                continue
+            rank = ((s["delivery_mode"] or "notify") in _WAKING_MODES, bool(s["took_part"]), not s["archived"],
+                    s["latest"])
+            if recipient not in best or rank > best[recipient][0]:
+                best[recipient] = (rank, s)
+        if best:
+            _append_board_quiescent(conn, best, active, newest)
+        conn.execute("DELETE FROM kanban_notify_subs WHERE " + _RELEASABLE_ARCHIVED_SUB, (newest,))
+    return sorted({s["task_id"] for _rank, s in best.values()})
+
+
+def _append_board_quiescent(conn: sqlite3.Connection, best: Mapping, active: tuple[str, ...], newest: int) -> None:
+    """Write one announcement per recipient (``best``: recipient → (rank, carrier sub)), unless that recipient was
+    last told exactly this (same counts and leftovers): a card the breaker parks again after every retry would
+    otherwise repeat the same "needs attention" on each drain. Caller holds write_txn."""
+    waiting = ("blocked", "triage", "scheduled") + (() if "review" in active else ("review",))
+    counts = {r[0]: r[1] for r in conn.execute(
+        "SELECT status, COUNT(*) FROM tasks WHERE status != 'archived' GROUP BY status ORDER BY status")}
+    attention = [r[0] for r in conn.execute(
+        f"SELECT id FROM tasks WHERE status IN ({','.join('?' * len(waiting))})"
+        " ORDER BY priority DESC, created_at LIMIT ?", (*waiting, _QUIESCENT_ATTENTION_LIMIT))]
+    import hashlib
+    import json
+    said = int(hashlib.sha256(json.dumps([counts, attention], sort_keys=True).encode()).hexdigest()[:15], 16)
+    _quiescent_salt(conn, create=True)
+    for recipient, (_rank, s) in sorted(best.items()):
+        to = quiescent_destination_tag(conn, s)
+        key = f"{_QUIESCENT_TOLD_PREFIX}{to}:{recipient[1]}"  # two bots in one chat are told separately
+        told = conn.execute("SELECT value FROM kanban_board_state WHERE key = ?", (key,)).fetchone()
+        if told is not None and int(told[0]) == said:
+            continue
+        conn.execute("INSERT OR REPLACE INTO kanban_board_state (key, value) VALUES (?, ?)", (key, said))
+        _kb._append_event(conn, s["task_id"], "board_quiescent", {
+            "counts": counts, "attention": attention, "mark": newest, "to": to,
+        })
+
+
+def quiescent_addressed_to(conn: sqlite3.Connection, ev: Any, sub: Mapping[str, Any]) -> bool:
+    """False for a ``board_quiescent`` event addressed to a different destination than ``sub`` on this board: it
+    rides on a card several destinations may follow, and only its addressee is told. Everything else is True."""
+    if getattr(ev, "kind", "") != "board_quiescent":
+        return True
+    to = (getattr(ev, "payload", None) or {}).get("to")
+    if not isinstance(to, str) or not to:
+        return True
+    import hmac
+    return hmac.compare_digest(to, quiescent_destination_tag(conn, sub))
+
+
+def collapse_superseded_failures(events: list) -> list:
+    """Drop a ``crashed``/``timed_out`` directly followed by the ``gave_up`` it tripped: the breaker writes both for
+    one failure and ``gave_up`` carries the same error, so a subscriber would read the failure twice. Shared by every
+    notifier; the claimed cursor is unaffected."""
+    return [ev for i, ev in enumerate(events)
+            if not (getattr(ev, "kind", "") in ("crashed", "timed_out") and i + 1 < len(events)
+                    and getattr(events[i + 1], "kind", "") == "gave_up")]
+
+
+def describe_board_quiescent(payload: Mapping[str, Any]) -> str:
+    """One-line human summary of a ``board_quiescent`` payload, shared by every notifier."""
+    raw_counts = payload.get("counts")
+    counts: Mapping[str, Any] = raw_counts if isinstance(raw_counts, Mapping) else {}
+    tally = ", ".join(f"{int(n)} {status}" for status, n in counts.items() if isinstance(n, int))
+    attention = [str(t) for t in (payload.get("attention") or []) if t][:_QUIESCENT_ATTENTION_LIMIT]
+    text = "board has no work left to run" + (f" ({tally})" if tally else "")
+    if attention:
+        text += "; needs attention: " + ", ".join(attention)
+    return text
+
+
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
-from hermes_cli import kanban_db as _kb  # noqa: E402
+from hermes_cli import kanban_db as _kb
+
+
+QUESTION_BODY_LIMIT = 4000
+
+
+def describe_question(task_id: str, payload: dict) -> str:
+    """A worker's waiting question as the notification shows it: the question (capped like a completion summary),
+    how long the worker waits, and the command whose comment is delivered to it as the answer."""
+    body = str(payload.get("body") or "").strip()
+    if len(body) > QUESTION_BODY_LIMIT:
+        body = body[:QUESTION_BODY_LIMIT].rstrip() + f"\n… (truncated; hermes kanban show {task_id})"
+    try:
+        minutes = int(payload.get("await_minutes") or 0)
+    except (TypeError, ValueError):
+        minutes = 0
+    wait = f"The worker waits up to {minutes} min" if minutes else "The worker waits"
+    return (f"{body}\n{wait} for the answer: hermes kanban comment {task_id} \"<answer>\" "
+            f"(no answer → it blocks or proceeds on a stated assumption).")
+
+
+def chat_tag(platform: str, chat_id: str, thread_id: str = "") -> str:
+    """One messenger chat/topic, as a block records its actor (``actor_chat``) and a subscription is matched."""
+    return f"{str(platform or '').lower()}:{chat_id or ''}:{thread_id or ''}"
+
+
+def block_actor(*, bound_only: bool = False) -> dict:
+    """Who is blocking, as a block records it (``actor_session`` / ``actor_chat``), so the conversation that did it
+    is not told about its own action. A dispatcher's worker is never an actor: its block is news for the
+    orchestrator, whatever session vars it inherited.
+
+    ``bound_only`` (the ``kanban_block`` tool): only a session bound in this process (a turn binds its ContextVars)
+    is the actor. An agent that merely inherited ``HERMES_SESSION_*`` in its env — ``hermes chat -q`` started from a
+    session's terminal — is a different conversation, and its block is news for that session. The CLI reads the env
+    too: a terminal child of a session is that session acting."""
+    import os
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return {}
+    from gateway.session_context import _UNSET, _VAR_MAP, get_session_env
+
+    def var(name: str) -> str:
+        if not bound_only:
+            return get_session_env(name, "")
+        value = _VAR_MAP[name].get()
+        return "" if value is _UNSET or value is None else str(value)
+
+    actor = {}
+    if key := var("HERMES_SESSION_KEY"):
+        actor["actor_session"] = key
+    platform, chat = var("HERMES_SESSION_PLATFORM"), var("HERMES_SESSION_CHAT_ID")
+    if platform and chat:
+        actor["actor_chat"] = chat_tag(platform, chat, var("HERMES_SESSION_THREAD_ID"))
+    return actor
+
+
+def sub_chat_tag(sub: Mapping[str, Any]) -> str:
+    return chat_tag(str(sub.get("platform") or ""), str(sub.get("chat_id") or ""), str(sub.get("thread_id") or ""))
+
+
+def _made_by(payload: Mapping[str, Any], sub_keys: tuple, chat: str) -> bool:
+    """The subscriber did this itself: the block's session is one of its sessions, or the block came from the
+    subscriber's chat. Matching a chat subscription by chat (not by a derived session key) is deliberate: rows are
+    written by several writers in different shapes, and only the chat is reliable across them. Known limit: in a
+    group without topics that keeps a session per user, one user's block silences another user's subscription."""
+    return bool((payload.get("actor_session") and payload.get("actor_session") in sub_keys)
+                or (chat and payload.get("actor_chat") == chat))
+
+
+def _own_hold_or_gone(kb, conn: sqlite3.Connection, task_id: str, sub_keys: tuple, chat: str) -> bool:
+    task = kb.get_task(conn, task_id)
+    if task is None:
+        return False  # another board's id or a purged card: not ours to judge, keep it listed
+    status = getattr(task, "status", "")
+    if status == "archived":
+        return True
+    if status != "blocked":
+        return False
+    row = conn.execute("SELECT payload FROM task_events WHERE task_id = ? AND kind = 'blocked' ORDER BY id DESC"
+                       " LIMIT 1", (task_id,)).fetchone()
+    try:
+        return bool(row and _made_by(json.loads(row[0] or "{}"), sub_keys, chat))
+    except (TypeError, ValueError):
+        return False
+
+
+def relevant_to(kb, conn: sqlite3.Connection, ev, task, *, sub_keys: tuple = (), chat: str = "",
+                sub: Optional[Mapping[str, Any]] = None):
+    """The event as the subscriber should see it, or None. A block the subscriber made itself (its session key in
+    ``sub_keys``, or from the chat of the subscription ``sub`` — see ``_made_by``), a block of a card archived
+    before delivery, and an idle-board line whose every leftover card is such a hold say nothing it does not
+    already know. Shared by the gateway notifier and the TUI/desktop poller so both surfaces filter alike."""
+    import dataclasses
+    if sub is not None:
+        chat = sub_chat_tag(sub)
+    kind = getattr(ev, "kind", "")
+    payload = getattr(ev, "payload", None) or {}
+    if kind == "blocked":
+        if _made_by(payload, sub_keys, chat) or getattr(task, "status", "") == "archived":
+            return None
+        return ev
+    if kind == "board_quiescent" and payload.get("attention"):
+        attention = [t for t in payload["attention"]
+                     if not _own_hold_or_gone(kb, conn, str(t), sub_keys, chat)]
+        if not attention:
+            return None
+        if attention != payload["attention"]:
+            return dataclasses.replace(ev, payload={**payload, "attention": attention})
+    return ev
+
+
+BLOCK_REASON_LIMIT = 4000
+
+
+def describe_block_reason(task_id: str, reason: str) -> str:
+    """A block reason as notifications show it: whole (a worker explains there what it needs), capped like a
+    completion summary, with where to read the rest."""
+    reason = str(reason or "").strip()
+    if len(reason) > BLOCK_REASON_LIMIT:
+        reason = reason[:BLOCK_REASON_LIMIT].rstrip() + f"\n… (truncated; hermes kanban show {task_id})"
+    return reason

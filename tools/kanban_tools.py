@@ -24,7 +24,7 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
-    KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
+    KANBAN_SCHEDULE_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ def _check_kanban_orchestrator_mode() -> bool:
 # would silently skip the run-ownership CAS in kanban_db. Non-lifecycle tools
 # (heartbeat / attach / attach_url) do not terminate a run and are not gated.
 _RUN_LIFECYCLE_TOOLS = frozenset({
-    "kanban_complete", "kanban_block",
+    "kanban_complete", "kanban_block", "kanban_schedule",
     "kanban_request_review", "kanban_request_changes",
 })
 
@@ -186,26 +186,51 @@ def _reject_delegated_child_mutation(tool_name: str) -> None:
             "configured Kanban orchestrator must perform board mutations.")
 
 
-def _default_task_id(arg: Optional[str]) -> Optional[str]:
-    """``task_id`` arg or the dispatcher's env var. A delegate child or an
-    in-process cron job must never inherit the worker's task id implicitly."""
-    if arg:
-        return arg
-    if _is_delegated_child_context() or not _is_dispatcher_owned_worker():
+def _default_task_id(arg: Any) -> Optional[str]:
+    """Resolve ``task_id`` arg or fall back to the env var the dispatcher set."""
+    if arg is not None:
+        val = str(arg).strip()
+        if val:
+            return val
+    if _is_delegated_child_context():
         return None
-    return os.environ.get("HERMES_KANBAN_TASK") or None
+    if not _is_dispatcher_owned_worker():
+        # A cron job fired in-process from a worker must never inherit the
+        # worker's task id as an implicit default.
+        return None
+    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if env_tid:
+        val = env_tid.strip()
+        if val:
+            return val
+    return None
 
 
 def _require_task_id(args: dict) -> str:
+    """Resolve the target task or reject with a message the caller can act on.
+
+    The env default only exists for a dispatcher-spawned worker; every other
+    caller must name a task, so a rejection points at ``kanban_list`` instead of
+    an env var a chat caller cannot set (#91431).
+    """
     tid = _default_task_id(args.get("task_id"))
-    _check(tid, "task_id is required (or set HERMES_KANBAN_TASK in the env)")
-    return tid
+    if tid:
+        return tid
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        # Env task present but not usable here (delegate child / cron run beside
+        # a worker): it is not this session's to default to.
+        raise _Reject(
+            "task_id is required: this session does not own the inherited "
+            "HERMES_KANBAN_TASK, so it is not a valid default. Pass an explicit "
+            "task_id.")
+    raise _Reject(
+        "task_id is required: this session has no dispatcher-assigned task to "
+        "default to. Pass an explicit task_id; discover task ids with kanban_list.")
 
 
 def _own_task_env(task_id: str, var: str) -> Optional[str]:
     """``$var`` only when this worker is scoped to ``task_id``; else None."""
     return os.environ.get(var) if os.environ.get("HERMES_KANBAN_TASK") == task_id else None
-
 
 def _worker_run_id(task_id: str) -> Optional[int]:
     """This worker's dispatcher run id when it is scoped to task_id."""
@@ -581,6 +606,40 @@ def heartbeat_current_worker_from_env() -> bool:
         return False
 
 
+def _record_worker_run_event(kind: str, payload: dict) -> bool:
+    """Append ``kind`` to the dispatcher-owned worker's current run; True iff written.
+    Same bridge contract as the heartbeat: no-op outside that worker, never raises."""
+    tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not tid or not _is_dispatcher_owned_worker():
+        return False
+    try:
+        with _board(None, quiet_close=True) as (kb, conn):
+            with kb.write_txn(conn):
+                kb._append_event(conn, tid, kind, payload, run_id=_worker_run_id(tid))
+        return True
+    except Exception:
+        logger.debug("kanban %s bridge for %s failed", kind, tid, exc_info=True)
+        return False
+
+
+def _reason_text(reason: Any) -> str:
+    return str(getattr(reason, "value", reason) or "")
+
+
+def record_model_fallback_from_env(reason, old_model, old_provider, fb_model, fb_provider) -> bool:
+    """A worker that switched model mid-run says so on the board: otherwise a card finished
+    by a weaker fallback looks exactly like one finished by the profile's model."""
+    return _record_worker_run_event("model_fallback", {
+        "from_model": old_model, "from_provider": old_provider,
+        "to_model": fb_model, "to_provider": fb_provider, "reason": _reason_text(reason)})
+
+
+def record_fallback_refused_from_env(reason, model, provider) -> bool:
+    """``kanban.worker_fallback: wait`` refused a switch; the run ends on the primary's error."""
+    return _record_worker_run_event("model_fallback_refused", {
+        "model": model, "provider": provider, "reason": _reason_text(reason)})
+
+
 # Live operator-note injection: poll the task for new comments and steer them in
 # OUT-OF-BAND, so a user can talk to a running task without block → comment → unblock.
 # Watermarked per task (seeded on first poll: that history is already in the context).
@@ -597,6 +656,10 @@ def inject_new_comments_from_env(agent: Any) -> bool:
     # this process must neither receive them nor advance the shared watermark (#112817).
     tid = os.environ.get("HERMES_KANBAN_TASK") if _is_dispatcher_owned_worker() else None
     now = time.monotonic()
+    # A kanban_comment(await_reply_minutes=...) call owns the card's comments while it waits: the reply comes back
+    # as its tool result, so the heartbeat-driven injector must not steer it in as well.
+    if tid in _awaiting_reply:
+        return False
     if (not tid or agent is None or not hasattr(agent, "steer")
             or (now - _comment_poll_last_attempt) < _COMMENT_POLL_MIN_INTERVAL_SECONDS):
         return False
@@ -604,6 +667,10 @@ def inject_new_comments_from_env(agent: Any) -> bool:
     seen = _comment_watermark.get(tid)
     try:
         with _board(None, quiet_close=True) as (kb, conn):
+            # A card blocked, reclaimed or handed to another run is no longer this worker's: its new comments
+            # address the next worker, and steering them in here would read as orders for this run.
+            if seen is not None and not _still_owns_card(kb, conn, tid):
+                return False
             rows = kb.list_comments_after(conn, tid, after_id=seen or 0)
     except Exception:
         logger.debug("comment-inject: bridge failed", exc_info=True)
@@ -611,6 +678,11 @@ def inject_new_comments_from_env(agent: Any) -> bool:
     if seen is None:
         _comment_watermark[tid] = max((c.id for c in rows), default=0)
     if seen is None or not rows:
+        return False
+    # This runs on the activity heartbeat thread: the worker may have started a reply wait since the check above.
+    # The wait now owns these comments (it returns them as `notes`), and it may already have moved the watermark
+    # past its reply — never move it back.
+    if tid in _awaiting_reply or (_comment_watermark.get(tid) or 0) > seen:
         return False
     # Advance past everything read (including our own notes) so nothing is re-injected.
     _comment_watermark[tid] = max(c.id for c in rows)
@@ -637,7 +709,18 @@ def inject_new_comments_from_env(agent: Any) -> bool:
 @_kanban_handler("kanban_show")
 def _handle_show(args: dict, **kw) -> str:
     """Full task state: row, parents, children, comments, runs, last 50 events."""
-    tid = _require_task_id(args)
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        # No dispatcher task in scope and no explicit id: the caller asked "what
+        # should I be looking at". A chat profile cannot set HERMES_KANBAN_TASK,
+        # so an error naming the env var is dead end (#91431) — answer instead.
+        return json.dumps({
+            "current_task": None,
+            "hint": (
+                "No dispatcher-assigned task in this session, so there is no "
+                "task to show by default. Call kanban_list to see task ids on "
+                "the board, then kanban_show(task_id=<id>) for full state."),
+        })
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
         return json.dumps({
@@ -798,7 +881,8 @@ def _handle_block(args: dict, **kw) -> str:
                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
-        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
+        from hermes_cli.kanban_db_notify import block_actor
+        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid), **block_actor(bound_only=True))
         _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
         landed_kind = kb.get_task(conn, tid).block_kind
         extra: dict = {"block_kind": landed_kind}
@@ -811,6 +895,27 @@ def _handle_block(args: dict, **kw) -> str:
                 "instead of parking in todo where the dispatcher would respawn it."
             )
         return _ok_landed(kb, conn, tid, "blocked", **extra)
+
+
+@_kanban_handler("kanban_schedule")
+def _handle_schedule(args: dict, **kw) -> str:
+    """Park the current task until an orchestrator re-gates it."""
+    tid = _worker_guard("kanban_schedule", args)
+    raw_reason = args.get("reason")
+    _check(raw_reason is None or isinstance(raw_reason, str), "reason must be a string")
+    reason = _redact(raw_reason.strip()) if raw_reason and raw_reason.strip() else None
+    with _board(args.get("board")) as (kb, conn):
+        # The goal loop treats ``scheduled`` as terminal like ``blocked``, so
+        # parking would bypass the completion judge (see kanban_block, #38696).
+        task = kb.get_task(conn, tid)
+        _check(not (task and task.goal_mode),
+               "goal_mode tasks cannot be scheduled: use kanban_block with kind "
+               f"in {sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} for a genuine external "
+               "blocker, or kanban_complete so the completion judge can evaluate it.")
+        ok = kb.schedule_task(
+            conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
+        _check(ok, f"could not schedule {tid} (unknown id or not in todo/ready/running/blocked)")
+        return _ok_landed(kb, conn, tid, "scheduled", reason=reason)
 
 
 @_kanban_handler("kanban_request_review")
@@ -894,8 +999,13 @@ def _handle_comment(args: dict, **kw) -> str:
     """Append a comment to a task's thread."""
     _reject_delegated_child_mutation("kanban_comment")
     tid = args.get("task_id")
-    _check(tid, "task_id is required (use the current task id if that's what "
-                "you mean — pulls from env but kept explicit here)")
+    if not tid:
+        # A comment writes to the board, so a bare call must stay an error — but
+        # point at kanban_list, not an env var a chat caller cannot set (#91431).
+        raise _Reject(
+            "task_id is required: comments are per-task and this session has no "
+            "dispatcher-assigned task to default to. Discover task ids with "
+            "kanban_list, or pass the task id you mean.")
     body = _redact(_require_text(args, "body"))
     # Author comes from the worker's runtime identity (``_persisted_identity``), never
     # caller args: comments are injected into future workers' system prompts, so an
@@ -906,9 +1016,101 @@ def _handle_comment(args: dict, **kw) -> str:
     # comment from an authoritative-looking name like ``hermes-system`` and poison the future-worker context
     # with what reads as a system directive. See #19713.
     author = _persisted_identity()
+    wait = args.get("await_reply_minutes")
+    if wait is not None:
+        return _ask_and_await(args.get("board"), tid, author, str(body), wait)
     with _board(args.get("board")) as (kb, conn):
         cid = kb.add_comment(conn, tid, author=author, body=str(body))
         return _ok(task_id=tid, comment_id=cid)
+
+
+# A worker's question to its orchestrator, answered inside the same run: the comment is posted with a
+# ``question`` event (which the orchestrator's session is notified of) and the tool call is held until a comment
+# lands on the card after the question (any author: the worker cannot write while this call holds it), the card
+# stops being this run's, the wait runs out, or the run is interrupted. The reply comes back as the tool result, so
+# the worker keeps its context instead of blocking and restarting cold.
+_AWAIT_MAX_MINUTES = 30
+_AWAIT_POLL_SECONDS = 5.0
+_AWAIT_MINUTE_SECONDS = 60.0
+_awaiting_reply: set = set()
+
+
+def _still_owns_card(kb, conn, tid: str) -> bool:
+    """The waiting run still holds the card: running under this worker's run id. A block or reclaim hands it on,
+    and a comment written after that addresses the next worker, not this one."""
+    task = kb.get_task(conn, tid)
+    if task is None or task.status != "running":
+        return False
+    run_id = _worker_run_id(tid)
+    return run_id is None or task.current_run_id == run_id
+
+
+def _await_interrupted() -> bool:
+    from tools.interrupt import is_interrupted
+    return is_interrupted()
+
+
+def _ask_and_await(board, tid: str, author: str, body: str, wait) -> str:
+    _check(os.environ.get("HERMES_KANBAN_TASK") == tid and _is_dispatcher_owned_worker(),
+           "await_reply_minutes: only a board worker waits, and only on its own task — post a plain comment here")
+    try:
+        minutes = max(1, min(int(wait), _AWAIT_MAX_MINUTES))
+    except (TypeError, ValueError):
+        raise ValueError("await_reply_minutes must be a whole number of minutes") from None
+    with _board(board) as (kb, conn):
+        from hermes_cli.kanban_db_connect import write_txn
+        with write_txn(conn):
+            cid = kb.add_comment(conn, tid, author=author, body=body)
+            kb._append_event(conn, tid, "question", {"author": author, "body": body, "await_minutes": minutes})
+    deadline = time.monotonic() + minutes * _AWAIT_MINUTE_SECONDS
+    replies: list = []
+    notes: list = []
+    interrupted = lost = False
+    _awaiting_reply.add(tid)
+    try:
+        while True:
+            with _board(board, quiet_close=True) as (kb, conn):
+                # The worker cannot comment while this call holds it, so every comment after the question is the
+                # answer — whatever its author name (orchestrator and worker may share a profile). Read first, then
+                # check the card is still ours: a writer that comments and then blocks (`hermes kanban block`)
+                # must not have its comment taken for an answer.
+                replies = [c for c in kb.list_comments_after(conn, tid, after_id=cid) if (c.body or "").strip()]
+                if not _still_owns_card(kb, conn, tid):
+                    lost, replies = True, []
+                    break
+                if replies:
+                    # Notes the injector had not delivered yet when the worker asked: the watermark moves past them
+                    # below, so they come back here or never.
+                    seen = _comment_watermark.get(tid)
+                    if seen is not None:
+                        own = _persisted_identity()
+                        notes = [c for c in kb.list_comments_after(conn, tid, after_id=seen)
+                                 if c.id < cid and (c.author or "").strip() != own and (c.body or "").strip()]
+            if replies:
+                # Delivered here as the tool result; the live injector must not steer it in a second time.
+                _comment_watermark[tid] = max(_comment_watermark.get(tid) or 0, max(c.id for c in replies))
+                break
+            if _await_interrupted():
+                interrupted = True
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(_AWAIT_POLL_SECONDS)
+    finally:
+        _awaiting_reply.discard(tid)
+    if lost:
+        nxt = ("The card is no longer yours (blocked, reclaimed or closed while you waited). Stop working on it and "
+               "let the run end; do not call kanban_complete or kanban_block.")
+    elif replies:
+        nxt = "Answered: continue the work with this reply."
+    elif interrupted:
+        nxt = "The wait was interrupted; stop and let the run end."
+    else:
+        nxt = (f"No reply within {minutes} min. If you cannot go on without the answer, kanban_block with the "
+               "question as the reason; otherwise proceed on the safest assumption and state it in your summary.")
+    extra = {"notes": [{"author": c.author, "body": c.body} for c in notes]} if notes else {}
+    return _ok(task_id=tid, comment_id=cid, await_minutes=minutes, next=nxt,
+               replies=[{"author": c.author, "body": c.body} for c in replies], **extra)
 
 
 def _store_attachment(board, tid, filename, data, content_type) -> str:
@@ -1092,6 +1294,32 @@ def _handle_create(args: dict, **kw) -> str:
                    subscribed=_maybe_auto_subscribe(conn, new_tid))
 
 
+def _live_tui_session_key(session_key: str, profile: Optional[str]) -> str:
+    """Re-resolve a TUI session key at subscribe time: the inherited ``HERMES_SESSION_KEY``
+    can name a session already superseded by a compaction fork, and a subscription bound to
+    the dead key silently drops every later completion notification (#110068). Maps the key
+    to its continuation tip via the session store's lineage walk. Best-effort, fail-open:
+    any error (or an unresolvable key) returns *session_key* unchanged."""
+    db_path = None
+    if profile and profile != "default":
+        try:
+            from pathlib import Path
+            from hermes_cli.profiles import get_profile_dir, profile_exists
+            if profile_exists(profile):
+                db_path = Path(get_profile_dir(profile)) / "state.db"
+        except Exception:
+            db_path = None
+    try:
+        from hermes_state_registry import acquire, release_or_close
+        db = acquire(db_path)
+        try:
+            return db.resolve_resume_session_id(session_key) or session_key
+        finally:
+            release_or_close(db)
+    except Exception:
+        return session_key
+
+
 def _resolve_notify_target() -> Optional[dict[str, Any]]:
     """``kanban_db.add_notify_sub`` kwargs for the calling session, or None (CLI/cron/tests).
     Gateway sessions: ``HERMES_SESSION_PLATFORM``/``CHAT_ID`` ContextVars. TUI/desktop:
@@ -1112,6 +1340,10 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
     if not notifier_profile:
         from hermes_cli.profiles import current_profile_name
         notifier_profile = current_profile_name("default")
+    if platform == "tui":
+        # The inherited key can be stale after a compaction fork (#110068): bind the
+        # subscription to the live continuation tip, not the key the process started with.
+        chat_id = _live_tui_session_key(chat_id, notifier_profile)
     delivery_metadata: dict[str, Any] = {
         k: v for k, v in (
             ("thread_id", thread_id), ("chat_type", chat_type),
@@ -1205,6 +1437,7 @@ _TOOLS = (
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
     ("kanban_complete", KANBAN_COMPLETE_SCHEMA, _handle_complete, "✔"),
     ("kanban_block", KANBAN_BLOCK_SCHEMA, _handle_block, "⏸"),
+    ("kanban_schedule", KANBAN_SCHEDULE_SCHEMA, _handle_schedule, "⏰"),
     ("kanban_request_review", KANBAN_REQUEST_REVIEW_SCHEMA, _handle_request_review, "👀"),
     ("kanban_request_changes", KANBAN_REQUEST_CHANGES_SCHEMA, _handle_request_changes, "↩"),
     ("kanban_heartbeat", KANBAN_HEARTBEAT_SCHEMA, _handle_heartbeat, "💓"),

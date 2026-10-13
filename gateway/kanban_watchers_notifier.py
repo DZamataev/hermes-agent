@@ -30,13 +30,25 @@ def _kbn():
     from hermes_cli import kanban_db_notify
     return kanban_db_notify
 
+
+def _pin_first():
+    """Machine-flow board resolution: env pins outrank the enumerated slug.
+
+    The slug here came from ``list_boards()``, not from a user — on a box whose
+    env pins ``HERMES_KANBAN_DB`` every board must resolve to the pinned file
+    or the notifier reads per-slug DBs nobody writes (see
+    ``kanban_db.pin_first_board_resolution``)."""
+    from hermes_cli import kanban_db
+    return kanban_db.pin_first_board_resolution()
+
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
-TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested", "board_quiescent", "question")
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
-_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+# ``question``: a running worker asked with kanban_comment(await_reply_minutes=...) and holds its run for the reply.
+_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected", "board_quiescent", "question")
 
 
 def diagnostic_event(ev) -> bool:
@@ -243,21 +255,24 @@ class _Collector:
             logger.debug("kanban notifier: no connected adapters; skipping tick")
             return self.deliveries
         # Poll each resolved DB path once: several slugs can map to one DB when
-        # HERMES_KANBAN_DB pins the board path.
+        # HERMES_KANBAN_DB pins the board path. The whole tick resolves pin-first:
+        # on a dispatcher-pinned box each enumerated slug must map to the pinned
+        # DB, never to that slug's own (empty) physical file.
         kb = self.kb
-        seen_db_paths: set[str] = set()
-        for board_meta in _list_boards(kb):
-            slug = board_meta.get("slug") or kb.DEFAULT_BOARD
-            db_path = board_meta.get("db_path")
-            try:
-                resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(kb.kanban_db_path(slug).resolve())
-            except Exception:
-                resolved_db_path = f"slug:{slug}"
-            if resolved_db_path in seen_db_paths:
-                logger.debug("kanban notifier: skipping duplicate board slug %s for DB %s", slug, resolved_db_path)
-                continue
-            seen_db_paths.add(resolved_db_path)
-            self.collect_board(slug)
+        with _pin_first():
+            seen_db_paths: set[str] = set()
+            for board_meta in _list_boards(kb):
+                slug = board_meta.get("slug") or kb.DEFAULT_BOARD
+                db_path = board_meta.get("db_path")
+                try:
+                    resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(kb.kanban_db_path(slug).resolve())
+                except Exception:
+                    resolved_db_path = f"slug:{slug}"
+                if resolved_db_path in seen_db_paths:
+                    logger.debug("kanban notifier: skipping duplicate board slug %s for DB %s", slug, resolved_db_path)
+                    continue
+                seen_db_paths.add(resolved_db_path)
+                self.collect_board(slug)
         return self.deliveries
 
     def _board_has_subs(self, slug: str) -> bool:
@@ -301,7 +316,22 @@ class _Collector:
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
             thread_id=sub.get("thread_id") or "", kinds=TERMINAL_KINDS,
         )
+        # An idle-board announcement addressed to another follower of this card: the cursor moved past it, skip.
+        events = [ev for ev in events if _kbn().quiescent_addressed_to(conn, ev, sub)]
+        events = _kbn().collapse_superseded_failures(events)
+        # The subscriber's own block, a block of a card archived before delivery, and an idle-board line of only
+        # such cards tell the chat nothing (same rule as the desktop poller).
+        _task = self.kb.get_task(conn, sub["task_id"])
+        events = [ev for ev in (_kbn().relevant_to(self.kb, conn, ev, _task, sub=sub) for ev in events) if ev]
         if not events:
+            if cursor != old_cursor:  # claimed only announcements for another follower: nothing left to deliver
+                ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
+                             thread_id=sub.get("thread_id") or "")
+                with contextlib.suppress(Exception):
+                    _kbn().record_notify_delivered(conn, event_id=cursor, **ident)
+                    # The decision that passed this row by could not drop it (the announcement was pending on it)
+                    # and no delivery follows to release it: do it here. Guarded, so a live card keeps its row.
+                    _kbn().release_archived_notify_sub(conn, **ident)
             return None
         task = self.kb.get_task(conn, sub["task_id"])
         logger.debug("kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
@@ -312,7 +342,6 @@ class _Collector:
         """Claim events on one board, appending delivery dicts to ``deliveries``."""
         if not self._board_has_subs(slug):
             return
-        kb = self.kb
         try:
             conn = _kbc().connect(board=slug)
         except Exception as exc:
@@ -361,10 +390,11 @@ def _payload(ev: Any, key: str) -> Any:
     return ev.payload.get(key) if ev.payload and ev.payload.get(key) else None
 
 
-def _clip(ev: Any, key: str, fmt: str, limit: int) -> str:
-    """``fmt`` applied to the truncated payload value, or ``""`` when absent."""
+def _clip(ev: Any, key: str, msg_key: str, limit: int) -> str:
+    """Catalog message ``msg_key`` (``{value}`` placeholder) rendered with the truncated payload
+    value, or ``""`` when absent."""
     value = _payload(ev, key)
-    return fmt.format(str(value)[:limit]) if value else ""
+    return t(msg_key, value=str(value)[:limit]) if value else ""
 
 
 _NL = "\n{}"
@@ -384,7 +414,7 @@ def _fmt_completed(ev, n) -> tuple:
     elif n.task and n.task.result:
         wake_handoff = _first_line(n.task.result, 160)
     handoff = f"\n{wake_handoff}" if wake_handoff is not None else ""
-    return f"✔ {n.head} done — {n.title}{handoff}", wake_handoff, None
+    return t("gateway.kanban.ping.completed", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
 
 def _fmt_review_requested(ev, n) -> tuple:
@@ -397,7 +427,7 @@ def _fmt_review_requested(ev, n) -> tuple:
         summary = str(summary)
         handoff = f"\n{summary[:200]}"
         wake_handoff = _first_line(summary, 200)
-    return f"👀 {n.head} ready for review — {n.title}{handoff}", wake_handoff, None
+    return t("gateway.kanban.ping.review_requested", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
 
 def _fmt_changes_requested(ev, n) -> tuple:
@@ -405,12 +435,30 @@ def _fmt_changes_requested(ev, n) -> tuple:
     reason = _safe_review_reason(payload.get("reason"))
     reviewer = _safe_review_reason(payload.get("reviewer"), 48)
     implementer = _safe_review_reason(payload.get("implementer"), 48)
-    reason_text = reason or "reviewer feedback requires changes"
-    provenance = f" — reviewer @{reviewer}" if reviewer else ""
+    reason_text = reason or t("gateway.kanban.ping.changes_default_reason")
+    provenance = t("gateway.kanban.ping.reviewer_suffix", reviewer=reviewer) if reviewer else ""
     if implementer:
-        provenance += f" → implementer @{implementer}"
-    msg = f"🛑 {n.board_tag}Kanban {n.task_id} review requested changes/BLOCK: {reason_text}{provenance}"
+        provenance += t("gateway.kanban.ping.implementer_suffix", implementer=implementer)
+    msg = t("gateway.kanban.ping.changes_requested",
+            board_tag=n.board_tag, task_id=n.task_id, reason=reason_text, provenance=provenance)
     return msg, None, reason_text
+
+
+def _fmt_question(ev, n) -> tuple:
+    """A running worker waits for this answer (kanban_comment with await_reply_minutes): the question goes out whole
+    — it is what the reader must answer — with the one command that answers it."""
+    from hermes_cli.kanban_db_notify import describe_question
+    text = describe_question(n.task_id, ev.payload or {})
+    return f"❓ {n.head} — {n.title}\n{text}", text, None
+
+
+def _fmt_board_quiescent(ev, n) -> tuple:
+    """The dispatcher found no running/ready/review card after work ran: the orchestrator decides what's next."""
+    from hermes_cli.kanban_db_notify import describe_board_quiescent
+    summary = describe_board_quiescent(ev.payload or {})
+    # Own wake line, not the handoff slot: a completion claimed in the same batch keeps its "Result:".
+    n.wake_board_summary = summary
+    return f"🏁 {n.board_tag}Kanban {summary}", None, None
 
 
 def _fmt_block_loop_detected(ev, n) -> tuple:
@@ -425,10 +473,11 @@ def _fmt_block_loop_detected(ev, n) -> tuple:
     """
     kind = _payload(ev, "kind")
     decision = kind == "needs_input"
-    msg = (
-        f"🛑 {n.head} routed to TRIAGE — "
-        f"{'needs a human decision' if decision else 'for orchestration attention'}"
-        f"{_clip(ev, 'recurrences', ' (blocked {}x for the same cause)', 200)}{_clip(ev, 'reason', ': {}', 160)}"
+    msg = t(
+        "gateway.kanban.ping.triage", head=n.head,
+        why=t("gateway.kanban.ping.triage_decision" if decision else "gateway.kanban.ping.triage_attention"),
+        recurrences=_clip(ev, "recurrences", "gateway.kanban.ping.triage_recurrences", 200),
+        reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160),
     )
     return msg, None, None
 
@@ -437,37 +486,44 @@ def _fmt_gave_up(ev, n) -> tuple:
     # The dispatcher auto-blocked the task after ``failures`` consecutive non-success attempts
     # (spawn failure, crash, or timeout alike): it is now Blocked and waiting for a human.
     failures = _payload(ev, "failures")
-    count = f"it failed {int(failures)} times in a row" if failures else "it kept failing"
-    last = _clip(ev, "error", " (last: {})", 160)
-    return (
-        f"⛔ {n.head} is now blocked: {count}{last}. Fix the cause, then `hermes kanban unblock "
-        f"{n.task_id}` (or `hermes kanban reassign {n.task_id}`). Logs: `hermes kanban log {n.task_id}`.",
-        None, None,
-    )
+    count = (t("gateway.kanban.ping.failed_n_times", count=int(failures)) if failures
+             else t("gateway.kanban.ping.kept_failing"))
+    last = _clip(ev, "error", "gateway.kanban.ping.last_error", 160)
+    return t("gateway.kanban.ping.gave_up", head=n.head, count=count, last=last, task_id=n.task_id), None, None
+
+
+def _fmt_blocked(ev, n) -> tuple:
+    """The whole block reason (capped like a completion summary): a one-line reason stays on the title line."""
+    from hermes_cli.kanban_db_notify import describe_block_reason
+    reason = describe_block_reason(n.task_id, _payload(ev, "reason") or "")
+    if not reason:
+        return t("gateway.kanban.ping.blocked", head=n.head, reason=""), None, None
+    sep = ": " if "\n" not in reason and len(reason) <= 160 else ":\n"
+    return t("gateway.kanban.ping.blocked", head=n.head, reason=f"{sep}{reason}"), None, None
 
 
 def _fmt_timed_out(ev, n) -> tuple:
     limit = int(_payload(ev, "limit_seconds") or 0)
     minutes = max(1, round(limit / 60)) if limit else 0
-    span = f"its {minutes}-minute limit" if minutes else "its time limit"
-    return f"⏱ {n.head} ran past {span} and was stopped; it will be retried automatically.", None, None
+    span = t("gateway.kanban.ping.limit_minutes", minutes=minutes) if minutes else t("gateway.kanban.ping.limit_generic")
+    return t("gateway.kanban.ping.timed_out", head=n.head, span=span), None, None
 
 
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
-_EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
+_EVENT_FORMATTERS: dict[str, Callable[[Any, _KanbanNotification], tuple]] = {
     "completed": _fmt_completed,
-    "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
+    "blocked": _fmt_blocked,
     "gave_up": _fmt_gave_up,
-    "crashed": lambda ev, n: (
-        f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None,
-    ),
+    "crashed": lambda ev, n: (t("gateway.kanban.ping.crashed", head=n.head), None, None),
     "timed_out": _fmt_timed_out,
-    "status": lambda ev, n: (f"🔄 {n.head} → {_payload(ev, 'status') or ''}", None, None),
+    "status": lambda ev, n: (t("gateway.kanban.ping.status", head=n.head, status=_payload(ev, "status") or ""), None, None),
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
     "block_loop_detected": _fmt_block_loop_detected,
+    "board_quiescent": _fmt_board_quiescent,
+    "question": _fmt_question,
 }
 
 
@@ -494,10 +550,10 @@ class _KanbanNotification:
         self.task_id = sub["task_id"]
         self.sub_profile = sub.get("notifier_profile") or ""
         self.title = (task.title if task else sub["task_id"])[:120]
-        self.board_tag = f"[{self.board_slug}] " if self.board_slug else ""
+        self.board_tag = t("gateway.kanban.ping.board_tag", board=self.board_slug) if self.board_slug else ""
         # Attribute the ping to the worker that did the work.
-        tag = f"@{task.assignee} " if task and task.assignee else ""
-        self.head = f"{self.board_tag}{tag}Kanban {self.task_id}"
+        tag = t("gateway.kanban.ping.assignee_tag", assignee=task.assignee) if task and task.assignee else ""
+        self.head = t("gateway.kanban.ping.head", board_tag=self.board_tag, assignee_tag=tag, task_id=self.task_id)
         # The wake self-post path needs the key even when every event was skipped.
         self.sub_key = (sub["task_id"], sub["platform"], sub["chat_id"], sub.get("thread_id") or "")
         mode = sub.get("delivery_mode") or "notify"
@@ -505,7 +561,7 @@ class _KanbanNotification:
         self.send_passive = mode != "wake"
         # Worker handoff carried into the synthetic wake turn so the woken
         # creator doesn't re-decompose work already on the board.
-        self.wake_handoff = self.wake_review_detail = self.session_key = self.synth = ""
+        self.wake_handoff = self.wake_review_detail = self.wake_board_summary = self.session_key = self.synth = ""
         self.plat: Any = None
         self.adapter: Any = None
         self.is_push_adapter = True
@@ -523,6 +579,9 @@ class _KanbanNotification:
 
     async def unsub(self) -> None:
         await _to_thread_process_service(self.runner._kanban_unsub, self.sub, self.board_slug)
+
+    async def release_archived(self) -> None:
+        await _to_thread_process_service(self.runner._kanban_release_archived, self.sub, self.board_slug)
 
     def clear_failures(self) -> None:
         self.sub_fail_counts.pop(self.sub_key, None)
@@ -574,17 +633,23 @@ class _KanbanNotification:
         # i18n keys: gateway.kanban.wake.<kind> for each _WAKE_KINDS entry.
         _parts = [t(f"gateway.kanban.wake.{k}") for k in _WAKE_KINDS if k in self.wake_kinds]
         _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
-        synth = t(
-            "gateway.kanban.wake.message",
-            task_id=sub["task_id"], status=_status, title=self.title,
-            assignee=task.assignee if task else "", board=self.board_slug,
-        )
+        if self.wake_kinds == {"board_quiescent"}:
+            # Board-level on its own: the carrier card is incidental and may be long handled; don't point at it.
+            synth = t("gateway.kanban.wake.board_message", status=_status, board=self.board_slug)
+        else:
+            synth = t(
+                "gateway.kanban.wake.message",
+                task_id=sub["task_id"], status=_status, title=self.title,
+                assignee=task.assignee if task else "", board=self.board_slug,
+            )
         # Label as an automatic notification and carry the handoff so the
         # creator inspects the board instead of re-decomposing.
         if self.wake_handoff:
             synth += "\n" + t("gateway.kanban.wake.handoff", summary=self.wake_handoff)
         if self.wake_review_detail:
             synth += "\n" + t("gateway.kanban.wake.review_detail", reason=self.wake_review_detail)
+        if self.wake_board_summary:
+            synth += "\n" + self.wake_board_summary
         self.synth = synth + "\n\n" + t("gateway.kanban.wake.guidance")
 
     def _log_woke(self) -> None:
@@ -769,14 +834,14 @@ class _KanbanNotification:
                 if not events:
                     continue
                 self.d = {**self.d, "events": events}
-                self.wake_handoff = self.wake_review_detail = ""
+                self.wake_handoff = self.wake_review_detail = self.wake_board_summary = ""
                 for ev in events:
                     self.format_event(ev)
                 self.build_wake_text()
                 if self.wake_kinds:
                     wake_payloads.append((self.synth, self.wake_diagnostic, self.wake_kinds))
             self.d = {**self.d, "events": original_events}
-        wake_kinds, is_push = self.wake_kinds, self.is_push_adapter
+        is_push = self.is_push_adapter
         from gateway.wake import WakeNotAccepted
 
         # A requested wake is required even when its passive ping already landed.
@@ -802,6 +867,7 @@ class _KanbanNotification:
         await self.advance()
         if not is_push:
             self.clear_failures()
-        # Unsubscribe only on archive; ``done`` is reversible.
+        # Unsubscribe only on archive; ``done`` is reversible. The row is held while the idle-board announcement
+        # may still ride on it (release_archived_notify_sub).
         if self.task and self.task.status == "archived":
-            await self.unsub()
+            await self.release_archived()

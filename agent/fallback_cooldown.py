@@ -1,5 +1,6 @@
 """Primary rate-limit cooldown arming and per-session model rejection markers, shared by the
 fallback walk (chat_completion_helpers) and restore_primary_runtime (agent_runtime_helpers)."""
+import contextlib
 import logging
 import math
 import time
@@ -21,7 +22,7 @@ def _provider_reset_delay(reset_at) -> float | None:
     return None
 
 
-def switch_deferred_by_reset(agent, reason: "FailoverReason | None", reset_at) -> bool:
+def switch_deferred_by_reset(agent, reason: FailoverReason | None, reset_at) -> bool:
     """Opt-in ``fallback.min_switch_reset_seconds`` (default 0 = off, #117484): when the primary's
     rate limit reopens sooner than N seconds, switching model mid-task costs more than waiting, so
     the fallback walk is skipped and the retry loop's own backoff rides out the window. Only for
@@ -42,8 +43,37 @@ def switch_deferred_by_reset(agent, reason: "FailoverReason | None", reset_at) -
     return True
 
 
+def worker_fallback_refused(agent, reason: "FailoverReason | None") -> bool:
+    """``kanban.worker_fallback: wait`` for the dispatcher-owned Kanban worker: refuse the switch
+    so the turn ends on the primary's own failure. A quota wall then exits the worker with the
+    rate-limit code and the dispatcher requeues the card without counting a failure, instead of
+    the card being finished by a different model. Interactive sessions are never bound.
+
+    The price: under ``wait`` a fallback that a NON-quota reason would trigger (server error,
+    empty responses) also ends the turn, and that run counts as an ordinary failure.
+    """
+    from agent.delegation_context import owned_kanban_task
+    if not owned_kanban_task() or getattr(agent, "_fallback_index", 0) >= len(getattr(agent, "_fallback_chain", None) or []):
+        return False
+    try:
+        from hermes_cli.config import load_config
+        policy = str(((load_config() or {}).get("kanban") or {}).get("worker_fallback") or "allow").strip().lower()
+    except Exception:
+        return False
+    if policy != "wait":
+        return False
+    logger.warning("Kanban worker: fallback from %s refused (kanban.worker_fallback=wait, reason=%s)",
+                   getattr(agent, "model", ""), getattr(reason, "value", reason))
+    if not getattr(agent, "_kanban_fallback_refusal_recorded", False):
+        agent._kanban_fallback_refusal_recorded = True
+        with contextlib.suppress(Exception):
+            from tools.kanban_tools import record_fallback_refused_from_env
+            record_fallback_refused_from_env(reason, getattr(agent, "model", ""), getattr(agent, "provider", ""))
+    return True
+
+
 def _arm_rate_limit_cooldown(
-    agent, reason: "FailoverReason | None", reset_at=None,
+    agent, reason: FailoverReason | None, reset_at=None,
 ) -> int | None:
     """Arm the primary cooldown until the provider reset, or use exponential backoff.
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode, urlsplit
 from utils import base_url_hostname, is_truthy_value
 from hermes_cli.fallback_config import scoped_fallback_chain
 
@@ -234,7 +233,7 @@ def _child_route_capabilities(
 def _names_an_entry(lookup, provider) -> bool:
     try:
         return bool(lookup(str(provider)))
-    except Exception:  # noqa: BLE001 — a malformed entry names nothing usable
+    except AttributeError:  # a malformed entry names nothing usable
         return False
 
 
@@ -263,21 +262,12 @@ def _inherit_parent_endpoint(parent_agent, surface_base_url: Optional[str], surf
     for index, (raw_url, live_key) in enumerate(live_candidates):
         url = _normalized_runtime_url(raw_url)
         if url and url.startswith(("http://", "https://")):
-            if index == 0:
-                url = _with_default_query(url, (client_kwargs or {}).get("default_query"))
+            from hermes_cli.route_identity import url_with_query
+            query = (client_kwargs or {}).get("default_query") if index == 0 else getattr(client, "_custom_query", None)
+            url = url_with_query(url, query)
             return url, (live_key or surface_api_key)
     return (surface_base_url or None), surface_api_key
 
-
-def _with_default_query(url: str, default_query: Any) -> str:
-    """*url* with the live client's ``default_query`` put back into it.
-
-    The parent's OpenAI-wire client carries a query-bearing base URL (``…/t?team=a``) as a clean
-    ``base_url`` plus ``default_query``; the child rebuilds its client from a URL alone, so without
-    this it would call the tenant-less endpoint."""
-    if not isinstance(default_query, dict) or not default_query or urlsplit(url).query:
-        return url
-    return f"{url}?{urlencode({str(k): str(v) for k, v in default_query.items()})}"
 
 def _loaded_pool(key: Any):
     """``load_pool(key)`` when it holds credentials, else None."""
@@ -334,7 +324,12 @@ def _resolve_child_credential_pool(
             if parent_pool is not None and parent_provider == "custom" and parent_key is not None and parent_key == child_key:
                 return parent_pool
             return _loaded_pool(child_key)
-        if parent_pool is not None and effective_provider == parent_provider:
+        if effective_provider == parent_provider:
+            # A same-provider parent with no pool is using a fixed credential.
+            # Loading a separate provider pool here can replace the inherited
+            # endpoint and key when the child acquires its startup lease (#71424).
+            if parent_pool is None:
+                return None
             if not effective_base_url or _pool_serves_endpoint(parent_pool, effective_provider, effective_base_url):
                 return parent_pool
             logger.debug("Parent %s pool has no entry for child endpoint %s; not sharing it",
@@ -550,7 +545,7 @@ _ROUTING_FILTER_DEFAULTS = (
 _NOUS_PROVIDERS = frozenset({"nous", "nous-portal", "nousresearch"})
 
 
-def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) -> Optional[List[Dict[str, Any]]]:
+def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) -> Optional[list[dict[str, Any]]]:
     """Fallback chain for a child, owned by the same config block as its route.
 
     Pinned children (provider, endpoint or model override) never borrow the parent chain;
@@ -567,10 +562,10 @@ def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) 
 def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
-    override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
-    override_capabilities: Optional[Dict[str, bool]] = None,
-    routing_cfg: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    override_acp_command: Optional[str], override_acp_args: Optional[list[str]],
+    override_capabilities: Optional[dict[str, bool]] = None,
+    routing_cfg: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
     or is Nous Portal (dual-wire); a pinned ``delegation.command`` must exist on PATH or the spawn fails loudly;
@@ -660,7 +655,7 @@ def _resolve_child_runtime(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
-    kwargs: Dict[str, Any] = {
+    kwargs: dict[str, Any] = {
         "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
         "provider": effective_provider, "requested_provider": effective_requested_provider,
         "capabilities": _child_route_capabilities(

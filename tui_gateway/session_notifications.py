@@ -134,7 +134,8 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
 
 # Mirror gateway/kanban_watchers.py TERMINAL_KINDS: claim silent kinds (archived/unblocked) too so the cursor advances
 # past them and they can't wedge a later completed/blocked event behind an unclaimed row.
-_KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
+_KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked",
+                        "board_quiescent", "question")
 # kanban, /loop + /heartbeat and the bot mailbox share one idle-poll cadence; probing the lease registry on
 # every 0.5s queue timeout cost ~a core at 11 sessions (#108005).
 _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = _BOT_DELIVERY_POLL_SECONDS = 5.0
@@ -146,9 +147,11 @@ def _notif_release_turn(session: dict) -> None:
 
 
 def _notif_claim_turn(session: dict) -> bool:
-    """Claim the idle session (running=True) under history_lock; False if a turn is live."""
+    """Claim the idle session (running=True) under history_lock; False if a turn is live.
+    After the user's Stop no automatic turn starts: the cancel latch holds notifications
+    (requeued by the callers) until the next user prompt clears it."""
     with _session_turn_admission(session) as admitted:
-        if not admitted or session.get("running"):
+        if not admitted or session.get("running") or session.get("_turn_cancel_requested"):
             return False
         session["running"] = True
         return True
@@ -268,6 +271,28 @@ def _loop_route_is_gateway_chat(state) -> bool:
     return bool(route.get("platform") and route.get("chat_id"))
 
 
+def _session_owns_live_wakeup_schedule(session: dict) -> bool:
+    """True while THIS process's notification poller is the only driver of an active /loop or /heartbeat for
+    ``session`` — the reapers must then keep the detached session (and with it the poller) alive, or the schedule
+    freezes until a client reattaches. Gateway-routed schedules are fired by the gateway, so they never pin the
+    session here. Bounded: a loop pauses at its tick budget and a stopped/paused schedule releases the session.
+    Fail-open to False: an unreadable store must not make a session unreapable."""
+    if not (sid_key := session.get("session_key") or ""):
+        return False
+    try:
+        from hermes_cli.heartbeat import HeartbeatManager
+        from hermes_cli.loops import LoopManager
+        with _session_profile_runtime_scope(session, hydrate_secrets=False):
+            loop = LoopManager(session_id=sid_key)
+            if loop.is_active() and not _loop_route_is_gateway_chat(loop.state):
+                return True
+            heartbeat = HeartbeatManager(session_id=sid_key)
+            return heartbeat.is_active() and not _notif_gateway_owns_heartbeat(session, sid_key)
+    except Exception:
+        logger.debug("wakeup-schedule check failed for %s", sid_key, exc_info=True)
+        return False
+
+
 def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     """Fire a due /loop wakeup for an idle TUI/Desktop/dashboard session (per-session poller, coarse cadence). Claims
     the session (running=True) before dispatching so a racing user prompt wins; the post-turn hook completes the tick."""
@@ -300,15 +325,43 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
             mgr.abandon_tick()
 
 
+_TUI_SUMMARY_LIMIT = 4000
+
+
 def _kb_first_line(value: Any, limit: int) -> str:
     lines = str(value).strip().splitlines()
     return f"\n{lines[0][:limit]}" if lines else ""
 
 
-def _kb_completed(task, payload: dict, title: str) -> str:
-    handoff = (_kb_first_line(payload["summary"], 200) if payload.get("summary")
-               else _kb_first_line(task.result, 160) if getattr(task, "result", None) else "")
-    return f" done — {title}{handoff}"
+def _kb_full_summary(value: str, task_id: str) -> str:
+    text = str(value).strip()
+    if len(text) <= _TUI_SUMMARY_LIMIT:
+        return f"\n{text}" if text else ""
+    return f"\n{text[:_TUI_SUMMARY_LIMIT]}\n… (truncated; hermes kanban show {task_id})"
+
+
+def _kb_completed(task, payload: dict, title: str, *, full_summary: Optional[str] = None, task_id: str = "") -> str:
+    """The closing run's whole summary when the poller found it (the event payload keeps only the first line);
+    otherwise the first line, as before. A worker that finished on a fallback model says so in the title line."""
+    if full_summary:
+        handoff = _kb_full_summary(full_summary, task_id)
+    else:
+        handoff = (_kb_first_line(payload["summary"], 200) if payload.get("summary")
+                   else _kb_first_line(task.result, 160) if getattr(task, "result", None) else "")
+    fallback = payload.get("fallback") if isinstance(payload.get("fallback"), dict) else None
+    switched = f" · fallback {fallback.get('from_model') or '?'} → {fallback.get('to_model') or '?'}" if fallback else ""
+    return f" done — {title}{switched}{handoff}"
+
+
+def _kb_blocked(payload: dict, task_id: str) -> str:
+    """The whole block reason (a worker explains what it needs there), capped like a completion summary: a
+    one-line reason stays on the title line, anything longer goes below it."""
+    reason = str(payload.get("reason") or "").strip()
+    if not reason:
+        return " blocked"
+    if "\n" not in reason and len(reason) <= _TUI_SUMMARY_LIMIT:
+        return f" blocked: {reason}"
+    return " blocked:" + _kb_full_summary(reason, task_id)
 
 
 def _kb_timed_out(task, payload: dict, title: str) -> str:
@@ -320,26 +373,57 @@ def _kb_timed_out(task, payload: dict, title: str) -> str:
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.
 _KANBAN_EVENT_FORMATTERS = {
     "completed": ("✔", _kb_completed),
-    "blocked": ("⏸", lambda t, p, title: " blocked" + (f": {str(p.get('reason'))[:160]}" if p.get("reason") else "")),
+    "blocked": ("⏸", lambda t, p, title: _kb_blocked(p, "")),
     "gave_up": ("✖", lambda t, p, title: " gave up after repeated spawn failures"
                 + (f"\n{str(p.get('error'))[:200]}" if p.get("error") else "")),
     "crashed": ("✖", lambda t, p, title: " worker crashed (pid gone); dispatcher will retry"),
     "timed_out": ("⏱", _kb_timed_out),
     "status": ("🔄", lambda t, p, title: f" → {p.get('status') or ''}"),
+    "board_quiescent": ("🏁", lambda t, p, title: " — " + _kanban_describe_quiescent(p)),
+    "question": ("❓", None),  # needs the task id: rendered in _format_kanban_event_text
 }
 
 
-def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[str]:
-    """Single-line notification text for one kanban event; wording mirrors gateway/kanban_watchers.py (reads the same
-    as on Telegram). None for silent kinds."""
+def _kb_question(payload: dict, title: str, task_id: str) -> str:
+    from hermes_cli.kanban_db_notify import describe_question
+    return f" asks — {title}\n" + describe_question(task_id, payload)
+
+
+def _kanban_describe_quiescent(payload: dict) -> str:
+    from hermes_cli.kanban_db_notify import describe_board_quiescent
+    return describe_board_quiescent(payload)
+
+
+def _format_kanban_event_text(sub: dict, task, ev, board_slug: str, *, full_summary: Optional[str] = None) -> Optional[str]:
+    """Notification text for one kanban event; wording mirrors gateway/kanban_watchers.py (reads the same as on
+    Telegram). None for silent kinds. ``full_summary`` (the closing run's summary) replaces a completion's first
+    line with the whole text, capped at ``_TUI_SUMMARY_LIMIT``."""
     if (entry := _KANBAN_EVENT_FORMATTERS.get(getattr(ev, "kind", ""))) is None:
         return None
     glyph, fmt = entry
     task_id = sub.get("task_id", "")
+    if getattr(ev, "kind", "") == "board_quiescent":
+        # Board-level: the card that carries it is incidental, so neither its id nor its assignee is shown.
+        return f"{glyph} " + (f"[{board_slug}] " if board_slug else "") + "Kanban " + fmt(task, ev.payload or {}, "")[3:]
     title = (getattr(task, "title", None) or task_id)[:120]
     who = getattr(task, "assignee", None) or ""
     prefix = f"{glyph} " + (f"[{board_slug}] " if board_slug else "") + (f"@{who} " if who else "")
-    return f"{prefix}Kanban {task_id}{fmt(task, getattr(ev, 'payload', None) or {}, title)}"
+    payload = getattr(ev, "payload", None) or {}
+    body = (_kb_completed(task, payload, title, full_summary=full_summary, task_id=task_id)
+            if getattr(ev, "kind", "") == "completed"
+            else _kb_blocked(payload, task_id) if getattr(ev, "kind", "") == "blocked"
+            else _kb_question(payload, title, task_id) if getattr(ev, "kind", "") == "question"
+            else fmt(task, payload, title))
+    return f"{prefix}Kanban {task_id}{body}"
+
+
+def _kb_run_summary(_kb, conn, ev) -> Optional[str]:
+    """The closing run's full summary for a ``completed`` event; None for a legacy row without a run id."""
+    if getattr(ev, "kind", "") != "completed" or not getattr(ev, "run_id", None):
+        return None
+    with contextlib.suppress(Exception):
+        return getattr(_kb.get_run(conn, ev.run_id), "summary", None) or None
+    return None
 
 
 def _kb_board_key(_kb, board_meta) -> tuple[str, str]:
@@ -352,27 +436,66 @@ def _kb_board_key(_kb, board_meta) -> tuple[str, str]:
         return slug, f"slug:{slug}"
 
 
-def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
+def _notif_subscription_keys(session: dict) -> tuple:
+    """Session keys whose ``platform="tui"`` subscriptions this session may claim: the current key plus every
+    compression ancestor. Compression rotates the key while subscriptions keep the key they were written under, so an
+    exact match orphaned every card subscribed before the last compression (#91037). Ancestors of a key never
+    change, so a successful lookup is cached per current key; a failed or empty one is retried on the next poll."""
+    session_key = str(session.get("session_key") or "")
+    cached = session.get("_kanban_sub_keys")
+    if cached and cached[0] == session_key:
+        return cached[1]
+    try:
+        with _session_db(session) as db:
+            lineage = db.get_compression_lineage(session_key) if db is not None else []
+    except Exception as exc:
+        _notif_log_failure("kanban subscription lineage lookup failed", exc)
+        return (session_key,)
+    if session_key not in lineage:
+        return (session_key,)
+    keys = tuple(lineage[: lineage.index(session_key) + 1])
+    session["_kanban_sub_keys"] = (session_key, keys)
+    return keys
+
+
+def _kb_relevant(_kb, conn, ev, task, sub_keys: tuple):
+    """The event as this conversation should see it, or None (its own block, a block of a card archived before
+    delivery, an idle-board line of only such cards); the rule is shared with the gateway notifier."""
+    from hermes_cli.kanban_db_notify import relevant_to
+    return relevant_to(_kb, conn, ev, task, sub_keys=sub_keys)
+
+
+def _kb_poll_board(_kb, slug: str, session: dict, sub_keys: tuple) -> list:
     """Claim + format this session's unseen events on one board. One poller per live session: the board is not opened
-    writable unless it has a subscription owned by this exact session (a failed read-only probe — locked/corrupt DB —
-    falls through so delivery is preserved)."""
+    writable unless it has a subscription under one of ``sub_keys`` (a failed read-only probe — locked/corrupt DB —
+    falls through so delivery is preserved). A subscription is left unclaimed when a different live session owns its
+    key (a stale pre-compression tab must not take its continuation's events). One conversation can follow a card
+    under several of its keys, so an event reached through two of them is shown once, and so is the idle-board
+    announcement addressed to each key."""
     from hermes_cli import kanban_db_connect as _kbc
     from hermes_cli import kanban_db_notify as _kbn
     with contextlib.suppress(Exception):
-        if _kbn.count_notify_subs(board=slug, platform="tui", chat_id=session_key) == 0:
+        if _kbn.count_notify_subs(board=slug, platform="tui", chat_ids=sub_keys) == 0:
             return []
     try:
         conn = _kbc.connect(board=slug)
     except Exception:
         return []
     texts: list = []
+    elsewhere: dict = {}
+    shown: set = set()
     with contextlib.closing(conn):
         try:
             subs = _kbn.list_notify_subs(conn)
         except Exception:
             return []
         for sub in subs:
-            if (sub.get("platform") or "").lower() != "tui" or sub.get("chat_id") != session_key:
+            chat_id = sub.get("chat_id")
+            if (sub.get("platform") or "").lower() != "tui" or chat_id not in sub_keys:
+                continue
+            if chat_id not in elsewhere:
+                elsewhere[chat_id] = _notification_event_belongs_elsewhere("", session, {"session_key": chat_id})
+            if elsewhere[chat_id]:
                 continue
             sub_ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
                              thread_id=sub.get("thread_id") or "")
@@ -382,15 +505,26 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
             task = _kb.get_task(conn, sub["task_id"])
             from gateway.kanban_watchers_notifier import diagnostic_event
             from gateway.warning_notifications import DiagnosticText
-            for ev in events:
-                text = _format_kanban_event_text(sub, task, ev, slug)
+            for ev in _kbn.collapse_superseded_failures(events):
+                seen_as = (("board_quiescent", (ev.payload or {}).get("mark")) if ev.kind == "board_quiescent"
+                           else ("event", ev.id))
+                if seen_as in shown or not _kbn.quiescent_addressed_to(conn, ev, sub):
+                    continue
+                shown.add(seen_as)
+                if (ev := _kb_relevant(_kb, conn, ev, task, sub_keys)) is None:
+                    continue
+                text = _format_kanban_event_text(sub, task, ev, slug, full_summary=_kb_run_summary(_kb, conn, ev))
                 if text:
                     texts.append(DiagnosticText(text) if diagnostic_event(ev) else text)
             # Unsubscribe only on archive: ``done`` is reversible in review/controller flows, so keeping the sub lets a
             # later reopen notify the same session. The claimed cursor prevents replay.
+            # The poller has no send to fail: what it claimed is delivered (returned to the caller) here.
+            with contextlib.suppress(Exception):
+                _kbn.record_notify_delivered(conn, event_id=_new, **sub_ident)
+            # The row is held while the idle-board announcement may still ride on it (release_archived_notify_sub).
             if task and getattr(task, "status", "") == "archived":
                 with contextlib.suppress(Exception):
-                    _kbn.remove_notify_sub(conn, **sub_ident)
+                    _kbn.release_archived_notify_sub(conn, **sub_ident)
     return texts
 
 
@@ -419,7 +553,8 @@ def _collect_kanban_notifications(session: dict) -> list:
     unique = {}
     for slug, resolved in (_kb_board_key(_kb, board_meta) for board_meta in boards):
         unique.setdefault(resolved, slug)
-    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key)]
+    sub_keys = _notif_subscription_keys(session)
+    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session, sub_keys)]
 
 
 def _notif_poll_kanban(sid: str, session: dict) -> None:
@@ -630,6 +765,8 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     if not has_mailbox(home):
         return False
     with _session_turn_admission(session) as admitted:
+        # No _turn_cancel_requested here: a delivery is a person's message, not an automatic turn,
+        # and only a local prompt clears the latch, so gating it would park the sender until then.
         if not admitted or any(session.get(key) for key in (
                 "running", "_closing", "_finalized", "queued_prompt", "queued_prompts",
                 "_auto_continue_scheduled")) or session.get("agent") is None:
@@ -723,7 +860,7 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     process_registry.restore_completions()  # first consumer in a TUI process (#123265)
     queue = process_registry.completion_queue
     emitted = session.setdefault("_notification_emitted", set())
-    handle = lambda events, deferred: _notif_handle_ready(  # noqa: E731
+    handle = lambda events, deferred: _notif_handle_ready(
         sid, session, events, emitted, process_registry, format_process_notification, deferred)
     last_kanban_poll = last_loop_poll = last_bot_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
@@ -840,7 +977,13 @@ def _hud_surface_note(session: dict) -> str:
     surface = session.get("client_surface")
     if surface == "hud":
         from agent.prompt_builder import hud_surface_note
-        return hud_surface_note(getattr(session.get("agent"), "valid_tool_names", None))
+        from tools.tool_search_catalog import TOOL_CALL_NAME
+        agent = session.get("agent")
+        direct = getattr(agent, "valid_tool_names", None) or set()
+        if TOOL_CALL_NAME not in direct:
+            return hud_surface_note(direct)
+        from agent.tool_executor import _tool_search_scoped_names
+        return hud_surface_note(direct, _tool_search_scoped_names(agent))
     if surface == "voice-live":
         from tools.voice_live import voice_live_turn_note
         return voice_live_turn_note(session.get("voice_live_context") or "")

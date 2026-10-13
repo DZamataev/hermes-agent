@@ -14,7 +14,7 @@ import json
 
 import httpx
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 URL = "https://relay.example.com"
 KEY = "opaque-relay-key"
@@ -297,23 +297,35 @@ def assert_no_oauth_identity(request) -> None:
 
 
 @pytest.mark.parametrize(
-    "explicit_base,kept",
+    "explicit_base,own",
     [
-        (URL, "relay"),
-        (f"{URL}/", "relay"),
+        (URL, True),
+        (f"{URL}/", True),
         # A resolver may hand the endpoint back with /v1 added (OpenCode-family routing): same origin.
-        (f"{URL}/v1", "relay"),
-        ("https://relay.example.com:443", "relay"),
+        (f"{URL}/v1", True),
+        ("https://relay.example.com:443", True),
         # Same host, another origin: a different trust boundary, a different route.
-        ("https://relay.example.com:8443", "custom"),
-        ("http://relay.example.com", "custom"),
-        ("https://elsewhere.example.com", "custom"),
+        ("https://relay.example.com:8443", False),
+        ("http://relay.example.com", False),
+        ("https://elsewhere.example.com", False),
     ],
 )
-def test_explicit_endpoint_keeps_the_name_only_at_the_providers_own_origin(relay, explicit_base, kept):
-    from agent.auxiliary_client import _resolve_task_provider_model
+def test_explicit_endpoint_carries_the_relays_policy_only_at_its_own_origin(relay, explicit_base, own):
+    """The name may survive an explicit endpoint (#76602 keeps a configured provider's name so its
+    key resolves), but the relay's OAuth declaration speaks only for the relay's own endpoint."""
+    from agent.auxiliary_client import _resolve_task_provider_model, call_llm
 
-    assert _resolve_task_provider_model(None, "relay", TRUSTED_MODEL, explicit_base, KEY)[0] == kept
+    assert _resolve_task_provider_model(None, "relay", TRUSTED_MODEL, explicit_base, KEY)[0] == "relay"
+    call_llm(
+        provider="relay", model=TRUSTED_MODEL, base_url=explicit_base,
+        messages=[{"role": "user", "content": "hello"}], max_tokens=32,
+        main_runtime={"provider": "moa", "base_url": "moa://local", "model": "simple"},
+    )
+    request = relay[-1]
+    if own:
+        assert_oauth_wire(request, True)
+    else:
+        assert_no_oauth_identity(request)
 
 
 def test_kept_identity_is_the_canonical_name(relay):
@@ -496,19 +508,19 @@ def _tenant_config():
         ("https://h", "", False),
         ("", "https://h", False),
         ("https://h", "https://h:notaport", False),
-        # The query is not part of the identity: OpenAI-wire clients move it into default_query,
-        # so the URL a consumer compares never carries it while the entry's URL does.
-        ("https://h/t?team=a", "https://h/t", True),
+        # The query is part of the route: it can select a tenant. Adding, dropping or changing it
+        # is another route — a query-less URL is not a wildcard in either direction.
+        ("https://h/t?team=a", "https://h/t", False),
+        ("https://h/t", "https://h/t?team=other", False),
         ("https://h/t?team=a", "https://h/t?team=a", True),
-        # Two present queries must agree (as parameter sets): another tenant otherwise.
         ("https://h/t?team=a", "https://h/t?team=b", False),
+        # Key order is not identity; values, blanks and repeats are.
         ("https://h/t?a=1&b=2", "https://h/t?b=2&a=1", True),
-        # Parsed like the default_query producers (parse_qs: first value, blanks dropped), so a URL
-        # rebuilt from default_query equals the entry it came from.
-        ("https://h/t?team=a&x=", "https://h/t?team=a", True),
-        ("https://h/t?team=a&team=b", "https://h/t?team=a", True),
-        # A blank-only query is a (blank) tenant, not "no query".
+        ("https://h/t?team=a&x=", "https://h/t?team=a", False),
+        ("https://h/t?team=a&team=b", "https://h/t?team=a", False),
+        ("https://h/t?team=a&team=b", "https://h/t?team=b&team=a", False),
         ("https://h/t?team=a", "https://h/t?team=", False),
+        ("https://h/t?team=", "https://h/t?team=", True),
     ],
 )
 def test_same_provider_endpoint_is_origin_plus_path_modulo_v1(own, target, same):
@@ -524,7 +536,6 @@ def test_a_sibling_tenant_path_is_not_the_relay(relay):
     _tenant_config()
     assert _resolve_task_provider_model(None, "tenant", TRUSTED_MODEL, f"{GATEWAY}/tenant-a", KEY)[0] == "tenant"
     assert _resolve_task_provider_model(None, "tenant", TRUSTED_MODEL, f"{GATEWAY}/tenant-a/v1", KEY)[0] == "tenant"
-    assert _resolve_task_provider_model(None, "tenant", TRUSTED_MODEL, f"{GATEWAY}/tenant-b", KEY)[0] == "custom"
     # The MoA-slot / explicit-caller shape the review reproduced: name + another tenant's URL.
     call_llm(
         provider="tenant", model=TRUSTED_MODEL, base_url=f"{GATEWAY}/tenant-b",
@@ -533,10 +544,142 @@ def test_a_sibling_tenant_path_is_not_the_relay(relay):
     )
     request = relay[-1]
     assert request.url.path.startswith("/tenant-b")
-    assert request.headers.get("x-tenant-token") is None
     assert request.headers.get("authorization") != f"Bearer {KEY}"
     assert "x-claude-code-session-id" not in request.headers
     assert_no_oauth_identity(request)
+
+
+# ── the query is part of the route: a tenant choice, never a wildcard ─────────
+
+def _query_tenant_config():
+    """Two relays on one path: one pinned to a tenant by query, one declared without a query."""
+    _rewrite_config(providers={
+        "qtenant": {"api": f"{URL}/t?team=a", "key_env": "TEST_RELAY_KEY", "transport": "anthropic_messages",
+                    "capabilities": {"anthropic_oauth_proxy": True}},
+        "qplain": {"api": f"{URL}/t", "key_env": "TEST_RELAY_KEY", "transport": "anthropic_messages",
+                   "capabilities": {"anthropic_oauth_proxy": True}},
+    })
+
+
+# (provider, explicit URL, keeps the declaration): the entry's own query — or its own absence of
+# one — keeps it; adding, dropping or changing the query is another tenant.
+QUERY_ROUTES = [
+    ("qtenant", f"{URL}/t?team=a", True),
+    ("qtenant", f"{URL}/t", False),
+    ("qtenant", f"{URL}/t?team=b", False),
+    ("qtenant", f"{URL}/t?team=a&team=b", False),
+    ("qplain", f"{URL}/t", True),
+    ("qplain", f"{URL}/t?team=other", False),
+]
+
+
+@pytest.mark.parametrize("provider,explicit,kept", QUERY_ROUTES)
+def test_explicit_base_url_with_another_query_drops_the_declaration(relay, provider, explicit, kept):
+    """andrexibiza review, P1: ``--base-url`` / ``/model`` / CLI fallback under the relay's name."""
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    _query_tenant_config()
+    runtime = resolve_runtime_provider(requested=provider, target_model=TRUSTED_MODEL, explicit_base_url=explicit)
+    assert bool((runtime.get("capabilities") or {}).get("anthropic_oauth_proxy")) is kept
+
+
+@pytest.mark.parametrize("provider,explicit,kept", QUERY_ROUTES)
+def test_delegation_base_url_with_another_query_drops_the_declaration(relay, provider, explicit, kept):
+    from tools.delegate_tool_config import _resolve_delegation_credentials
+
+    _query_tenant_config()
+    creds = _resolve_delegation_credentials({"provider": provider, "base_url": explicit, "model": TRUSTED_MODEL}, None)
+    assert bool((creds["capabilities"] or {}).get("anthropic_oauth_proxy")) is kept
+
+
+@pytest.mark.parametrize("provider,explicit,kept", QUERY_ROUTES)
+def test_auxiliary_call_with_another_query_gets_no_oauth_identity(relay, provider, explicit, kept):
+    """The MoA-slot / explicit auxiliary shape: name + URL, main session elsewhere."""
+    from agent.auxiliary_client import call_llm
+
+    _query_tenant_config()
+    call_llm(
+        provider=provider, model=TRUSTED_MODEL, base_url=explicit,
+        messages=[{"role": "user", "content": "hello"}], max_tokens=32,
+        main_runtime={"provider": "moa", "base_url": "moa://local", "model": "simple"},
+    )
+    request = relay[-1]
+    assert request.url.path.startswith("/t")
+    if kept:
+        assert_oauth_wire(request, True)
+    else:
+        assert_no_oauth_identity(request)
+
+
+def test_client_route_url_puts_the_sdk_split_query_back(relay):
+    """The OpenAI SDK keeps ``…/t?team=a`` as a clean base_url plus a default query; the identity
+    decision must see the query again, and must not see one that was never there."""
+    from openai import OpenAI
+
+    from agent.auxiliary_client import _client_route_url, _extract_url_query_params
+
+    clean, query = _extract_url_query_params(f"{URL}/t?team=a")
+    client = OpenAI(api_key="k", base_url=clean, default_query=query)
+    assert _client_route_url(client, client.base_url) == f"{URL}/t?team=a"
+    bare = OpenAI(api_key="k", base_url=f"{URL}/t")
+    assert _client_route_url(bare, bare.base_url) == f"{URL}/t"
+
+
+def _chat_query_relay():
+    _rewrite_config(providers={"qchat": {
+        "api": f"{URL}/t?team=a", "key_env": "TEST_RELAY_KEY", "transport": "chat_completions",
+        "capabilities": {"anthropic_oauth_proxy": True},
+    }})
+
+
+def test_chat_wire_call_on_a_query_bearing_relay_keeps_its_conversation_header(relay):
+    """End to end through ``call_llm``: the OpenAI client built for ``…/t?team=a`` reports the clean
+    ``…/t``; the relay's own route must still be recognised, so the conversation header goes out."""
+    from agent.auxiliary_client import call_llm
+    from agent.claude_code_session import CLAUDE_CODE_SESSION_HEADER
+
+    _chat_query_relay()
+    call_llm(
+        provider="qchat", model=TRUSTED_MODEL, messages=[{"role": "user", "content": "hello"}], max_tokens=32,
+        main_runtime={"provider": "moa", "base_url": "moa://local", "model": "simple",
+                      "session_id": "20260924_120000_query"},
+    )
+    request = relay[-1]
+    assert request.url.path.endswith("/chat/completions")
+    assert request.url.params.get("team") == "a"
+    assert request.headers.get(CLAUDE_CODE_SESSION_HEADER)
+
+
+def test_fallback_destination_keeps_the_clients_query(relay):
+    """A fallback built from a label or a chain entry without ``base_url`` reads the client; its
+    route must carry the SDK-split query, or the relay's own fallback loses its policy."""
+    from openai import OpenAI
+
+    from agent.auxiliary_client import _fallback_destination, _fallback_destination_from_entry
+
+    client = OpenAI(api_key="k", base_url=f"{URL}/t", default_query={"team": "a"})
+    from_entry = _fallback_destination_from_entry({"provider": "qchat"}, client, TRUSTED_MODEL)
+    assert from_entry.route_url == f"{URL}/t?team=a"
+    from_label = _fallback_destination(None, client, TRUSTED_MODEL, "qchat")
+    assert from_label.route_url == f"{URL}/t?team=a"
+
+
+def test_published_main_runtime_carries_the_client_query(relay):
+    """The main agent's ``base_url`` is the SDK-clean half; the runtime published to auxiliary
+    routing must carry the tenant query from ``_client_kwargs['default_query']``."""
+    from types import SimpleNamespace
+
+    from agent.auxiliary_oauth import runtime_oauth_proxy
+    from agent.turn_context import live_route_base_url
+
+    _query_tenant_config()
+    agent = SimpleNamespace(base_url=f"{URL}/t", _client_kwargs={"default_query": {"team": "a"}})
+    assert live_route_base_url(agent) == f"{URL}/t?team=a"
+    assert live_route_base_url(SimpleNamespace(base_url=f"{URL}/t", _client_kwargs={})) == f"{URL}/t"
+    main = {"provider": "custom", "requested_provider": "qtenant", "base_url": live_route_base_url(agent),
+            "model": TRUSTED_MODEL, "capabilities": {"anthropic_oauth_proxy": True}}
+    assert runtime_oauth_proxy(main, "custom", f"{URL}/t?team=a", TRUSTED_MODEL) is True
+    assert not runtime_oauth_proxy(main, "custom", f"{URL}/t", TRUSTED_MODEL)
 
 
 # ── the main runtime and delegation carry the declaration only to its own endpoint ──
@@ -661,6 +804,33 @@ def test_child_pin_on_a_query_bearing_entry_keeps_its_declaration(relay):
     assert child["base_url"] == f"{URL}/t?team=a"
 
 
+def test_child_pin_off_the_live_client_keeps_its_query(relay):
+    """No ``_client_kwargs`` URL: the child reads the live OpenAI client, whose ``base_url`` is the
+    SDK-clean half — its default query must come back with it, or the child loses the tenant."""
+    from types import SimpleNamespace
+
+    from openai import OpenAI
+
+    from tools.delegate_tool_config import _resolve_child_runtime
+
+    _rewrite_config(providers={"relay": {
+        "api": f"{URL}/t?team=a", "key_env": "TEST_RELAY_KEY", "transport": "chat_completions",
+        "capabilities": {"anthropic_oauth_proxy": True},
+    }})
+    parent = SimpleNamespace(
+        model="claude-opus-5", base_url=f"{URL}/t", api_key="k", provider="custom",
+        requested_provider="relay", capabilities={"anthropic_oauth_proxy": True}, api_mode="chat_completions",
+        client=OpenAI(api_key="k", base_url=f"{URL}/t", default_query={"team": "a"}), _client_kwargs={},
+        acp_command=None, acp_args=[], reasoning_config=None, _fallback_chain=None,
+    )
+    child = _resolve_child_runtime(
+        parent, {}, "k", model=TRUSTLESS_MODEL, override_provider=None, override_base_url=None,
+        override_api_key=None, override_api_mode=None, override_acp_command=None, override_acp_args=None,
+    )
+    assert child["base_url"] == f"{URL}/t?team=a"
+    assert child["capabilities"] == {"anthropic_oauth_proxy": True}
+
+
 def test_child_pin_takes_the_live_endpoint_not_the_lagging_surface(relay):
     """Finding 2 (review 4): the child calls the parent's LIVE endpoint (#90009). A surface
     ``base_url`` still on the relay must not lend its declaration to where the child really goes."""
@@ -719,7 +889,7 @@ def test_a_spaced_name_whose_dashed_form_is_a_builtin_alias_is_not_dashed(relay)
     """Finding 1 (review 3): ``Claude Code`` dashed is ``claude-code``, the ``anthropic`` alias;
     the downstream resolver would route it to the built-in and drop the relay's wire policy."""
     from agent.auxiliary_client import _resolve_task_provider_model, call_llm
-    from hermes_cli.auth import known_provider_id
+    from hermes_cli.auth_plugin_providers import known_provider_id
 
     assert known_provider_id("claude-code") is not None
     _rewrite_config(providers={"my-relay": {
@@ -733,6 +903,66 @@ def test_a_spaced_name_whose_dashed_form_is_a_builtin_alias_is_not_dashed(relay)
         main_runtime={"provider": "moa", "base_url": "moa://local", "model": "simple"},
     )
     assert_oauth_wire(relay[-1], True)
+
+
+# ── a named entry whose name is a built-in alias keeps its own authority ─────
+
+@pytest.mark.parametrize(
+    "entry_url,wire",
+    [
+        # api_mode declared: the named branch builds the Anthropic client itself.
+        (URL, {"transport": "anthropic_messages"}),
+        # No api_mode, an Anthropic-shaped URL: the named branch hands off to _wrap_transport.
+        (f"{URL}/anthropic", {}),
+    ],
+    ids=["named-branch", "wrap-transport"],
+)
+@pytest.mark.parametrize("aux_model,expected", [(TRUSTED_MODEL, True), (TRUSTLESS_MODEL, False)])
+def test_an_alias_named_relay_keeps_its_policy_through_the_cached_client(
+    relay, entry_url, wire, aux_model, expected,
+):
+    """``custom:claude`` is selected from the raw name (``claude`` is the ``anthropic`` alias); the
+    wire policy must be looked up under that same identity, not the alias-normalized built-in,
+    which owns no custom entry and would answer ``false`` for a relay declaring ``true``."""
+    from agent.auxiliary_client import _get_cached_client
+    from hermes_cli.auth_plugin_providers import known_provider_id
+
+    assert known_provider_id("claude") == "anthropic"
+    _rewrite_config(providers={"claude": {
+        "api": entry_url, "key_env": "TEST_RELAY_KEY", **wire,
+        "capabilities": {"anthropic_oauth_proxy": True},
+        "models": {TRUSTLESS_MODEL: {"anthropic_oauth_proxy": False}},
+    }})
+    # A main session on another route, so nothing can be inherited: only the entry decides.
+    main = {"provider": "moa", "base_url": "moa://local", "model": "simple"}
+    client, model = _get_cached_client("custom:claude", aux_model, main_runtime=main)
+    client.chat.completions.create(
+        model=model, messages=[{"role": "user", "content": "hello"}], max_tokens=32,
+    )
+    assert_oauth_wire(relay[-1], expected)
+    assert ("Claude Code" in json.dumps(json.loads(relay[-1].content).get("system", []))) is expected
+
+
+def test_an_unflagged_alias_named_relay_does_not_turn_oauth_on_its_key_shape(relay, monkeypatch):
+    """The reverse of the same identity loss: normalized to ``anthropic``, an unflagged relay
+    named ``claude`` holding an OAuth-shaped key was classified as the native provider, so the
+    payload got the Claude Code transforms while the client itself sent ``x-api-key``."""
+    from agent.auxiliary_client import _get_cached_client
+
+    oauth_shaped = "sk-ant-oat01-" + "x" * 40
+    monkeypatch.setenv("TEST_RELAY_KEY", oauth_shaped)
+    _rewrite_config(providers={"claude": {
+        "api": URL, "key_env": "TEST_RELAY_KEY", "transport": "anthropic_messages",
+    }})
+    main = {"provider": "moa", "base_url": "moa://local", "model": "simple"}
+    client, model = _get_cached_client("custom:claude", TRUSTED_MODEL, main_runtime=main)
+    client.chat.completions.create(
+        model=model, messages=[{"role": "user", "content": "hello"}], max_tokens=32,
+    )
+    request = relay[-1]
+    assert request.headers.get("x-api-key") == oauth_shaped
+    assert "oauth-2025-04-20" not in request.headers.get("anthropic-beta", "")
+    assert "Claude Code" not in json.dumps(json.loads(request.content).get("system", []))
 
 
 # ── the cheap lookup picks exactly the entry the full lookup picks ────────────
@@ -791,3 +1021,72 @@ def test_wire_policy_path_reads_no_credential(relay, monkeypatch):
     monkeypatch.setattr(runtime_provider_custom, "get_secret_str", refuse)
     assert runtime_oauth_proxy(None, "relay", URL, TRUSTED_MODEL) is True
     assert runtime_oauth_proxy(None, "relay", "", TRUSTLESS_MODEL) is False
+
+
+# ── one bare name, two vendors (review 7, finding 1) ─────────────────────────
+
+VENDOR_A = f"vendor-a/{TRUSTED_MODEL}"
+VENDOR_B = f"vendor-b/{TRUSTED_MODEL}"
+
+
+def _vendor_config(vendor_b_block=True):
+    """One relay, provider-level ``false``; vendor A opts in, vendor B (when listed) opts out."""
+    models = {VENDOR_A: {"anthropic_oauth_proxy": True}}
+    if vendor_b_block:
+        models[VENDOR_B] = {"anthropic_oauth_proxy": False}
+    _rewrite_config(providers={"vendors": {
+        "api": URL, "key_env": "TEST_RELAY_KEY", "transport": "anthropic_messages",
+        "capabilities": {"anthropic_oauth_proxy": False}, "models": models,
+    }})
+
+
+def _vendor_main():
+    return {
+        "provider": "custom", "requested_provider": "custom:vendors", "base_url": URL,
+        "api_mode": "anthropic_messages", "model": VENDOR_A,
+        "capabilities": {"anthropic_oauth_proxy": True},
+    }
+
+
+@pytest.mark.parametrize("main", [True, False], ids=["with-main-runtime", "without"])
+@pytest.mark.parametrize("aux_model,expected", [
+    (VENDOR_A, True),
+    (VENDOR_B, False),              # same bare name, another vendor, its own ``false``
+    ("claude-haiku-4-6", False),    # different bare name: provider-level ``false``
+])
+def test_a_vendor_prefix_is_part_of_the_models_identity_on_the_wire(relay, main, aux_model, expected):
+    """The main runtime on vendor A must not lend its ``true`` to vendor B's auxiliary request,
+    whose own declaration says ``false``: asserted on the emitted request, not the resolver."""
+    from agent.auxiliary_client import _get_cached_client
+
+    _vendor_config()
+    client, model = _get_cached_client(
+        "custom:vendors", aux_model, main_runtime=_vendor_main() if main else None)
+    client.chat.completions.create(model=model, messages=[{"role": "user", "content": "hello"}], max_tokens=32)
+    assert_oauth_wire(relay[-1], expected)
+
+
+@pytest.mark.parametrize("vendor_b_block", [True, False], ids=["b-declares-false", "b-declares-nothing"])
+@pytest.mark.parametrize("child_model,expected", [
+    (VENDOR_B, {"anthropic_oauth_proxy": False}),
+    ("claude-haiku-4-6", {"anthropic_oauth_proxy": False}),
+])
+def test_a_model_only_child_pin_to_another_vendor_does_not_take_vendor_as_block(
+    relay, vendor_b_block, child_model, expected,
+):
+    """Without a block of its own, vendor B falls back to the provider level — never to vendor
+    A's block that merely shares the bare name."""
+    _vendor_config(vendor_b_block)
+    assert _child_capabilities(URL, URL, child_model, requested="vendors") == expected
+
+
+def test_a_bare_or_prefixed_spelling_with_one_owner_still_matches(relay):
+    """The alias that is safe to keep: exactly one ``models:`` key spells the model."""
+    from agent.auxiliary_oauth import declared_oauth_proxy
+
+    _vendor_config(vendor_b_block=False)
+    assert declared_oauth_proxy("custom:vendors", TRUSTED_MODEL) is True       # bare -> the only owner
+    assert declared_oauth_proxy("custom:vendors", VENDOR_B) is False           # prefixed, another vendor
+    _vendor_config(vendor_b_block=True)
+    assert declared_oauth_proxy("custom:vendors", TRUSTED_MODEL) is False      # two owners: none borrowed
+    assert declared_oauth_proxy("custom:relay", f"anthropic/{TRUSTLESS_MODEL}") is False  # bare key, prefixed id

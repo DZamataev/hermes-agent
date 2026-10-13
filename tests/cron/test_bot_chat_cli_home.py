@@ -27,15 +27,16 @@ def test_cli_keeps_discovered_home_when_launch_selection_changes(tmp_path, monke
     def discover(target):
         assert target == home
         (root / "active_profile").write_text("other", encoding="utf-8")
-        return None
 
     def run(argv, env, report_path, timeout):
         # Exercise the actual startup resolver with the production child env/flags.
         code = ('import json,sys; sys.argv=["hermes"]+json.loads(sys.argv[1]); '
                 'import hermes_cli.main; from hermes_constants import get_hermes_home; '
                 'print(json.dumps(str(get_hermes_home())))')
-        # Everything after the launcher (binary or ``python -m hermes_cli.main``) is the CLI argv.
-        cli_argv = argv[3:] if argv[1:3] == ["-m", "hermes_cli.main"] else argv[1:]
+        # Everything after the launcher (this install's runtime command, or a bare binary) is the CLI argv.
+        from hermes_cli._launchers import runtime_command
+        launcher = runtime_command(Path(delivery.__file__).resolve().parents[1])
+        cli_argv = argv[len(launcher):] if argv[:len(launcher)] == launcher else argv[1:]
         result = real_run([sys.executable, "-c", code, json.dumps(cli_argv)],
                           env=env, capture_output=True, text=True, timeout=30)
         assert result.returncode == 0, result.stderr
@@ -66,7 +67,6 @@ def test_missing_destination_never_launches_or_recreates(tmp_path, monkeypatch, 
     def discover(target):
         if home.exists():
             home.rmdir()
-        return None
 
     monkeypatch.setattr("tools.bot_live_delivery.find_canonical_live_owner", discover)
     monkeypatch.setattr(delivery, "_run_bot_chat_turn", run)

@@ -12,6 +12,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -128,9 +129,12 @@ def test_deliver_runs_canonical_bot_chat_lane():
 
     assert err is None
     argv = calls["argv"]
-    # The running install's interpreter, not whatever `hermes` PATH names (same order as /update).
-    assert argv[:3] == [sys.executable, "-m", "hermes_cli.main"]
-    assert argv[3:5] == ["-p", "default"]  # do not follow active_profile
+    # This install's CLI, not whatever `hermes` PATH names (same order as /update), self-contained.
+    from hermes_cli._launchers import runtime_command
+    launcher = runtime_command(Path(sched_delivery.__file__).resolve().parents[1])
+    assert argv[:len(launcher)] == launcher
+    argv = argv[len(launcher) - 1:]  # keep one leading slot so the indices below read as before
+    assert argv[1:3] == ["-p", "default"]  # do not follow active_profile
     assert "chat" in argv
     assert "Bot Chat" in argv
     assert "--create-if-missing" in argv
