@@ -32,11 +32,20 @@ MAX_PREDICTION_WORDS = 12
 _CONTEXT_MESSAGES = 6
 _PER_MESSAGE_CHARS = 1500
 _NONE = "NONE"
-# The model may spend its first iteration on a (denied) tool call; a third request is never worth it.
-_FORK_MAX_ITERATIONS = 2
+# One prediction is ONE provider request: a single iteration, so a denied tool call or a truncated
+# reply never earns a follow-up, and ``_no_iteration_summary`` so that running out of iterations
+# does not buy the loop's extra "summarise" request either.
+_FORK_MAX_ITERATIONS = 1
 # The fork keeps the session's reasoning settings (cache parity), so this caps thinking plus the
 # reply; the parent's own limit would let a decorative guess spend a whole turn's output budget.
+# Not every transport can honour it (manual thinking budgets need a larger max_tokens, the Codex
+# backend takes no output limit), so the streamed output is also counted on our side.
 _FORK_MAX_OUTPUT_TOKENS = 1024
+_FORK_MAX_STREAMED_CHARS = _FORK_MAX_OUTPUT_TOKENS * 4
+# Routing keys of the task config. The fork is only built once they are known to point at the
+# session's own model, so they are withheld from its runtime resolver, which would read an alias
+# of the session's provider as a different one and build a cold, routed fork.
+_ROUTING_KEYS = frozenset({"provider", "model", "base_url", "api_key"})
 # A guard against a hung request holding an RPC worker, not a latency budget: the input is
 # already paid for once the request is sent, so a slow but arriving reply is worth waiting for.
 _DEFAULT_TIMEOUT_SECONDS = 60.0
@@ -115,6 +124,16 @@ def _word_count(text: str) -> int:
     return len(_UNSPACED_RE.sub(" ", text).split()) + math.ceil(unspaced / 2)
 
 
+def _too_short(text: str, lower: str, words: int) -> bool:
+    """One word is rarely a message: a slash command and a few stock replies are. In unspaced
+    scripts two characters already make a command ("继续", "提交", "해줘")."""
+    if words >= 2 or text.startswith("/"):
+        return False
+    if (unspaced := len(_UNSPACED_RE.findall(text))):
+        return unspaced < 2
+    return lower.strip(".!") not in _SHORT_OK
+
+
 def reject_reason(text: str) -> str | None:
     """Why a raw model reply is not a usable ghost, else ``None``. A model that ignored the task
     announces silence, praises, answers in its own voice or writes a paragraph; showing any of that
@@ -126,7 +145,7 @@ def reject_reason(text: str) -> str | None:
         ("meta_wrapped", lambda: bool(_BRACKETED_RE.match(text))),
         ("error_message", lambda: lower.startswith(_ERROR_PREFIXES)),
         ("prefixed_label", lambda: bool(re.match(r"^\w+:\s", text))),
-        ("too_few_words", lambda: words < 2 and not text.startswith("/") and lower.strip(".!") not in _SHORT_OK),
+        ("too_few_words", lambda: _too_short(text, lower, words)),
         ("too_many_words", lambda: words > MAX_PREDICTION_WORDS),
         ("too_long", lambda: len(text) >= MAX_PREDICTION_CHARS),
         ("multiple_sentences", lambda: bool(_SENTENCE_BREAK_RE.search(text))),
@@ -214,34 +233,72 @@ def _set_child(agent: Any, fork: Any, *, register: bool) -> None:
             children.remove(fork)
 
 
+class _OutputGuard:
+    """Counts what the fork streams (reply and visible reasoning) and interrupts it past the cap:
+    the provider-side limit is not enforceable on every transport, and a reply already longer
+    than a ghost can be is rejected anyway."""
+
+    def __init__(self, fork: Any) -> None:
+        self._fork, self._chars, self._reply_chars, self.tripped = fork, 0, 0, False
+
+    def _count(self, delta: Any, *, reply: bool) -> None:
+        size = len(delta) if isinstance(delta, str) else 0
+        self._chars += size
+        self._reply_chars += size if reply else 0
+        if not self.tripped and (
+            self._chars > _FORK_MAX_STREAMED_CHARS or self._reply_chars > MAX_PREDICTION_CHARS * 2
+        ):
+            self.tripped = True
+            self._fork.interrupt(tool_reason="composer prediction over its output cap")
+
+    def on_reply(self, delta: Any = None, *_: Any, **__: Any) -> None:
+        self._count(delta, reply=True)
+
+    def on_reasoning(self, delta: Any = None, *_: Any, **__: Any) -> None:
+        self._count(delta, reply=False)
+
+
 def _predict_via_fork(
     agent: Any, history: list[dict], task_cfg: dict[str, Any], stale: Callable[[], bool] | None = None,
 ) -> str:
-    """One prediction from a cache-parity fork of ``agent``. An empty thread tool whitelist denies
-    every tool call at dispatch, so ``tools[]`` stays byte-identical for the cache but nothing runs."""
+    """One prediction from a cache-parity fork of ``agent``: exactly one provider request. An
+    empty thread tool whitelist denies every tool call at dispatch, so ``tools[]`` stays
+    byte-identical for the cache but nothing runs."""
     from agent.background_review import (
         _record_review_usage_to_parent, _snapshot_review_usage, build_cache_parity_fork,
     )
     from agent.memory_provider import spawn_context_thread
     from hermes_cli.plugins import clear_thread_tool_whitelist, set_thread_tool_whitelist
 
-    fork, _rt, _routed = build_cache_parity_fork(
-        agent, task_cfg, max_iterations=_FORK_MAX_ITERATIONS, write_origin=TASK)
-    # The output limit is not part of the cached prefix, so capping it keeps the cache read.
-    parent_limit = getattr(fork, "max_tokens", None)
-    fork.max_tokens = min(parent_limit, _FORK_MAX_OUTPUT_TOKENS) if isinstance(parent_limit, int) and parent_limit > 0 \
-        else _FORK_MAX_OUTPUT_TOKENS
+    fork_cfg = {key: value for key, value in task_cfg.items() if key not in _ROUTING_KEYS}
+    fork, _rt, routed = build_cache_parity_fork(
+        agent, fork_cfg, max_iterations=_FORK_MAX_ITERATIONS, write_origin=TASK)
     done = threading.Event()
-    watcher = spawn_context_thread(
-        _watch_fork, name="composer-prediction-watch", args=(fork, done, _timeout_seconds(task_cfg), stale))
     try:
+        if routed:
+            # Unreachable while the routing keys are withheld; a routed fork has none of the
+            # parent's prompt or tools, so replaying the conversation into it would be a cold request.
+            raise RuntimeError("cache-parity fork resolved to a different model")
+        fork._no_iteration_summary = True
+        # The output limit is not part of the cached prefix, so capping it keeps the cache read.
+        parent_limit = getattr(fork, "max_tokens", None)
+        fork.max_tokens = (min(parent_limit, _FORK_MAX_OUTPUT_TOKENS)
+                           if isinstance(parent_limit, int) and parent_limit > 0 else _FORK_MAX_OUTPUT_TOKENS)
+        guard = _OutputGuard(fork)
+        fork.stream_delta_callback, fork.reasoning_callback = guard.on_reply, guard.on_reasoning
         _set_child(agent, fork, register=True)
-        watcher.start()
+        spawn_context_thread(
+            _watch_fork, name="composer-prediction-watch", args=(fork, done, _timeout_seconds(task_cfg), stale),
+        ).start()
         set_thread_tool_whitelist(set(), deny_msg_fmt=(
             "Composer prediction denied tool call: {tool_name}. Tools are disabled here; reply with "
             "the predicted message text only."))
         result = fork.run_conversation(user_message=_FORK_PROMPT, conversation_history=list(history))
-        return _clean((result or {}).get("final_response", "") or "")
+        # Only a finished answer is a prediction: an interrupted, truncated or failed turn returns
+        # a notice or a fragment in the same field.
+        if guard.tripped or not (result or {}).get("completed") or result.get("partial") or result.get("failed"):
+            return ""
+        return _clean(result.get("final_response", "") or "")
     finally:
         done.set()
         clear_thread_tool_whitelist()

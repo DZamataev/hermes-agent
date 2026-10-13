@@ -258,7 +258,11 @@ would type (2-12 words, in your language) and to output nothing when the next st
 a reply that reads as praise, a question to itself, the assistant's own voice, several sentences
 or formatted text is dropped.
 
-The request is capped at 1024 output tokens and is cancelled when you send the next message.
+A prediction is exactly one provider request: a truncated reply or a (denied) tool call never earns a
+follow-up. It asks for at most 1024 output tokens, and Hermes also counts the streamed output and
+cuts the request off past that, because some providers cannot take the limit (a model with a manual
+thinking budget needs a larger one; the Codex backend accepts none). Reasoning a provider does not
+stream cannot be counted. The request is cancelled as soon as you send the next message.
 `auxiliary.composer_predictions.timeout` (60 seconds) only guards against a hung request: the
 input is paid for as soon as the request is sent, so a slow reply is waited for.
 

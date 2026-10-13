@@ -66,7 +66,7 @@ def test_suggest_gating_and_prediction_fallback(monkeypatch):
     assert run(done, composer_predictions=True)["candidates"] == []
 
 
-def _fork_harness(monkeypatch, *, task_cfg=None, run=None):
+def _fork_harness(monkeypatch, *, task_cfg=None, run=None, routed=False):
     """A parent agent plus a fake cache-parity fork; returns ``(predict, parent, events, recorded)``."""
     import agent.background_review as review
     from hermes_cli import plugins
@@ -83,7 +83,7 @@ def _fork_harness(monkeypatch, *, task_cfg=None, run=None):
         def run_conversation(self, user_message, conversation_history):
             events.append(("run", user_message, conversation_history, plugins._thread_tool_whitelist.allowed,
                            self.max_tokens, self in parent._active_children))
-            return run(self) if run else {"final_response": '"Open the PR too"'}
+            return run(self) if run else {"final_response": '"Open the PR too"', "completed": True}
 
         def interrupt(self, message=None, **kw):
             events.append(("interrupt", kw.get("tool_reason")))
@@ -96,8 +96,8 @@ def _fork_harness(monkeypatch, *, task_cfg=None, run=None):
             events.append("close")
 
     def build(agent, cfg, *, max_iterations, write_origin):
-        events.append(("build", agent, max_iterations, write_origin))
-        return Fork(), {"routed": False}, False
+        events.append(("build", agent, max_iterations, write_origin, dict(cfg)))
+        return Fork(), {"routed": routed}, routed
 
     monkeypatch.setattr(review, "build_cache_parity_fork", build)
     monkeypatch.setattr(review, "_snapshot_review_usage", lambda fork: {"input_tokens": 9})
@@ -123,7 +123,7 @@ def test_prediction_rides_the_parent_cache_through_a_fork(monkeypatch):
     monkeypatch.setattr(aux, "call_llm", lambda **kw: (_ for _ in ()).throw(AssertionError("aux path used")))
 
     assert predict.predict_next_message(_HISTORY, _coerce, agent=parent) == "Open the PR too"
-    assert events[0] == ("build", parent, 2, "composer_predictions")
+    assert events[0] == ("build", parent, 1, "composer_predictions", {})
     _, prompt, replayed, whitelist, output_cap, tracked = events[1]
     # History replays verbatim (tool rounds included) with every tool denied at dispatch.
     assert prompt == predict._FORK_PROMPT and replayed == _HISTORY and whitelist == set()
@@ -174,7 +174,7 @@ def test_superseded_or_slow_prediction_is_interrupted(monkeypatch, task_cfg, sta
     """A reply nobody will see is stopped, not merely dropped: a new turn, or the task timeout."""
     def blocked(fork):
         assert parent.interrupted.wait(5), "the watcher never interrupted the fork"
-        return {"final_response": ""}
+        return {"final_response": "", "completed": False, "interrupted": True}
 
     predict, parent, events, _ = _fork_harness(monkeypatch, task_cfg=task_cfg, run=blocked)
     monkeypatch.setattr(predict, "_WATCH_INTERVAL_SECONDS", 0.01)
@@ -183,11 +183,93 @@ def test_superseded_or_slow_prediction_is_interrupted(monkeypatch, task_cfg, sta
     assert ("interrupt", "composer prediction superseded") in events and parent._active_children == []
 
 
+def test_fork_never_inherits_the_task_routing_keys(monkeypatch):
+    """The session's provider is known under two names (``custom`` / ``teamclaude``). Naming the
+    alias in the task config is still the session's own model, and the fork's runtime resolver,
+    which knows only one of the names, must not get the chance to disagree."""
+    task_cfg = {"provider": "teamclaude", "model": "main-model", "api_key": "k", "timeout": 30, "max_input_tokens": 9}
+    predict, parent, events, _ = _fork_harness(monkeypatch, task_cfg=task_cfg)
+
+    assert predict.predict_next_message(_HISTORY, _coerce, agent=parent) == "Open the PR too"
+    assert events[0][4] == {"timeout": 30, "max_input_tokens": 9}
+
+
+def test_a_routed_fork_is_never_fed_the_conversation(monkeypatch):
+    """Should the builder still resolve another model, its fork has none of the parent's prompt
+    or tools: replaying the whole conversation into it would be a cold, full-price request."""
+    predict, parent, events, _ = _fork_harness(monkeypatch, routed=True)
+    monkeypatch.setattr(aux, "call_llm", lambda **kw: (_ for _ in ()).throw(AssertionError("second attempt")))
+
+    assert predict.predict_next_message(_HISTORY, _coerce, agent=parent) == ""
+    assert [e for e in events if isinstance(e, tuple) and e[0] == "run"] == [] and events[-2:] == ["shutdown", "close"]
+
+
+@pytest.mark.parametrize(("reply", "reasoning"), [("x" * 300, ""), ("", "y" * 5000)])
+def test_runaway_output_is_cut_off_on_our_side(monkeypatch, reply, reasoning):
+    """Not every transport honours the output limit, so the stream is counted too: a reply longer
+    than any ghost, or reasoning past the cap, interrupts the request and yields nothing."""
+    def stream(fork):
+        for chunk in (reasoning[i:i + 500] for i in range(0, len(reasoning), 500)):
+            fork.reasoning_callback(chunk)
+        for chunk in (reply[i:i + 50] for i in range(0, len(reply), 50)):
+            fork.stream_delta_callback(chunk)
+        fork.stream_delta_callback(None)
+        return {"final_response": "Open the PR too", "completed": True}
+
+    predict, parent, events, _ = _fork_harness(monkeypatch, run=stream)
+
+    assert predict.predict_next_message(_HISTORY, _coerce, agent=parent) == ""
+    assert events.count(("interrupt", "composer prediction over its output cap")) == 1
+
+
+@pytest.mark.parametrize("result", [
+    {"final_response": "⚠️ No reply: the turn stopped.", "completed": False, "failed": True},
+    {"final_response": "Run the te", "completed": True, "partial": True},
+    {"final_response": None, "completed": False},
+])
+def test_only_a_finished_answer_is_a_prediction(monkeypatch, result):
+    predict, parent, _, _ = _fork_harness(monkeypatch, run=lambda fork: result)
+
+    assert predict.predict_next_message(_HISTORY, _coerce, agent=parent) == ""
+
+
+def test_a_new_turn_supersedes_the_prediction_before_history_moves(monkeypatch):
+    """Admission starts a fresh in-flight turn at once; ``history_version`` only moves when that
+    turn's result is committed. Both cancel the request and drop its result."""
+    import tui_gateway.suggest_predict as predict
+
+    done = [{"role": "user", "content": "plan it"}, {"role": "assistant", "content": "Planned."},
+            {"role": "user", "content": "fix it"}, {"role": "assistant", "content": "Fixed and pushed."}]
+    # The finished turn may still be marked in flight when the client asks: that is not a new turn.
+    session = {"history": done, "history_version": 7, "history_lock": None, "agent": None,
+               "inflight_turn": {"started_at": 100.0}}
+    monkeypatch.setitem(srv._sessions, "s2", session)
+    monkeypatch.setattr(srv, "_load_cfg", lambda: {"display": {}})
+    seen = {}
+
+    def fake_predict(history, coerce, *, main_runtime=None, agent=None, stale=None):
+        seen["before"] = stale()
+        session.update(on_predict)
+        seen["after"] = stale()
+        return "Open the PR too"
+
+    monkeypatch.setattr(predict, "predict_next_message", fake_predict)
+    def run():
+        return srv._methods["complete.suggest"](1, {"session_id": "s2"})["result"]["candidates"]
+
+    on_predict = {"inflight_turn": None}  # the old turn finished clearing
+    assert run() == [{"text": "Open the PR too", "kind": "prediction"}] and seen == {"before": False, "after": False}
+
+    on_predict = {"inflight_turn": {"started_at": 200.0}}  # prompt.submit admitted a new turn
+    assert run() == [] and seen == {"before": False, "after": True}
+
+
 def test_reply_filters_and_cache_estimate():
     import tui_gateway.suggest_predict as predict
 
     kept = {"run the tests": "run the tests", "Suggestion: run the tests": "run the tests", "да": "да",
             "покажи": "покажи", "运行测试": "运行测试", "テストを実行して": "テストを実行して",
+            "继续": "继续", "提交": "提交", "해줘": "해줘",
             "<suggestion>push it</suggestion>": "push it", "/compact": "/compact",
             "Да, покажи пример теста.": "Да, покажи пример теста."}
     assert {raw: predict._clean(raw) for raw in kept} == kept

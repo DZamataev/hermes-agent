@@ -147,6 +147,10 @@ def _resolve_budget_fallback(
                 # Reuses the candidate the user already saw sealed as an interim (#130396).
                 agent._reused_response_text = final_response
             preserved_verification_fallback = True
+        elif getattr(agent, "_no_iteration_summary", False):
+            # A single-request fork (composer prediction) prefers no answer to paying for one more
+            # request: the summary below would be a second full replay of the conversation.
+            pass
         else:
             # _handle_max_iterations makes one extra toolless request for a summary.
             agent._emit_diagnostic_status(

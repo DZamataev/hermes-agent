@@ -294,6 +294,15 @@ def _(rid, params: dict) -> dict:
             return list(session.get("history", [])), int(session.get("history_version", 0))
 
     history, version = snapshot()
+    turn_at_start = (session.get("inflight_turn") or {}).get("started_at")
+
+    def superseded() -> bool:
+        """A new turn makes any guess stale. Admission marks it at once (a fresh in-flight turn);
+        ``history_version`` only moves when that turn's result is committed."""
+        turn = session.get("inflight_turn")
+        started = isinstance(turn, dict) and turn.get("started_at") != turn_at_start
+        return started or int(session.get("history_version", 0)) != version
+
     candidates: list[dict] = []
     if bool(display.get("composer_predictions", True)):
         from tui_gateway.suggest_predict import predict_next_message
@@ -301,9 +310,9 @@ def _(rid, params: dict) -> dict:
         agent = session.get("agent")
         prediction = predict_next_message(
             history, _coerce_message_text, main_runtime=_main_runtime_from_agent(agent), agent=agent,
-            stale=lambda: int(session.get("history_version", 0)) != version)
+            stale=superseded)
         # A turn that started while the model was predicting makes every guess stale.
-        if snapshot()[1] != version:
+        if superseded():
             return _ok(rid, {"candidates": [], "history_version": version})
         if prediction:
             candidates = [{"text": prediction, "kind": "prediction"}]
