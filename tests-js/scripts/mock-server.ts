@@ -123,6 +123,9 @@ const INTERIM_SCRIPT: ScriptedTurn[] = [
 
 /** Per-server request counter so we can walk through the script turns. */
 let _scriptIndex = 0
+/** Bumps once per scripted assistant reply that carries tool calls, so call ids
+ *  are unique per reply as real providers make them (the Desktop keys chips by id). */
+let _toolCallSeq = 0
 
 /** Per-server counter for the sidebar-states script (independent from _scriptIndex). */
 let _sidebarScriptIndex = 0
@@ -148,6 +151,7 @@ const _receivedUserTexts: string[] = []
 /** Reset the script indices (called between tests via restartMockServer). */
 function resetScriptIndex(): void {
   _scriptIndex = 0
+  _toolCallSeq = 0
   _sidebarScriptIndex = 0
   _sidebarCrossIndex = 0
   _queueStopIndex = 0
@@ -380,6 +384,21 @@ const TOOL_THEN_FAILURE_TURN: ScriptedTurn = {
 const BLOCKING_CLARIFY_TURN: ScriptedTurn = {
   text: '',
   toolCalls: [{ name: 'clarify', args: { questions: [{ question: BLOCKING_CLARIFY_QUESTION, choices: ['Yes', 'No'] }] } }],
+}
+
+/**
+ * A marker that makes the mock offer a side task through `spawn_task`, then
+ * answer normally once the tool result is in. The chip that renders it is what
+ * the spawn-task e2e drives; SPAWN_TASK_PROMPT is the new session's first user
+ * message, so the mock can prove the launched session received it.
+ */
+export const SPAWN_TASK_TRIGGER = 'E2E_SPAWN_TASK_TRIGGER'
+export const SPAWN_TASK_TITLE = 'Investigate the flaky e2e login test'
+export const SPAWN_TASK_PROMPT = 'E2E_SPAWNED_TASK_PROMPT: find why the login test flakes and fix it.'
+
+const SPAWN_TASK_TURN: ScriptedTurn = {
+  text: 'I noticed a separate problem worth its own session.',
+  toolCalls: [{ name: 'spawn_task', args: { prompt: SPAWN_TASK_PROMPT, title: SPAWN_TASK_TITLE, tldr: 'Fails one run in five' } }],
 }
 
 /**
@@ -826,6 +845,16 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             return
           }
 
+          if (userText.includes(SPAWN_TASK_TRIGGER) && !messages.some(message => message?.role === 'tool')) {
+            if (stream) {
+              streamScriptedTurn(res, model, SPAWN_TASK_TURN)
+            } else {
+              nonStreamingScriptedTurn(res, model, SPAWN_TASK_TURN)
+            }
+
+            return
+          }
+
           if (userText.includes(TOOL_THEN_FAILURE_TRIGGER) && !messages.some(message => message?.role === 'tool')) {
             if (stream) {
               streamScriptedTurn(res, model, TOOL_THEN_FAILURE_TURN)
@@ -1129,6 +1158,10 @@ function streamScriptedTurn(
   })
 
   const hasToolCalls = turn.toolCalls && turn.toolCalls.length > 0
+
+  if (hasToolCalls) {
+    _toolCallSeq++
+  }
   const finishReason = hasToolCalls ? 'tool_calls' : 'stop'
 
   // If there's no text to stream, go straight to the tool_calls / finish.
@@ -1138,7 +1171,7 @@ function streamScriptedTurn(
         sseChunk(model, {
           tool_calls: turn.toolCalls!.map((tc, idx) => ({
             index: idx,
-            id: `call_e2e_${_scriptIndex}_${idx}`,
+            id: `call_e2e_${_toolCallSeq}_${idx}`,
             type: 'function',
             function: { name: tc.name, arguments: JSON.stringify(tc.args) },
           })),
@@ -1166,7 +1199,7 @@ function streamScriptedTurn(
           sseChunk(model, {
             tool_calls: turn.toolCalls!.map((tc, idx) => ({
               index: idx,
-              id: `call_e2e_${_scriptIndex}_${idx}`,
+              id: `call_e2e_${_toolCallSeq}_${idx}`,
               type: 'function',
               function: { name: tc.name, arguments: JSON.stringify(tc.args) },
             })),
@@ -1198,6 +1231,10 @@ function nonStreamingScriptedTurn(
   turn: ScriptedTurn,
 ): void {
   const hasToolCalls = turn.toolCalls && turn.toolCalls.length > 0
+
+  if (hasToolCalls) {
+    _toolCallSeq++
+  }
   const finishReason = hasToolCalls ? 'tool_calls' : 'stop'
 
   const message: Record<string, unknown> = { role: 'assistant' }
@@ -1208,7 +1245,7 @@ function nonStreamingScriptedTurn(
 
   if (hasToolCalls) {
     message.tool_calls = turn.toolCalls!.map((tc, idx) => ({
-      id: `call_e2e_${_scriptIndex}_${idx}`,
+      id: `call_e2e_${_toolCallSeq}_${idx}`,
       type: 'function',
       function: { name: tc.name, arguments: JSON.stringify(tc.args) },
     }))

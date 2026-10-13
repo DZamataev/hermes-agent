@@ -115,3 +115,17 @@ def test_partial_seed_copy_is_rolled_back_not_duplicated(monkeypatch, tmp_path):
         if sid:
             server._sessions.pop(sid, None)
         db.close()
+
+
+def test_create_accepts_title_dedupe_and_arms_it_on_the_session(monkeypatch, tmp_path):
+    """The wire contract carries ``title_dedupe`` (a spawn-task chip's model-proposed title): the
+    dispatcher must accept it and the session must remember it for the first-turn title write."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _quiet_create(monkeypatch, db)
+    result = _create({"cols": 96, "source": "desktop", "title": "Flaky login", "title_dedupe": True})
+    try:
+        record = server._sessions[result["session_id"]]
+        assert record["pending_title"] == "Flaky login"
+        assert record["pending_title_dedupe"] is True
+    finally:
+        server._sessions.pop(result["session_id"], None)

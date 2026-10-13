@@ -4152,6 +4152,24 @@ export interface Translations extends NoticeTranslations {
       openFailed: string
     }
     catalogInstall: CatalogInstallTranslations
+    spawnTask: {
+      defaultModel: string
+      modelLabel: string
+      mode: { tab: string; worktree: string }
+      dismiss: string
+      pin: string
+      dismissed: (title: string) => string
+      launched: string
+      openSession: string
+      showPrompt: string
+      hidePrompt: string
+      launchFailed: string
+      kickoffFailed: string
+      kickoffUnknown: string
+      worktreeNeedsRepo: string
+      worktreeNoBase: string
+      worktreeOtherBackend: string
+    }
     mcpSetup: {
       installTitle: string
       enableTitle: string

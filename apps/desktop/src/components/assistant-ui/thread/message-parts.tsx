@@ -14,6 +14,7 @@ import { ClarifyTool } from '@/components/assistant-ui/clarify'
 import { ConnectorExecution, ConnectorTool } from '@/components/assistant-ui/connector-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
+import { SpawnTaskTool } from '@/components/assistant-ui/spawn-task-tool'
 import { StartChatTool } from '@/components/assistant-ui/start-chat-tool'
 import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
@@ -117,6 +118,7 @@ const TOOL_CARDS: Record<CardToolName, FC<TimelineToolCallProps>> = {
   manage_catalog: CatalogInstallTool,
   manage_connections: ConnectionsToolPart,
   setup_choose: ClarifyToolPart,
+  spawn_task: SpawnTaskTool,
   start_chat: StartChatToolPart
 }
 

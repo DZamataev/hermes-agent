@@ -6,7 +6,9 @@ import {
   dismissPreviewArtifact,
   recordPreviewArtifact
 } from './preview-status'
+import { $connection } from './session'
 import { dropTilesForProfile, migrateTilesForProfile, recordSessionEventScope } from './session-states'
+import { setSpawnTaskChoice, spawnTaskChoiceFor, spawnTaskChoiceScope } from './spawn-task'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -62,4 +64,63 @@ it('honors a durable close after module reload', async () => {
   scope({ session_id: 'after-reload', connectionId: 'local', profile: 'persist' })
   fresh.recordPreviewArtifact('after-reload', '/work/saved.html', '/work', 'persist-stored')
   expect(fresh.$previewStatusBySession.get()['after-reload']).toBeUndefined()
+})
+
+// The spawn-task chip's remembered pick is the same kind of profile-keyed
+// family: the rename and delete entry points must carry it along.
+it('moves the spawn-task chip choice on rename and forgets it on delete', () => {
+  const choice = { effort: 'high', fast: false, mode: 'tab' as const, model: 'm', pin: false, provider: 'p' }
+
+  setSpawnTaskChoice(spawnTaskChoiceScope('local', 'before-rename'), choice)
+
+  migrateTilesForProfile('before-rename', 'after-rename')
+  expect(spawnTaskChoiceFor(spawnTaskChoiceScope('local', 'after-rename')).model).toBe('m')
+  expect(spawnTaskChoiceFor(spawnTaskChoiceScope('local', 'before-rename')).model).toBe('')
+
+  dropTilesForProfile('after-rename')
+  expect(spawnTaskChoiceFor(spawnTaskChoiceScope('local', 'after-rename')).model).toBe('')
+})
+
+// The chip keys a routed owner by its backend profile; an SDK delete that
+// names both must forget the choice under that key too.
+it('forgets a routed owner’s spawn-task choice on a source-scoped delete', () => {
+  const choice = { effort: '', fast: false, mode: 'tab' as const, model: 'm', pin: false, provider: 'p' }
+
+  setSpawnTaskChoice(spawnTaskChoiceScope('homelab', 'backend-name'), choice)
+  dropTilesForProfile('desktop-name', { connectionId: 'homelab', profile: 'desktop-name', targetProfile: 'backend-name' })
+
+  expect(spawnTaskChoiceFor(spawnTaskChoiceScope('homelab', 'backend-name')).model).toBe('')
+})
+
+// A route-less delete speaks for the WINDOW's backend (as the tile drop does):
+// in a remote window it forgets that remote's pick, not a same-named local one.
+it('a route-less delete in a remote window forgets that remote’s choice, not local', () => {
+  const choice = { effort: '', fast: false, mode: 'tab' as const, model: 'm', pin: false, provider: 'p' }
+
+  setSpawnTaskChoice(spawnTaskChoiceScope('homelab', 'work'), choice)
+  setSpawnTaskChoice(spawnTaskChoiceScope('local', 'work'), choice)
+  $connection.set({ connectionId: 'homelab', mode: 'remote', profile: 'work' } as never)
+
+  try {
+    dropTilesForProfile('work')
+
+    expect(spawnTaskChoiceFor(spawnTaskChoiceScope('homelab', 'work')).model).toBe('')
+    expect(spawnTaskChoiceFor(spawnTaskChoiceScope('local', 'work')).model).toBe('m')
+  } finally {
+    $connection.set(null)
+  }
+})
+
+// The chip keys a routed owner by targetProfile; with profile == targetProfile
+// the plain drop already covers it, so pin the case where they differ AND the
+// desktop name has its own choice that must survive.
+it('a source-scoped delete forgets the targetProfile choice, keeping an unrelated same-named one', () => {
+  const choice = { effort: '', fast: false, mode: 'tab' as const, model: 'm', pin: false, provider: 'p' }
+
+  setSpawnTaskChoice(spawnTaskChoiceScope('homelab', 'backend-name'), choice)
+  setSpawnTaskChoice(spawnTaskChoiceScope('homelab', 'unrelated'), choice)
+  dropTilesForProfile('desktop-name', { connectionId: 'homelab', profile: 'desktop-name', targetProfile: 'backend-name' })
+
+  expect(spawnTaskChoiceFor(spawnTaskChoiceScope('homelab', 'backend-name')).model).toBe('')
+  expect(spawnTaskChoiceFor(spawnTaskChoiceScope('homelab', 'unrelated')).model).toBe('m')
 })

@@ -74,7 +74,18 @@ export function DeleteProfileDialog({
         // session/Bot tile restores on relaunch and dials the deleted
         // profile's backend, whose ensure_hermes_home() re-creates the
         // directory the delete just removed (hermes-agent#94235).
-        dropTilesForProfile(profile.name)
+        // A remote profile's renderer state is keyed by ITS connection: a
+        // route-less drop would speak for this window's backend instead (and
+        // clear a same-named local profile). Preview-rail tabs are keyed by
+        // profile name alone, so a same-named local profile's rail still goes.
+        const remoteConnection = remote && typeof scope === 'object' ? scope.connectionId?.trim() : ''
+
+        if (remoteConnection) {
+          dropTilesForProfile(profile.name, { connectionId: remoteConnection, profile: profile.name })
+        } else {
+          dropTilesForProfile(profile.name)
+        }
+
         await onDeleted?.()
 
         if (wasActive) {

@@ -113,6 +113,10 @@ export function windowBrowserTabId(): null | string {
 // install/onboarding overlays belong to the primary alone.
 export const isAuxiliaryWindow = (): boolean => isSecondaryWindow() || isHudWindow() || isBrowserWindow()
 
+/** Whether this window mounts session tiles (the pane tree and
+ *  `watchSessionTiles`). The HUD and a popped-out browser do not. */
+export const canHostSessionTiles = (): boolean => !isHudWindow() && !isBrowserWindow()
+
 // A full peer window renders the ordinary app shell against the backend that
 // Electron already has running. It is not an auxiliary/specialized renderer,
 // but it must not replay the primary window's app-launch source restoration
