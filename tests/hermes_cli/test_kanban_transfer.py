@@ -220,6 +220,28 @@ def test_gateway_subscriptions_never_travel(kanban_root, tmp_path):
     assert b"12345" not in Path(archive).read_bytes()
 
 
+def test_idle_board_announcements_travel_without_their_destination_key(kanban_root, tmp_path):
+    """board_quiescent events carry an opaque destination tag; the board's tag key stays behind with the subs."""
+    from hermes_cli import kanban_db_notify as kbn
+
+    ids = _seed_board()
+    _subscribe(ids["scratch"])
+    with kbc.connect_closing(board="alpha") as conn:
+        with kb.write_txn(conn):
+            kbn._quiescent_salt(conn, create=True)
+            tag = kbn.quiescent_destination_tag(conn, {"platform": "telegram", "chat_id": "12345"})
+            kb._append_event(conn, ids["scratch"], "board_quiescent", {"counts": {}, "attention": [], "to": tag})
+    archive = kt.export_board("alpha", str(tmp_path / "alpha"))["archive"]
+
+    kanban_root("target")
+    result = kt.import_board(archive)
+    with kbc.connect_closing(board=result["board"]) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM kanban_board_state WHERE key = 'quiescent_tag_salt'").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM task_events WHERE kind = 'board_quiescent'").fetchone()[0] == 1
+    assert b"12345" not in Path(archive).read_bytes()
+
+
 def test_unresolvable_workspaces_are_parked_not_dispatched(kanban_root, tmp_path):
     _seed_board()
     archive = kt.export_board("alpha", str(tmp_path / "alpha"))["archive"]

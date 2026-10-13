@@ -56,6 +56,31 @@ def _sub_rows(tid: str) -> list:
 
 
 class TestCollectKanbanNotifications:
+    def test_a_failure_that_trips_the_breaker_is_reported_once(self):
+        """The breaker writes ``crashed`` and ``gave_up`` for one failure; the session is told once, by the
+        ``gave_up`` that carries the error. A crash that did not trip it still reports."""
+        from hermes_cli import kanban_db_dispatch as kbd
+
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            with kb.write_txn(conn):
+                kb._append_event(conn, tid, "crashed", {"pid": 1})
+            kbd._record_task_failure(conn, tid, error="pid 1 not alive", outcome="crashed", force_trip=True)
+        finally:
+            conn.close()
+        texts = _collect_kanban_notifications(_session())
+        assert len(texts) == 1 and "gave up" in texts[0] and "pid 1 not alive" in texts[0]
+
+        conn = kbc.connect()
+        try:
+            with kb.write_txn(conn):
+                kb._append_event(conn, tid, "crashed", {"pid": 2})
+        finally:
+            conn.close()
+        texts = _collect_kanban_notifications(_session())
+        assert len(texts) == 1 and "worker crashed" in texts[0]
+
     def test_zero_sub_board_is_never_opened_writable(self):
         conn = kbc.connect()
         conn.close()
@@ -234,6 +259,318 @@ class TestCollectKanbanNotifications:
         assert rows[0]["chat_id"] == SESSION_KEY
 
 
+def _compressed_lineage(tmp_path, monkeypatch, *ids: str):
+    """A state.db where each id in ``ids`` is the compression continuation of the previous one."""
+    import time as _time
+
+    import tui_gateway.server as server
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    conn = db._conn
+    assert conn is not None
+    base = int(_time.time()) - 10_000
+    for i, sid in enumerate(ids):
+        db.create_session(sid, source="desktop", parent_session_id=ids[i - 1] if i else None)
+        db.append_message(sid, role="user", content=f"turn in {sid}", timestamp=base + 100 * i + 10)
+        conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (base + 100 * i, sid))
+        if i < len(ids) - 1:
+            db.end_session(sid, "compression")
+            conn.execute("UPDATE sessions SET ended_at = ? WHERE id = ?", (base + 100 * i + 50, sid))
+    conn.commit()
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    return db
+
+
+class TestCompressedSessionOwnsItsSubscriptions:
+    """Context compression rotates the session key; subscriptions written under an earlier key of the
+    same conversation must still reach the live continuation (#91037)."""
+
+    def test_continuation_receives_events_for_a_subscription_made_before_compression(self, tmp_path, monkeypatch):
+        _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        tid = _create_subscribed_task(chat_id="before-compress")
+        conn = kbc.connect()
+        try:
+            kb.block_task(conn, tid, reason="needs the operator")
+        finally:
+            conn.close()
+
+        texts = _collect_kanban_notifications(_session("after-compress"))
+
+        assert len(texts) == 1 and tid in texts[0] and "needs the operator" in texts[0]
+        assert _collect_kanban_notifications(_session("after-compress")) == []
+
+    def test_subscriptions_of_an_unrelated_session_stay_unclaimed(self, tmp_path, monkeypatch):
+        _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        tid = _create_subscribed_task(chat_id="someone-else")
+        pre_cursor = _sub_rows(tid)[0]["last_event_id"]
+        _complete(tid)
+
+        assert _collect_kanban_notifications(_session("after-compress")) == []
+        assert _sub_rows(tid)[0]["last_event_id"] == pre_cursor
+
+    def test_foreign_subscription_on_a_shared_board_stays_unclaimed(self, tmp_path, monkeypatch):
+        _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        own = _create_subscribed_task(chat_id="before-compress")
+        foreign = _create_subscribed_task(chat_id="someone-else")
+        pre_cursor = _sub_rows(foreign)[0]["last_event_id"]
+        _complete(own, summary="mine")
+        _complete(foreign, summary="theirs")
+
+        texts = _collect_kanban_notifications(_session("after-compress"))
+
+        assert len(texts) == 1 and "mine" in texts[0]
+        assert _sub_rows(foreign)[0]["last_event_id"] == pre_cursor
+
+    def test_stale_pre_compression_tab_leaves_events_to_the_live_continuation(self, tmp_path, monkeypatch):
+        import tui_gateway.server as server
+
+        _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        tid = _create_subscribed_task(chat_id="before-compress")
+        _complete(tid, summary="for the live tab")
+        live = {"session_key": "after-compress"}
+        monkeypatch.setitem(server._sessions, "sid-live-continuation", live)
+
+        assert _collect_kanban_notifications(_session("before-compress")) == []
+        texts = _collect_kanban_notifications(live)
+
+        assert len(texts) == 1 and "for the live tab" in texts[0]
+
+
+class TestTheSessionIsNotToldAboutItsOwnActions:
+    """An orchestrator that blocks a card itself (to hold it while closing) must not be woken by that block, nor by
+    an idle-board line naming the card it holds; nor by a block of a card it has since archived."""
+
+    def _blocked(self, *, actor_session=None, archive=False) -> str:
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            kb.block_task(conn, tid, reason="orchestrator: holding while closing", actor_session=actor_session)
+            if archive:
+                kb.archive_task(conn, tid)
+        finally:
+            conn.close()
+        return tid
+
+    def test_a_block_made_by_this_session_is_not_delivered(self):
+        self._blocked(actor_session=SESSION_KEY)
+        assert _collect_kanban_notifications(_session()) == []
+
+    def test_a_block_made_by_another_session_is_delivered(self):
+        self._blocked(actor_session="someone-else")
+        (text,) = _collect_kanban_notifications(_session())
+        assert "holding while closing" in text
+
+    def test_a_block_of_a_card_archived_before_delivery_is_not_delivered(self):
+        self._blocked(archive=True)
+        assert _collect_kanban_notifications(_session()) == []
+
+    def _announce(self, carrier: str, attention: list) -> None:
+        conn = kbc.connect()
+        try:
+            kb._append_event(conn, carrier, "board_quiescent", {"counts": {"blocked": len(attention)},
+                                                                 "attention": attention})
+        finally:
+            conn.close()
+
+    def test_the_idle_board_line_leaves_out_cards_this_session_holds_or_archived(self):
+        held = self._blocked(actor_session=SESSION_KEY)
+        gone = self._blocked(archive=True)
+        stuck = self._blocked(actor_session="worker-session")
+        _collect_kanban_notifications(_session())  # drain the per-card events
+        self._announce(stuck, [held, gone, stuck])
+
+        (text,) = _collect_kanban_notifications(_session())
+        assert stuck in text and held not in text and gone not in text
+
+    def test_an_idle_board_line_left_with_nothing_to_attend_is_not_delivered(self):
+        held = self._blocked(actor_session=SESSION_KEY)
+        _collect_kanban_notifications(_session())
+        self._announce(held, [held])
+
+        assert _collect_kanban_notifications(_session()) == []
+
+
+class TestAWorkerQuestionReachesTheSession:
+    """A worker that asks with ``kanban_comment(await_reply_minutes=…)`` is waiting on the orchestrator: the question
+    arrives whole, with the command to answer it, and wakes the session."""
+
+    def test_the_question_is_delivered_with_how_to_answer(self):
+        tid = _create_subscribed_task()
+        question = "Which API version should the client use: v1 or v2? " + "context " * 80
+        conn = kbc.connect()
+        try:
+            kb._append_event(conn, tid, "question", {"author": "pwaimpl", "body": question, "await_minutes": 10})
+        finally:
+            conn.close()
+
+        (text,) = _collect_kanban_notifications(_session())
+        assert "❓" in text and tid in text
+        assert question.strip() in text
+        assert f"hermes kanban comment {tid}" in text
+        assert "10 min" in text
+
+
+class TestBoardQuiescentReachesTheSession:
+    def test_idle_board_announcement_is_delivered_with_leftovers(self):
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            kb._append_event(conn, tid, "board_quiescent",
+                             {"counts": {"blocked": 2, "done": 5}, "attention": ["t_aaa", "t_bbb"]})
+        finally:
+            conn.close()
+
+        texts = _collect_kanban_notifications(_session())
+
+        assert len(texts) == 1
+        assert "no work left" in texts[0] and "2 blocked" in texts[0] and "t_aaa" in texts[0]
+
+    def test_board_level_line_does_not_credit_the_carrier_card(self):
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            kb._append_event(conn, tid, "board_quiescent", {"counts": {"done": 1}, "attention": []})
+        finally:
+            conn.close()
+
+        (text,) = _collect_kanban_notifications(_session())
+
+        assert tid not in text and "@worker" not in text and "no work left" in text
+
+    def test_announcement_addressed_to_another_follower_is_skipped_without_wedging(self):
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            kb._append_event(conn, tid, "board_quiescent", {
+                "counts": {"done": 1}, "attention": [], "mark": 3,
+                "to": kbn.quiescent_destination_tag(conn, {"platform": "telegram", "chat_id": "chat-1"})})
+            top = conn.execute("SELECT MAX(id) FROM task_events").fetchone()[0]
+        finally:
+            conn.close()
+
+        assert _collect_kanban_notifications(_session()) == []
+        assert _sub_rows(tid)[0]["last_event_id"] == top
+
+
+class TestLineageDelivery:
+    def test_card_followed_under_two_keys_of_one_conversation_is_delivered_once(self, tmp_path, monkeypatch):
+        """kanban_create auto-subscribes the current key next to an inherited ancestor-key row; one event, one line."""
+        _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        tid = _create_subscribed_task(chat_id="before-compress")
+        conn = kbc.connect()
+        try:
+            kbn.add_notify_sub(conn, task_id=tid, platform="tui", chat_id="after-compress")
+        finally:
+            conn.close()
+        _complete(tid, summary="delivered once")
+
+        texts = _collect_kanban_notifications(_session("after-compress"))
+
+        assert len(texts) == 1 and "delivered once" in texts[0]
+
+    def test_idle_board_announced_to_two_keys_of_one_conversation_is_shown_once(self, tmp_path, monkeypatch):
+        _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        old = _create_subscribed_task(chat_id="before-compress")
+        new = _create_subscribed_task(chat_id="after-compress")
+        conn = kbc.connect()
+        try:
+            for tid, key in ((old, "before-compress"), (new, "after-compress")):
+                kb._append_event(conn, tid, "board_quiescent", {
+                    "counts": {"done": 2}, "attention": [], "mark": 7,
+                    "to": kbn.quiescent_destination_tag(conn, {"platform": "tui", "chat_id": key})})
+        finally:
+            conn.close()
+
+        texts = _collect_kanban_notifications(_session("after-compress"))
+
+        assert len(texts) == 1 and "no work left" in texts[0]
+
+    def test_two_separate_idle_board_announcements_are_both_shown(self, tmp_path, monkeypatch):
+        """Deduplication is per drain (``mark``), not per kind: a later drain in the same poll still gets through."""
+        _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        tid = _create_subscribed_task(chat_id="after-compress")
+        conn = kbc.connect()
+        try:
+            for mark in (7, 9):
+                kb._append_event(conn, tid, "board_quiescent", {
+                    "counts": {"done": mark}, "attention": [], "mark": mark,
+                    "to": kbn.quiescent_destination_tag(conn, {"platform": "tui", "chat_id": "after-compress"})})
+        finally:
+            conn.close()
+
+        texts = _collect_kanban_notifications(_session("after-compress"))
+
+        assert len(texts) == 2
+
+    def test_a_second_compression_keeps_every_earlier_key(self, tmp_path, monkeypatch):
+        """The cached lineage belongs to one key: after the key rotates again, both ancestors and the new key count."""
+        _compressed_lineage(tmp_path, monkeypatch, "k1", "k2", "k3")
+        session = _session("k2")
+        assert _collect_kanban_notifications(session) == []
+        tids = [_create_subscribed_task(chat_id=key) for key in ("k1", "k2", "k3")]
+        for n, tid in enumerate(tids):
+            _complete(tid, summary=f"from key {n + 1}")
+
+        session["session_key"] = "k3"
+        texts = _collect_kanban_notifications(session)
+
+        assert sorted(t.split("\n")[-1] for t in texts) == ["from key 1", "from key 2", "from key 3"]
+
+    def test_an_ancestor_tab_does_not_take_its_continuations_subscriptions(self, tmp_path, monkeypatch):
+        """Ancestors only: a stale pre-compression tab must not claim what the conversation subscribed later."""
+        _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        tid = _create_subscribed_task(chat_id="after-compress")
+        pre_cursor = _sub_rows(tid)[0]["last_event_id"]
+        _complete(tid)
+
+        assert _collect_kanban_notifications(_session("before-compress")) == []
+        assert _sub_rows(tid)[0]["last_event_id"] == pre_cursor
+
+    def test_a_dispatcher_announcement_reaches_the_session_end_to_end(self, tmp_path, monkeypatch):
+        """dispatch_once writes the announcement; the poller of the subscribed session shows it, a second
+        session following the same card does not."""
+        from hermes_cli import kanban_db_dispatch as kbd
+        from hermes_cli import profiles
+
+        monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+        _compressed_lineage(tmp_path, monkeypatch, "orchestrator")
+        mine = _create_subscribed_task(chat_id="orchestrator")
+        other = _create_subscribed_task(chat_id="someone-else")
+        conn = kbc.connect()
+        try:
+            kbn.add_notify_sub(conn, task_id=other, platform="tui", chat_id="orchestrator")
+            kbn.add_notify_sub(conn, task_id=mine, platform="tui", chat_id="someone-else")
+            kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+            for tid in (mine, other):
+                kb.complete_task(conn, tid, summary="ok")
+            kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+        finally:
+            conn.close()
+
+        for key in ("orchestrator", "someone-else"):
+            quiescent = [t for t in _collect_kanban_notifications(_session(key)) if "no work left" in t]
+            assert len(quiescent) == 1, (key, quiescent)
+
+    def test_failed_lineage_lookup_is_retried_on_the_next_poll(self, tmp_path, monkeypatch):
+        import tui_gateway.server as server
+
+        db = _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
+        tid = _create_subscribed_task(chat_id="before-compress")
+        _complete(tid, summary="after recovery")
+        session = _session("after-compress")
+
+        def _broken():
+            raise RuntimeError("state.db unavailable")
+
+        monkeypatch.setattr(server, "_get_db", _broken)
+        assert _collect_kanban_notifications(session) == []
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        texts = _collect_kanban_notifications(session)
+
+        assert len(texts) == 1 and "after recovery" in texts[0]
+
+
 class TestFormatKanbanEventText:
     SUB = {"task_id": "t_abc123"}
     TASK = SimpleNamespace(title="build the thing", assignee="worker", result=None)
@@ -248,6 +585,81 @@ class TestFormatKanbanEventText:
         ev = SimpleNamespace(kind="timed_out", payload={"limit_seconds": "not-a-number"})
         text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
         assert "timed out" in text
+
+    def test_completion_names_the_fallback_model(self):
+        ev = SimpleNamespace(kind="completed", payload={
+            "summary": "shipped", "fallback": {"from_model": "opus", "to_model": "sonnet"}})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert text.splitlines()[0].endswith("done — build the thing · fallback opus → sonnet")
+        assert text.splitlines()[1] == "shipped"
+
+    def test_completion_without_fallback_names_none(self):
+        ev = SimpleNamespace(kind="completed", payload={"summary": "shipped"})
+        assert "fallback" not in _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+
+    def test_full_summary_is_cut_exactly_past_the_limit(self):
+        from tui_gateway.session_notifications import _TUI_SUMMARY_LIMIT
+        ev = SimpleNamespace(kind="completed", payload={"summary": "first"})
+        at_limit = _format_kanban_event_text(self.SUB, self.TASK, ev, "", full_summary="z" * _TUI_SUMMARY_LIMIT)
+        over = _format_kanban_event_text(self.SUB, self.TASK, ev, "", full_summary="z" * (_TUI_SUMMARY_LIMIT + 1))
+        assert "truncated" not in at_limit
+        assert over.endswith("z" * _TUI_SUMMARY_LIMIT + "\n… (truncated; hermes kanban show t_abc123)")
+
+    def test_block_reason_arrives_whole(self):
+        reason = "No changes by design. " + "evidence " * 40 + "Please close this card as a no-op."
+        ev = SimpleNamespace(kind="blocked", payload={"reason": reason})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert text.endswith(reason)
+
+    def test_block_reason_is_cut_at_the_summary_limit_with_a_pointer(self):
+        from tui_gateway.session_notifications import _TUI_SUMMARY_LIMIT
+        ev = SimpleNamespace(kind="blocked", payload={"reason": "r" * (_TUI_SUMMARY_LIMIT + 1)})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert text.endswith("r" * _TUI_SUMMARY_LIMIT + "\n… (truncated; hermes kanban show t_abc123)")
+
+
+class TestCompletionCarriesTheWholeSummary:
+    """The session gets the closing run's full summary, not its first line."""
+
+    def _complete_claimed(self, summary: str) -> str:
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            kb.claim_task(conn, tid)
+            run_id = kb._current_run_id(conn, tid)
+            assert kb.complete_task(conn, tid, summary=summary, expected_run_id=run_id)
+        finally:
+            conn.close()
+        return tid
+
+    def test_every_summary_line_reaches_the_session(self):
+        lines = [f"line {i}: evidence" for i in range(1, 6)]
+        self._complete_claimed("\n".join(lines))
+        texts = _collect_kanban_notifications(_session())
+        assert len(texts) == 1
+        for line in lines:
+            assert line in texts[0]
+
+    def test_a_long_summary_is_cut_at_the_limit_with_a_pointer(self):
+        from tui_gateway.session_notifications import _TUI_SUMMARY_LIMIT
+        summary = "x" * 50 + "\n" + "y" * (_TUI_SUMMARY_LIMIT + 500)
+        tid = self._complete_claimed(summary)
+        text = _collect_kanban_notifications(_session())[0]
+        head, handoff = text.split("\n", 1)
+        assert handoff == summary[:_TUI_SUMMARY_LIMIT] + f"\n… (truncated; hermes kanban show {tid})"
+
+    def test_a_completion_without_a_run_reads_as_before(self):
+        tid = _create_subscribed_task()
+        _complete(tid, summary="first line\nsecond line")
+        conn = kbc.connect()
+        try:
+            ev = [e for e in kb.list_events(conn, tid) if e.kind == "completed"][-1]
+            with kb.write_txn(conn):
+                conn.execute("UPDATE task_events SET run_id = NULL WHERE id = ?", (ev.id,))
+        finally:
+            conn.close()
+        text = _collect_kanban_notifications(_session())[0]
+        assert text.endswith("\nfirst line")
 
 
 class TestNotificationPollerLoopKanbanWiring:

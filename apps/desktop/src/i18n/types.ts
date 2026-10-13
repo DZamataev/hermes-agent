@@ -1015,6 +1015,11 @@ export interface Translations extends NoticeTranslations {
       attachmentSizeLabel: string
       voiceShortcutHintTitle: string
       voiceShortcutHintDesc: string
+      fileOpenAppTitle: string
+      fileOpenAppDesc: string
+      fileOpenAppSystem: string
+      fileOpenAppLabel: string
+      fileOpenAppEmpty: string
       showOptions: string
     }
     hudModifier: {
@@ -3950,6 +3955,12 @@ export interface Translations extends NoticeTranslations {
   }
 
   contextMenu: {
+    file: {
+      openInHermes: string
+      openInEditor: string
+      openWith: string
+      copyPath: string
+    }
     link: {
       openInApp: string
       openExternal: string

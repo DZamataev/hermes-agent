@@ -856,7 +856,7 @@ class PluginContext:
         inherit_from: Optional[str] = None,
     ) -> PluginRegistration:
         """Register an auxiliary LLM task with its own ``auxiliary.<key>`` config block (picker entry,
-        ``AUXILIARY_<KEY>_*`` env bridge, defaults merged into loaded configs). ``defaults`` may
+        defaults merged into loaded configs). ``defaults`` may
         override provider/model/base_url/api_key/timeout/extra_body (unknown keys kept verbatim).
         ``inherit_from`` names a built-in or already-registered auxiliary task whose effective
         configuration becomes the base for this one; it is resolved at read time, so the task tracks

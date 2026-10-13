@@ -359,7 +359,26 @@ class GatewaySlashCommandsMixin(
                 action = tok
                 break
         try:
-            output = await asyncio.to_thread(run_slash, text)
+            # Built-in slash commands run outside an agent turn, where the chat's session vars are not bound. Bind
+            # the chat in the worker thread (asyncio.to_thread runs it in a context copy), so a /kanban
+            # block records this chat as its actor instead of reading a process env that may name another session.
+            src = event.source
+
+            def run_as_this_chat():
+                from gateway.session_context import set_session_vars
+
+                platform = getattr(getattr(src, "platform", None), "value", "") or ""
+                try:
+                    key = self._session_key_for_source(src) if platform else ""
+                except Exception:  # the actor is best effort; /kanban itself must still run
+                    key = ""
+                set_session_vars(platform=platform, chat_id=str(getattr(src, "chat_id", "") or ""),
+                                 chat_type=str(getattr(src, "chat_type", "") or ""),
+                                 thread_id=str(getattr(src, "thread_id", "") or ""),
+                                 user_id=str(getattr(src, "user_id", "") or ""), session_key=key)
+                return run_slash(text)
+
+            output = await asyncio.to_thread(run_as_this_chat)  # runs in a copy of this context: nothing leaks back
         except Exception as exc:  # pragma: no cover - defensive
             return t("gateway.kanban.error_prefix", error=exc)
 

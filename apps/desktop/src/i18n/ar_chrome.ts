@@ -565,6 +565,12 @@ export const arChrome = {
     tabCount: count => `${count} تبويبات`
   },
   contextMenu: {
+    file: {
+      openInHermes: 'فتح في معاينة Hermes',
+      openInEditor: 'فتح في المحرر',
+      openWith: 'فتح باستخدام…',
+      copyPath: 'نسخ مسار الملف'
+    },
     link: {
       openInApp: 'فتح في متصفح التطبيق',
       openExternal: 'فتح في المتصفح الخارجي',

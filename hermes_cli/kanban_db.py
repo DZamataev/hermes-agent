@@ -995,7 +995,17 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     last_ping_event_id INTEGER NOT NULL DEFAULT 0,
+    -- Highest event id whose delivery finished (``last_event_id`` moves at claim time, before the send).
+    delivered_event_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
+);
+
+-- Board-level scalars that must outlive event GC (``gc_events`` prunes the
+-- events of done cards). ``quiescent_claim_mark``: id of the newest
+-- ``claimed`` event already covered by a ``board_quiescent`` decision.
+CREATE TABLE IF NOT EXISTS kanban_board_state (
+    key   TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
@@ -1650,6 +1660,41 @@ def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
     return removed
 
 
+def replace_task(conn: sqlite3.Connection, old_id: str, new_id: str) -> dict:
+    """Swap ``old_id`` for ``new_id`` in the graph: OLD's children depend on NEW instead, OLD's notify
+    subscriptions move to NEW (cursor caught up, no replay), then OLD is archived.
+
+    OLD's *parents* are not copied: NEW was created with its own. A live OLD (``running``/``review``) is
+    refused, and a cycle through any moved child aborts the whole swap before an edge moves.
+    """
+    if old_id == new_id:
+        raise ValueError("a task cannot replace itself")
+    with write_txn(conn):
+        missing = _missing_task_ids(conn, [old_id, new_id])
+        if missing:
+            raise ValueError(f"unknown task(s): {', '.join(missing)}")
+        if _task_status(conn, old_id) in ("running", "review"):
+            raise ValueError(f"block or complete {old_id} first — a live worker is not replaced")
+        if _task_status(conn, new_id) == "archived":
+            raise ValueError(f"cannot replace {old_id} with archived {new_id}")
+        children = child_ids(conn, old_id)
+        for c in children:
+            if c == new_id or _would_cycle(conn, new_id, c):
+                raise ValueError(f"replacing {old_id} with {new_id} would create a cycle through {c}")
+        for c in children:
+            _link(conn, new_id, c)
+            conn.execute("DELETE FROM task_links WHERE parent_id = ? AND child_id = ?", (old_id, c))
+            _append_event(conn, c, "linked", {"parent": new_id, "child": c})
+            _append_event(conn, c, "unlinked", {"parent": old_id, "child": c})
+        subs = conn.execute("SELECT COUNT(*) FROM kanban_notify_subs WHERE task_id = ?", (old_id,)).fetchone()[0]
+        _inherit_notify_subs(conn, new_id, (old_id,))
+        _append_event(conn, old_id, "replaced", {"by": new_id})
+        _append_event(conn, new_id, "replaces", {"old": old_id})
+    recompute_ready(conn)
+    archive_task(conn, old_id)
+    return {"old": old_id, "new": new_id, "moved_children": children, "subscriptions": int(subs)}
+
+
 def _linked_ids(conn: sqlite3.Connection, want: str, where: str, task_id: str) -> list[str]:
     rows = conn.execute(
         f"SELECT {want} FROM task_links WHERE {where} = ? ORDER BY {want}", (task_id,)
@@ -1695,7 +1740,10 @@ def task_graph_context(conn: sqlite3.Connection, task_id: str) -> dict:
 
 # --- Comments & events ---
 
-def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) -> int:
+def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str, *,
+                reason_for: Optional[str] = None) -> int:
+    """``reason_for`` marks the comment as the recorded reason of that operation (``blocked``, ``scheduled``,
+    ``unblock``), not a response to it: diagnostics that read "a comment after the block" skip it."""
     if not body or not body.strip():
         raise ValueError("comment body is required")
     if not author or not author.strip():
@@ -1709,7 +1757,10 @@ def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) 
             "INSERT INTO task_comments (task_id, author, body, created_at) "
             "VALUES (?, ?, ?, ?)", (task_id, author.strip(), body.strip(), now),
         )
-        _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
+        payload = {"author": author, "len": len(body)}
+        if reason_for:
+            payload["reason_for"] = reason_for
+        _append_event(conn, task_id, "commented", payload)
         return int(cur.lastrowid or 0)
 
 
@@ -2661,7 +2712,7 @@ def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-    fire_lifecycle_hook: bool = True, force: bool = False,
+    fire_lifecycle_hook: bool = True, force: bool = False, override_acceptance: bool = False,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2672,6 +2723,8 @@ def complete_task(
     :func:`request_review` applies. With no active run the handoff fields survive via
     :func:`_synthesize_ended_run`. ``summary`` (defaults to ``result``) and
     ``metadata`` land on the closing run for :func:`build_worker_context`.
+    ``override_acceptance`` (operator only) lets a failed completion-contract receipt through, audited as
+    ``acceptance_overridden``; ``force`` alone never does.
     ``created_cards`` are verified first — a phantom id raises
     :class:`HallucinatedCardsError` after an auditable event; afterwards the
     prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
@@ -2699,7 +2752,7 @@ def complete_task(
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
             return False
-        if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
+        if acceptance is not None and not record_acceptance(conn, task_id, acceptance, override=override_acceptance):
             return False
         trow = conn.execute(
             "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
@@ -2750,7 +2803,8 @@ def complete_task(
             event_summary = _REVIEW_APPROVED_NOTE
         _append_event(
             conn, task_id, "completed",
-            _completed_event_payload(result, event_summary, verified_cards, metadata),
+            _completed_event_payload(result, event_summary, verified_cards, metadata,
+                                     fallback=_run_fallback(conn, task_id, run_id)),
             run_id=run_id,
         )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
@@ -2855,13 +2909,26 @@ def _cleaned_artifact_paths(metadata: Any) -> list[str]:
     return [str(p).strip() for p in raw if isinstance(p, str) and str(p).strip()]
 
 
+def _run_fallback(conn: sqlite3.Connection, task_id: str, run_id: Optional[int]) -> Optional[dict]:
+    """The closing run's last ``model_fallback``: which model actually finished the card.
+    A switch in an earlier run of the same card says nothing about this completion."""
+    if run_id is None:
+        return None
+    payload = _json_dict(_row_get(_latest_event(conn, task_id, "model_fallback", run_id), "payload"))
+    if not payload:
+        return None
+    return {k: payload.get(k) for k in ("from_model", "to_model", "to_provider")}
+
+
 def _completed_event_payload(
     result: Optional[str], event_summary: Optional[str], verified_cards: list[str], metadata: Any,
+    *, fallback: Optional[dict] = None,
 ) -> dict:
     """``completed`` event payload: first summary line (400 chars) so gateway
     notifiers / dashboard WS render without a second round-trip; verified
-    cards; and ``metadata["artifacts"]`` promoted so the notifier can upload
-    them as native attachments without fetching the run row."""
+    cards; ``metadata["artifacts"]`` promoted so the notifier can upload
+    them as native attachments without fetching the run row; and the run's
+    model ``fallback`` when the worker did not finish on its own model."""
     # Mirror CLI's _show_voice_status: include STT/TTS provider availability so the user can tell at a
     # glance *why* voice mode isn't working ("STT provider: MISSING ..." is the common case). ``record_key``
     # mirrors the configured ``voice.record_key`` so the TUI can both bind it (frontend
@@ -2877,6 +2944,8 @@ def _completed_event_payload(
         cleaned = _cleaned_artifact_paths(metadata)
         if cleaned:
             payload["artifacts"] = cleaned
+    if fallback:
+        payload["fallback"] = fallback
     return payload
 
 
@@ -3144,7 +3213,8 @@ def edit_task(
 
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
-    kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    kind: Optional[str] = None, expected_run_id: Optional[int] = None, actor_session: Optional[str] = None,
+    actor_chat: Optional[str] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
@@ -3207,6 +3277,12 @@ def block_task(
         if rekind_reason:
             payload["requested_kind"] = requested_kind
             payload["rekind_reason"] = rekind_reason
+        if actor_session:
+            # The session that blocked it (an orchestrator holding a card) is not woken by its own action.
+            payload["actor_session"] = actor_session
+        if actor_chat:
+            # Same for a messenger chat (kanban_db_notify.chat_tag): the gateway keys its subscriptions by chat.
+            payload["actor_chat"] = actor_chat
         sql = f"""
                 UPDATE tasks
                    SET status        = '{new_status}',

@@ -606,6 +606,40 @@ def heartbeat_current_worker_from_env() -> bool:
         return False
 
 
+def _record_worker_run_event(kind: str, payload: dict) -> bool:
+    """Append ``kind`` to the dispatcher-owned worker's current run; True iff written.
+    Same bridge contract as the heartbeat: no-op outside that worker, never raises."""
+    tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not tid or not _is_dispatcher_owned_worker():
+        return False
+    try:
+        with _board(None, quiet_close=True) as (kb, conn):
+            with kb.write_txn(conn):
+                kb._append_event(conn, tid, kind, payload, run_id=_worker_run_id(tid))
+        return True
+    except Exception:
+        logger.debug("kanban %s bridge for %s failed", kind, tid, exc_info=True)
+        return False
+
+
+def _reason_text(reason: Any) -> str:
+    return str(getattr(reason, "value", reason) or "")
+
+
+def record_model_fallback_from_env(reason, old_model, old_provider, fb_model, fb_provider) -> bool:
+    """A worker that switched model mid-run says so on the board: otherwise a card finished
+    by a weaker fallback looks exactly like one finished by the profile's model."""
+    return _record_worker_run_event("model_fallback", {
+        "from_model": old_model, "from_provider": old_provider,
+        "to_model": fb_model, "to_provider": fb_provider, "reason": _reason_text(reason)})
+
+
+def record_fallback_refused_from_env(reason, model, provider) -> bool:
+    """``kanban.worker_fallback: wait`` refused a switch; the run ends on the primary's error."""
+    return _record_worker_run_event("model_fallback_refused", {
+        "model": model, "provider": provider, "reason": _reason_text(reason)})
+
+
 # Live operator-note injection: poll the task for new comments and steer them in
 # OUT-OF-BAND, so a user can talk to a running task without block → comment → unblock.
 # Watermarked per task (seeded on first poll: that history is already in the context).
@@ -622,6 +656,10 @@ def inject_new_comments_from_env(agent: Any) -> bool:
     # this process must neither receive them nor advance the shared watermark (#112817).
     tid = os.environ.get("HERMES_KANBAN_TASK") if _is_dispatcher_owned_worker() else None
     now = time.monotonic()
+    # A kanban_comment(await_reply_minutes=...) call owns the card's comments while it waits: the reply comes back
+    # as its tool result, so the heartbeat-driven injector must not steer it in as well.
+    if tid in _awaiting_reply:
+        return False
     if (not tid or agent is None or not hasattr(agent, "steer")
             or (now - _comment_poll_last_attempt) < _COMMENT_POLL_MIN_INTERVAL_SECONDS):
         return False
@@ -629,6 +667,10 @@ def inject_new_comments_from_env(agent: Any) -> bool:
     seen = _comment_watermark.get(tid)
     try:
         with _board(None, quiet_close=True) as (kb, conn):
+            # A card blocked, reclaimed or handed to another run is no longer this worker's: its new comments
+            # address the next worker, and steering them in here would read as orders for this run.
+            if seen is not None and not _still_owns_card(kb, conn, tid):
+                return False
             rows = kb.list_comments_after(conn, tid, after_id=seen or 0)
     except Exception:
         logger.debug("comment-inject: bridge failed", exc_info=True)
@@ -636,6 +678,11 @@ def inject_new_comments_from_env(agent: Any) -> bool:
     if seen is None:
         _comment_watermark[tid] = max((c.id for c in rows), default=0)
     if seen is None or not rows:
+        return False
+    # This runs on the activity heartbeat thread: the worker may have started a reply wait since the check above.
+    # The wait now owns these comments (it returns them as `notes`), and it may already have moved the watermark
+    # past its reply — never move it back.
+    if tid in _awaiting_reply or (_comment_watermark.get(tid) or 0) > seen:
         return False
     # Advance past everything read (including our own notes) so nothing is re-injected.
     _comment_watermark[tid] = max(c.id for c in rows)
@@ -834,7 +881,8 @@ def _handle_block(args: dict, **kw) -> str:
                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
-        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
+        from hermes_cli.kanban_db_notify import block_actor
+        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid), **block_actor(bound_only=True))
         _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
         landed_kind = kb.get_task(conn, tid).block_kind
         extra: dict = {"block_kind": landed_kind}
@@ -968,9 +1016,101 @@ def _handle_comment(args: dict, **kw) -> str:
     # comment from an authoritative-looking name like ``hermes-system`` and poison the future-worker context
     # with what reads as a system directive. See #19713.
     author = _persisted_identity()
+    wait = args.get("await_reply_minutes")
+    if wait is not None:
+        return _ask_and_await(args.get("board"), tid, author, str(body), wait)
     with _board(args.get("board")) as (kb, conn):
         cid = kb.add_comment(conn, tid, author=author, body=str(body))
         return _ok(task_id=tid, comment_id=cid)
+
+
+# A worker's question to its orchestrator, answered inside the same run: the comment is posted with a
+# ``question`` event (which the orchestrator's session is notified of) and the tool call is held until a comment
+# lands on the card after the question (any author: the worker cannot write while this call holds it), the card
+# stops being this run's, the wait runs out, or the run is interrupted. The reply comes back as the tool result, so
+# the worker keeps its context instead of blocking and restarting cold.
+_AWAIT_MAX_MINUTES = 30
+_AWAIT_POLL_SECONDS = 5.0
+_AWAIT_MINUTE_SECONDS = 60.0
+_awaiting_reply: set = set()
+
+
+def _still_owns_card(kb, conn, tid: str) -> bool:
+    """The waiting run still holds the card: running under this worker's run id. A block or reclaim hands it on,
+    and a comment written after that addresses the next worker, not this one."""
+    task = kb.get_task(conn, tid)
+    if task is None or task.status != "running":
+        return False
+    run_id = _worker_run_id(tid)
+    return run_id is None or task.current_run_id == run_id
+
+
+def _await_interrupted() -> bool:
+    from tools.interrupt import is_interrupted
+    return is_interrupted()
+
+
+def _ask_and_await(board, tid: str, author: str, body: str, wait) -> str:
+    _check(os.environ.get("HERMES_KANBAN_TASK") == tid and _is_dispatcher_owned_worker(),
+           "await_reply_minutes: only a board worker waits, and only on its own task — post a plain comment here")
+    try:
+        minutes = max(1, min(int(wait), _AWAIT_MAX_MINUTES))
+    except (TypeError, ValueError):
+        raise ValueError("await_reply_minutes must be a whole number of minutes") from None
+    with _board(board) as (kb, conn):
+        from hermes_cli.kanban_db_connect import write_txn
+        with write_txn(conn):
+            cid = kb.add_comment(conn, tid, author=author, body=body)
+            kb._append_event(conn, tid, "question", {"author": author, "body": body, "await_minutes": minutes})
+    deadline = time.monotonic() + minutes * _AWAIT_MINUTE_SECONDS
+    replies: list = []
+    notes: list = []
+    interrupted = lost = False
+    _awaiting_reply.add(tid)
+    try:
+        while True:
+            with _board(board, quiet_close=True) as (kb, conn):
+                # The worker cannot comment while this call holds it, so every comment after the question is the
+                # answer — whatever its author name (orchestrator and worker may share a profile). Read first, then
+                # check the card is still ours: a writer that comments and then blocks (`hermes kanban block`)
+                # must not have its comment taken for an answer.
+                replies = [c for c in kb.list_comments_after(conn, tid, after_id=cid) if (c.body or "").strip()]
+                if not _still_owns_card(kb, conn, tid):
+                    lost, replies = True, []
+                    break
+                if replies:
+                    # Notes the injector had not delivered yet when the worker asked: the watermark moves past them
+                    # below, so they come back here or never.
+                    seen = _comment_watermark.get(tid)
+                    if seen is not None:
+                        own = _persisted_identity()
+                        notes = [c for c in kb.list_comments_after(conn, tid, after_id=seen)
+                                 if c.id < cid and (c.author or "").strip() != own and (c.body or "").strip()]
+            if replies:
+                # Delivered here as the tool result; the live injector must not steer it in a second time.
+                _comment_watermark[tid] = max(_comment_watermark.get(tid) or 0, max(c.id for c in replies))
+                break
+            if _await_interrupted():
+                interrupted = True
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(_AWAIT_POLL_SECONDS)
+    finally:
+        _awaiting_reply.discard(tid)
+    if lost:
+        nxt = ("The card is no longer yours (blocked, reclaimed or closed while you waited). Stop working on it and "
+               "let the run end; do not call kanban_complete or kanban_block.")
+    elif replies:
+        nxt = "Answered: continue the work with this reply."
+    elif interrupted:
+        nxt = "The wait was interrupted; stop and let the run end."
+    else:
+        nxt = (f"No reply within {minutes} min. If you cannot go on without the answer, kanban_block with the "
+               "question as the reason; otherwise proceed on the safest assumption and state it in your summary.")
+    extra = {"notes": [{"author": c.author, "body": c.body} for c in notes]} if notes else {}
+    return _ok(task_id=tid, comment_id=cid, await_minutes=minutes, next=nxt,
+               replies=[{"author": c.author, "body": c.body} for c in replies], **extra)
 
 
 def _store_attachment(board, tid, filename, data, content_type) -> str:

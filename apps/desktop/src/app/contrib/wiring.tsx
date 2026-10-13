@@ -52,6 +52,7 @@ import { reconnectGateway } from '@/store/gateway-reconnect'
 import { $interfaceMode, shownInMode } from '@/store/interface-mode'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
+import { watchPathModifier } from '@/store/path-modifier'
 import { $poolLimitsSettingsRequest } from '@/store/pool-limits'
 import { $previewTarget } from '@/store/preview'
 import {
@@ -308,6 +309,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const gatewayState = useStore($gatewayState)
   const activeSessionId = useStore($activeSessionId)
   const currentCwd = useStore($currentCwd)
+
+  // Cmd/Ctrl arms the transcript's file-path references for the whole window,
+  // so the listeners belong to the shell rather than to each token.
+  useEffect(() => watchPathModifier(), [])
 
   useRouteRequestNavigation(navigate)
   useRecoveryRequestToasts()

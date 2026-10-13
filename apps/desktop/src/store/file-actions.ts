@@ -5,6 +5,7 @@ import { translateNow } from '@/i18n'
 import {
   copyTextToClipboard,
   isDesktopFsRemoteMode,
+  openWithDesktopPath,
   renameDesktopPath,
   revealDesktopPath,
   trashDesktopPath
@@ -60,6 +61,24 @@ export function cancelInlineRename(): void {
 export async function revealFile(path: string): Promise<void> {
   try {
     await revealDesktopPath(path)
+  } catch (error) {
+    notifyError(error, translateNow('errors.genericFailure'))
+  }
+}
+
+/**
+ * Ask the OS which application should open *path*.
+ *
+ * The picker is the point: the user chooses, so nothing is launched by file
+ * association. Only Windows has such a command — see `canOpenPathWith`.
+ */
+export async function openFileWith(path: string): Promise<void> {
+  try {
+    const result = await openWithDesktopPath(path)
+
+    if (!result.ok) {
+      throw new Error(result.error || 'open-with failed')
+    }
   } catch (error) {
     notifyError(error, translateNow('errors.genericFailure'))
   }

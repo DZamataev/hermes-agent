@@ -261,6 +261,21 @@ def _exit_code_kind(code: int) -> tuple[str, int]:
 _EXIT_TRAILER_RE = re.compile(
     r"^" + re.escape(KANBAN_WORKER_EXIT_TRAILER) + r"(\d+)\s*$", re.MULTILINE,
 )
+# Written by the dispatcher at the top of every run's section of the append-mode per-task log, so a
+# reader judging the current run never takes the previous run's words or exit trailer for its own.
+_RUN_START_MARKER = "[kanban-run-start] run="
+
+
+def _current_run_log_tail(task_id: str, board: Optional[str]) -> str:
+    """The tail of the task log written since the latest run marker ("" when unreadable)."""
+    try:
+        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board) or ""
+    except Exception:
+        return ""
+    cut = raw.rfind(_RUN_START_MARKER)
+    if cut != -1:
+        raw = raw[cut:].split("\n", 1)[1] if "\n" in raw[cut:] else ""
+    return raw
 
 
 def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional[int]:
@@ -268,14 +283,11 @@ def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional
 
     The durable twin of ``_recent_worker_exits``: written by the worker itself
     (``hermes_cli.quiet_single_query.exit_single_query``), so it is there whether
-    or not the process running this sweep ever reaped the worker. Last trailer
-    wins — the log is append-mode across re-runs.
+    or not the process running this sweep ever reaped the worker. Only the current
+    run's section counts: the log is append-mode across re-runs, and an earlier
+    run's ``rc=0`` would otherwise book a silent crash as a protocol violation.
     """
-    try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
-    except Exception:
-        return None
-    matches = _EXIT_TRAILER_RE.findall(raw or "")
+    matches = _EXIT_TRAILER_RE.findall(_current_run_log_tail(task_id, board))
     return int(matches[-1]) if matches else None
 
 
@@ -403,14 +415,20 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
         return False
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
+    from gateway.status import get_process_start_time, start_time_fingerprints_match
     if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
-    from gateway.status import _start_times_agree, get_process_start_time
+        # The epoch (boot identity) must match exactly, the start time only within the shared drift
+        # tolerance: the dispatcher that recorded it and the one reading it now are often different
+        # processes, and on macOS each derives the start time from its own ``kern.boottime`` snapshot.
+        from gateway.drain_control import current_instantiation_epoch
+        epoch, _, started_at = started_at.partition("|")
+        if epoch != current_instantiation_epoch():
+            return True
     current = get_process_start_time(int(pid))
     if current is None:
         return True
     try:
-        return not _start_times_agree(current, started_at)
+        return not start_time_fingerprints_match(started_at, current)
     except (TypeError, ValueError):
         return True
 
@@ -958,6 +976,33 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
+# Consecutive workers that died before their first heartbeat (the agent never ran) before the card
+# is parked for an operator. Counted apart from the card's ``max_retries``: a host that cannot start
+# a worker says nothing about the work, yet endless respawns would hide the broken host.
+_STARTUP_FAILURE_LIMIT = 3
+
+
+def _startup_failure_streak(conn: sqlite3.Connection, task_id: str) -> int:
+    """Count the task's trailing closed runs whose worker died before its first heartbeat
+    (including the one just closed). ``rate_limited`` and infrastructure ``spawn_failed`` runs are
+    neutral; any other closed run breaks the streak."""
+    streak = 0
+    rows = conn.execute(
+        "SELECT outcome, metadata FROM task_runs WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT ?",
+        (task_id, _PROTOCOL_VIOLATION_SCAN_LIMIT),
+    ).fetchall()
+    for row in rows:
+        meta = _kb._json_dict(row["metadata"])
+        if row["outcome"] == "rate_limited" or (row["outcome"] == "spawn_failed" and meta.get("infrastructure")):
+            continue
+        if row["outcome"] == "crashed" and meta.get("startup_failure"):
+            streak += 1
+            continue
+        break
+    return streak
+
+
 _PROTOCOL_VIOLATION_ERROR = (
     # Worker subprocess returned 0 but its task is still ``running`` in the DB — it exited without calling
     # ``kanban_complete`` / ``kanban_block`` / ``kanban_request_review``. Overwhelmingly the work itself succeeded and only the
@@ -1005,10 +1050,7 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     is wrong for every board but the one the dispatcher thread happens to call
     "current", so the log would silently not be found.
     """
-    try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
-    except Exception:
-        return ""
+    raw = _current_run_log_tail(task_id, board)
     if not raw:
         return ""
     raw = _EXIT_TRAILER_RE.sub("", raw)
@@ -1037,6 +1079,9 @@ class _DeadWorker:
     terminal_provider: bool = False
     """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
     credential/model — trips the breaker on this first occurrence."""
+    startup_failure: bool = False
+    """The worker died before its first heartbeat: the agent never ran, so the card's own
+    attempts are untouched and a separate bounded budget (``_STARTUP_FAILURE_LIMIT``) applies."""
 
     @property
     def run_outcome(self) -> str:
@@ -1149,9 +1194,12 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "
-            "FROM tasks "
-            "WHERE status = 'running' AND worker_pid IS NOT NULL"
+            "SELECT t.id, t.worker_pid, t.worker_started_at, t.claim_lock, t.assignee, "
+            # Grace is per attempt: ``tasks.started_at`` keeps the card's FIRST start.
+            "       COALESCE(r.started_at, t.started_at) AS started_at, "
+            "       r.id AS run_id, r.last_heartbeat_at AS run_heartbeat_at "
+            "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.status = 'running' AND t.worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = _kb._host_prefix()
         for row in rows:
@@ -1168,6 +1216,11 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
 
             pid = int(row["worker_pid"])
             dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
+            if (dead.event_kind == "crashed" and not dead.terminal_provider
+                    and row["run_id"] is not None and row["run_heartbeat_at"] is None):
+                # The agent loop heartbeats on its first activity; none means it never ran.
+                dead.startup_failure = True
+                dead.event_payload["startup_failure"] = True
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
@@ -1273,6 +1326,24 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer, "terminal_provider": True},
+            )
+        elif dead.startup_failure:
+            # Infrastructure, not the card: the worker process died before the agent ran (import
+            # error, broken interpreter). The card's ``max_retries`` stays for its own work; a
+            # separate streak bounds the retries so a host that cannot start workers parks the card
+            # for an operator (sticky) instead of looping.
+            streak = _startup_failure_streak(conn, tid)
+            extra = {"pid": pid, "claimer": claimer, "startup_failure": True,
+                     "startup_failures": streak, "startup_failure_limit": _STARTUP_FAILURE_LIMIT}
+            tripped = _record_task_failure(
+                conn, tid,
+                error=error_text,
+                outcome="crashed",
+                force_trip=streak >= _STARTUP_FAILURE_LIMIT,
+                release_claim=False,
+                end_run=False,
+                event_payload_extra=extra,
+                infrastructure=streak < _STARTUP_FAILURE_LIMIT,
             )
         else:
             is_systemic = fp_counts.get(_error_fingerprint(error_text), 0) >= 3
@@ -1971,7 +2042,7 @@ def dispatch_once(
     resolved DB path so unrelated boards tick in parallel.
     """
     def _locked_tick() -> DispatchResult:
-        return _dispatch_once_locked(
+        result = _dispatch_once_locked(
             conn,
             spawn_fn=spawn_fn,
             ttl_seconds=ttl_seconds,
@@ -1985,6 +2056,14 @@ def dispatch_once(
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
         )
+        if not dry_run:
+            # Tell subscribers the board ran out of work; a failed announcement must not fail the tick.
+            try:
+                from hermes_cli import kanban_db_notify as _kbn
+                _kbn.announce_board_quiescent(conn)
+            except Exception:
+                _kb._log.debug("kanban dispatch: board_quiescent announcement failed", exc_info=True)
+        return result
 
     try:
         db_path = _kb.kanban_db_path(board=board)
@@ -2017,6 +2096,19 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
     except (TypeError, ValueError):
         return spawn_fn(task, workspace)
+
+
+def _record_workspace_head(conn: sqlite3.Connection, claimed, workspace) -> None:
+    """``local-commit``: remember the workspace HEAD this run starts from, so completion can prove a commit was
+    made. A git failure records ``None``, which the completion gate treats as missing (fail closed)."""
+    from hermes_cli.worktree_ops import _git_out
+    try:
+        head = _git_out(["rev-parse", "HEAD"], str(workspace))
+    except Exception:
+        head = None
+    with _kb.write_txn(conn):
+        _kb._append_event(conn, claimed.id, "workspace_head", {"head": head or None},
+                          run_id=claimed.current_run_id)
 
 
 def _dispatch_lane_task(
@@ -2110,6 +2202,8 @@ def _dispatch_lane_task(
             result.auto_blocked.append(claimed.id)
         return False
     _kbw.set_workspace_path(conn, claimed.id, str(workspace))
+    if claimed.completion_contract in ("local-commit", "local-commit-or-none"):
+        _record_workspace_head(conn, claimed, workspace)
     if claimed.workspace_kind == "worktree":
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
@@ -2487,9 +2581,13 @@ def _rotate_worker_log(
 
 
 def _module_hermes_argv() -> list[str]:
-    """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
-    return [sys.executable, "-m", "hermes_cli.main"]
+    """This checkout's Hermes CLI, self-contained (``hermes_cli.main`` is the console-script target —
+    there is no top-level ``hermes`` package). The running process may be under the install launcher
+    (``python -I`` + a ``sys.path`` entry it added itself): a bare ``sys.executable -m hermes_cli.main``
+    inherits neither, so the child finds no ``hermes_cli`` or another install's. ``runtime_command``
+    carries the tree explicitly, exactly as the launcher does."""
+    from hermes_cli._launchers import runtime_command
+    return runtime_command(Path(__file__).resolve().parents[1])
 
 
 def _propagate_module_import_root(cmd: list[str], env: dict[str, str]) -> None:
@@ -2784,7 +2882,10 @@ def _open_worker_log(task: Task, board: Optional[str]):
     log_path = log_dir / f"{task.id}.log"
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
-    return open(log_path, "ab")
+    log_f = open(log_path, "ab")
+    log_f.write(f"\n{_RUN_START_MARKER}{task.current_run_id}\n".encode("utf-8"))
+    log_f.flush()
+    return log_f
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:

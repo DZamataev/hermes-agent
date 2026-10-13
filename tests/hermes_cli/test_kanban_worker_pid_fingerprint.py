@@ -110,6 +110,43 @@ def test_same_pid_and_start_tick_on_another_boot_is_foreign(board, monkeypatch):
     assert kbd._process_fingerprint(os.getpid()) == live_fingerprint
 
 
+def test_a_start_time_read_a_second_off_is_still_our_worker(board, monkeypatch):
+    """The dispatcher that spawned the worker and the one sweeping it are different processes (CLI
+    ``kanban dispatch`` vs the gateway tick). On macOS each derives the start time from its own
+    ``kern.boottime`` snapshot, so the same live worker reads ~1 s apart: that is drift, not a
+    recycled PID. The worker is alive, its claim is kept; a real stranger still is not."""
+    import gateway.status as status
+
+    conn = board
+    recorded = kbd._process_fingerprint(os.getpid())
+    epoch, start = recorded.split("|", 1)
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=recorded)
+
+    monkeypatch.setattr(status, "_get_process_start_time", lambda pid: int(start) + 100)  # 1 s later
+    assert kbd._worker_alive(os.getpid(), recorded) is True
+    assert kbd.detect_crashed_workers(conn) == []
+    assert kb.get_task(conn, tid).status == "running"
+
+    monkeypatch.setattr(status, "_get_process_start_time", lambda pid: int(start) + 60_000)  # 10 min
+    assert kbd._worker_alive(os.getpid(), recorded) is False
+    assert kbd._worker_alive(os.getpid(), f"another-boot|{start}") is False
+
+
+def test_crash_grace_counts_from_this_run_not_the_first_one(board, monkeypatch):
+    """``tasks.started_at`` keeps the card's FIRST start; a retry spawned a second ago must get the
+    same launch grace as a first attempt, or a slow-starting worker is reaped as crashed."""
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "30")
+    conn = board
+    tid = _claimed_running(conn, pid=os.getpid(), started_at="x|1")  # first start an hour ago
+    with kb.write_txn(conn):
+        conn.execute("UPDATE task_runs SET started_at = ? WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                     (int(time.time()), tid))  # this attempt started now
+    monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+
+    assert kbd.detect_crashed_workers(conn) == []
+    assert kb.get_task(conn, tid).status == "running"
+
+
 def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeypatch):
     """Fingerprint capture fails for a new spawn: the row is NOT a legacy NULL row. A live PID under
     it is never SIGTERM/SIGKILLed by any reclaim/timeout path, and the claim is held (not released

@@ -426,6 +426,23 @@ describe('terminal kinds beyond completed', () => {
     })
   })
 
+  it('question: a waiting worker\'s question is the body, with a warning toast', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    const fired = await m.onKanbanEventsFrame('smoke', [
+      ev(101, 'question', { author: 'pwaimpl', body: 'v1 or v2?', await_minutes: 10 })
+    ])
+
+    expect(fired).toBe(true)
+    expect(lastNotify()).toMatchObject({
+      kind: 'warning',
+      title: 'Worker asks a question — it is waiting for your answer',
+      message: 'v1 or v2?',
+      detail: 't101'
+    })
+  })
+
   it('gave_up: plain-words body, raw payload error only in detail; crashed and timed_out fall back to the task id', async () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never)

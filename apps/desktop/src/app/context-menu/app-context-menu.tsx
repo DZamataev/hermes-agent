@@ -17,10 +17,15 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { type Translations, useI18n } from '@/i18n'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
+import { canOpenPathWith, pickRevealLabel } from '@/lib/file-manager'
 import { formatCombo } from '@/lib/keybinds/combo'
+import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
+import { canOpenPathInEditor, openPathInEditor } from '@/lib/open-in-editor'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
+import { openFileWith, revealFile } from '@/store/file-actions'
 import { openPreview } from '@/store/preview'
 
 import { ShellMenuItems } from './shell-menu-items'
@@ -180,6 +185,78 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
 
   const spellcheckAction = (action: { kind: 'add' | 'replace'; word: string }) => {
     withEditableFocus(() => void window.hermesDesktop?.contextMenuSpellcheck?.(action))
+  }
+
+  // A resolved file reference outranks the link section below it: the token is
+  // not an anchor, so the two never both appear, and this is the only menu
+  // entry that can act on a path the transcript merely mentioned.
+  if (target.filePath) {
+    sections.push(
+      [
+        // A directory has nothing to render in the rail and nothing to hand a
+        // text editor, so a folder reference offers only the two verbs that
+        // still mean something: show it, and copy it.
+        target.filePathIsDirectory ? null : (
+          <Item
+            icon="preview"
+            key="file-open-preview"
+            label={copy.file.openInHermes}
+            onSelect={() =>
+              void normalizeOrLocalPreviewTarget(target.filePath).then(preview => {
+                if (preview) {
+                  openPreview(preview)
+                }
+              })
+            }
+          />
+        ),
+        // Executables are deliberately absent: `shell.openPath` would RUN an
+        // agent-written `.command`/`.sh`. The file stays previewable and
+        // revealable — only the exit that executes is withheld.
+        target.filePathIsDirectory || !canOpenPathInEditor(target.filePath) ? null : (
+          <Item
+            icon="edit"
+            key="file-open-editor"
+            label={copy.file.openInEditor}
+            onSelect={() => openPathInEditor(target.filePath)}
+          />
+        ),
+        // Revealing goes through Electron's `shell.showItemInFolder`, which
+        // acts on THIS machine's filesystem — a path that lives on a remote
+        // gateway would silently select nothing, so the entry is local-only
+        // (the same rule the file trees apply).
+        isDesktopFsRemoteMode() ? null : (
+          <Item
+            icon="folder-opened"
+            key="file-reveal"
+            label={pickRevealLabel(t.fileMenu.revealFinder, t.fileMenu.revealExplorer, t.fileMenu.revealFileManager)}
+            onSelect={() => void revealFile(target.filePath)}
+          />
+        ),
+        // "Open with…" asks the OS which application to use. It sits beside
+        // the editor entry and is withheld in the same cases: a directory has
+        // no application to pick, and an executable must not gain a second
+        // route to being launched. Local-only and Windows-only — no other
+        // platform has a picker (`canOpenPathWith`).
+        target.filePathIsDirectory ||
+        isDesktopFsRemoteMode() ||
+        !canOpenPathWith() ||
+        !canOpenPathInEditor(target.filePath) ? null : (
+          <Item
+            icon="window"
+            key="file-open-with"
+            label={copy.file.openWith}
+            onSelect={() => void openFileWith(target.filePath)}
+          />
+        ),
+        <Item
+          icon="copy"
+          key="file-copy-path"
+          label={copy.file.copyPath}
+          onSelect={() => void writeClipboardText(target.filePath)}
+        />
+      ].filter(Boolean)
+    )
   }
 
   if (linkUrl) {

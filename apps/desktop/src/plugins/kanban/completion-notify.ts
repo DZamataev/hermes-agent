@@ -51,6 +51,8 @@ const TERMINAL_NOTIFY = new Map<string, { titleKey: string; toast: ToastKind }>(
   ['completed', { titleKey: 'notify.completedTitle', toast: 'success' }],
   ['crashed', { titleKey: 'notify.crashedTitle', toast: 'error' }],
   ['gave_up', { titleKey: 'notify.gaveUpTitle', toast: 'error' }],
+  // A worker holding its run for an answer (kanban_comment await_reply_minutes): minutes matter.
+  ['question', { titleKey: 'notify.questionTitle', toast: 'warning' }],
   ['timed_out', { titleKey: 'notify.timedOutTitle', toast: 'warning' }]
 ])
 
@@ -132,6 +134,10 @@ function bodyFor(kind: string, ev: CompletionEvent): string {
 
   if (kind === 'gave_up') {
     return t('notify.gaveUpBody')
+  }
+
+  if (kind === 'question') {
+    return trimmed(payload?.body)
   }
 
   return ''

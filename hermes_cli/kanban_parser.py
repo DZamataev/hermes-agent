@@ -204,7 +204,9 @@ _SPECS = [
              help="Provider the --model belongs to (passed as --provider <name> to "
                   "the worker). Requires --model."),
         _arg("--completion-contract", metavar="CONTRACT",
-             help="local-only (default), OWNER/REPO for publication, or exact GitHub PR URL; required CI gates done."),
+             help="local-only (default), local-commit (done needs a clean tree and a commit made during "
+                  "the run), local-commit-or-none (the same, or a clean unmoved tree with metadata.no_change), "
+                  "OWNER/REPO for publication, or exact GitHub PR URL; required CI gates done."),
         _arg("--goal", action="store_true", dest="goal_mode",
              help="Run the worker in a goal loop: after each turn a judge checks the "
                   "response against the card title/body and, if not done, the worker "
@@ -273,6 +275,13 @@ _SPECS = [
     ], aliases=["diag"], help="List active diagnostics on the current board"),
     _cmd("link", [_arg("parent_id"), _arg("child_id")], help="Add a parent->child dependency"),
     _cmd("unlink", [_arg("parent_id"), _arg("child_id")], help="Remove a parent->child dependency"),
+    _cmd("replace", [
+        _arg("old_id"),
+        _arg("--with", dest="new_id", required=True, metavar="NEW",
+             help="Card that takes OLD's place (create it first, with its own parents)"),
+        _json_flag(),
+    ], help="Swap a card in a chain: OLD's children and session subscriptions move to NEW, OLD is "
+            "archived. OLD's parents are not copied. Refused while OLD is running or in review."),
     _cmd("claim", [
         _TASK_ID,
         _arg("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS, help="Claim TTL in seconds (default: 900)"),
@@ -301,8 +310,11 @@ _SPECS = [
              help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                   '"tests_run": 12}\'). Stored on the closing run.'),
         _arg("--force", action="store_true",
-             help="Override the live-claim guard: complete a running, claimed task "
-                  "even without owning its run (closes the worker's run)."),
+             help="Operator override: complete a running, claimed task even without owning its run "
+                  "(closes the worker's run). Does not bypass the completion contract."),
+        _arg("--override-acceptance", action="store_true", dest="override_acceptance",
+             help="Complete past a failed completion-contract check (local-commit, CI); recorded as an "
+                  "acceptance_overridden event with the refused receipt."),
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,

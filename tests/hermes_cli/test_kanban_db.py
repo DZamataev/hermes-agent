@@ -1586,7 +1586,9 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
-    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+    argv = kbd._resolve_hermes_argv()
+    assert "/tmp/planted/hermes" not in argv
+    assert argv == kbd._module_hermes_argv()
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
@@ -1594,16 +1596,15 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
 
 
 
-def test_resolve_hermes_argv_module_actually_runs():
-    """The fallback module name must be importable + runnable.
-
-    A unit test that pins the literal string is necessary but not
-    sufficient — if `hermes_cli.main` ever loses `if __name__ == "__main__"`
-    handling or its argparse setup, `python -m hermes_cli.main --version`
-    would fail and so would every dispatcher spawn that hits the fallback.
-    Run it as a real subprocess to catch that regression.
+def test_resolve_hermes_argv_module_actually_runs(tmp_path):
+    """The resolved argv must start THIS checkout's CLI on its own: the dispatcher runs under the
+    install launcher (``python -I`` + a ``sys.path`` entry it added itself), so a child that relies
+    on inheriting that path — ``python -m hermes_cli.main`` — either finds no ``hermes_cli`` at all
+    (store Python) or silently runs another install (a venv with an editable install elsewhere).
+    Run it as a real subprocess from an unrelated cwd with no PYTHONPATH and check which tree answered.
     """
     import subprocess
+    from pathlib import Path
     from hermes_cli import kanban_db_dispatch as kbd
     import shutil
     from unittest import mock
@@ -1612,11 +1613,15 @@ def test_resolve_hermes_argv_module_actually_runs():
         os.environ.pop("HERMES_BIN", None)
         with mock.patch.object(shutil, "which", return_value=None):
             argv = kbd._resolve_hermes_argv()
-    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30, check=False)
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}
+    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=60,
+                       cwd=tmp_path, env=env, check=False)
     assert r.returncode == 0, (
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
     )
+    this_tree = Path(kbd.__file__).resolve().parents[1]
+    assert f"Install directory: {this_tree}" in r.stdout
 
 
 def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monkeypatch):
@@ -2084,3 +2089,97 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+def test_rebuilt_legacy_notify_subs_matches_the_fresh_schema(kanban_home):
+    """A legacy ``kanban_notify_subs`` (nullable TEXT cursor) is rebuilt from ``_REBUILD_SPECS``; every column the
+    fresh schema has — ``delivered_event_id`` included — must come back with the same type and default."""
+    db_path = kanban_home / "legacy-subs.db"
+    seed = sqlite3.connect(db_path)
+    seed.execute(
+        "CREATE TABLE kanban_notify_subs (task_id TEXT NOT NULL, platform TEXT NOT NULL, chat_id TEXT NOT NULL,"
+        " thread_id TEXT NOT NULL DEFAULT '', user_id TEXT, created_at INTEGER NOT NULL, last_event_id TEXT,"
+        " PRIMARY KEY (task_id, platform, chat_id, thread_id))"
+    )
+    seed.execute("INSERT INTO kanban_notify_subs VALUES ('t1', 'telegram', 'X', '', NULL, 1, '7')")
+    seed.commit()
+    seed.close()
+
+    conn = kbc.connect(db_path)
+    try:
+        fresh = sqlite3.connect(":memory:")
+        fresh.executescript(kb.SCHEMA_SQL)
+        fresh_info = {r[1]: r[2:] for r in fresh.execute("PRAGMA table_info(kanban_notify_subs)")}
+        rebuilt_info = {r["name"]: tuple(r)[2:] for r in conn.execute("PRAGMA table_info(kanban_notify_subs)")}
+        assert rebuilt_info == fresh_info
+        row = conn.execute("SELECT last_event_id, delivered_event_id FROM kanban_notify_subs").fetchone()
+        assert tuple(row) == (7, 0)
+    finally:
+        conn.close()
+
+
+def test_an_upgraded_board_gains_delivered_event_id_and_delivers(kanban_home):
+    """The common upgrade path: a board created before ``delivered_event_id`` gets it added on open (default 0),
+    and delivery bookkeeping works on it (without the column every advance raises ``no such column``)."""
+    from hermes_cli import kanban_db_notify as kbn
+
+    db_path = kanban_home / "pre-delivered.db"
+    seed = sqlite3.connect(db_path)
+    seed.executescript(kb.SCHEMA_SQL)
+    seed.execute("ALTER TABLE kanban_notify_subs DROP COLUMN delivered_event_id")
+    seed.execute("INSERT INTO tasks (id, title, status, created_at) VALUES ('t_old', 'old', 'done', 1)")
+    seed.execute("INSERT INTO kanban_notify_subs (task_id, platform, chat_id, thread_id, created_at, last_event_id)"
+                 " VALUES ('t_old', 'telegram', 'X', '', 1, 5)")
+    seed.commit()
+    seed.close()
+
+    conn = kbc.connect(db_path)
+    try:
+        row = conn.execute("SELECT last_event_id, delivered_event_id FROM kanban_notify_subs").fetchone()
+        assert tuple(row) == (5, 0)
+        kbn.advance_notify_cursor(conn, task_id="t_old", platform="telegram", chat_id="X", thread_id="", new_cursor=9)
+        row = conn.execute("SELECT last_event_id, delivered_event_id FROM kanban_notify_subs").fetchone()
+        assert tuple(row) == (9, 9)
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Completion carries the run's model fallback
+# ---------------------------------------------------------------------------
+
+def _fallback_event(conn, tid, run_id, to_model):
+    with kb.write_txn(conn):
+        kb._append_event(conn, tid, "model_fallback", {
+            "from_model": "opus", "from_provider": "teamclaude",
+            "to_model": to_model, "to_provider": "openrouter", "reason": "rate_limit"}, run_id=run_id)
+
+
+def _completed_payload(conn, tid):
+    return [e for e in kb.list_events(conn, tid) if e.kind == "completed"][-1].payload
+
+
+def test_completion_carries_the_closing_runs_fallback(kanban_home):
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="t", assignee="w")
+        kb.claim_task(conn, tid)
+        run_id = kb._current_run_id(conn, tid)
+        _fallback_event(conn, tid, run_id, "sonnet")
+        _fallback_event(conn, tid, run_id, "haiku")
+        assert kb.complete_task(conn, tid, summary="done", expected_run_id=run_id)
+        assert _completed_payload(conn, tid)["fallback"] == {
+            "from_model": "opus", "to_model": "haiku", "to_provider": "openrouter"}
+
+
+def test_completion_ignores_a_fallback_from_an_earlier_run(kanban_home):
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="t", assignee="w")
+        kb.claim_task(conn, tid)
+        first = kb._current_run_id(conn, tid)
+        _fallback_event(conn, tid, first, "sonnet")
+        assert kb.reclaim_task(conn, tid)
+        kb.claim_task(conn, tid)
+        second = kb._current_run_id(conn, tid)
+        assert second != first
+        assert kb.complete_task(conn, tid, summary="done", expected_run_id=second)
+        assert "fallback" not in _completed_payload(conn, tid)

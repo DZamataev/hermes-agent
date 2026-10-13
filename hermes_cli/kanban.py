@@ -206,7 +206,7 @@ def _profile_author() -> str:
 
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
-    "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
+    "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink", "replace",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
@@ -732,6 +732,18 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
                       f"Unlinked {args.parent_id} -> {args.child_id}")
 
 
+def _cmd_replace(args: argparse.Namespace) -> int:
+    with kbc.connect_closing() as conn:
+        out = kb.replace_task(conn, args.old_id, args.new_id)
+    if getattr(args, "json", False):
+        print(json.dumps(out))
+        return 0
+    moved = ", ".join(out["moved_children"]) or "none"
+    print(f"Replaced {out['old']} with {out['new']} (children moved: {moved}; "
+          f"subscriptions: {out['subscriptions']}); {out['old']} archived")
+    return 0
+
+
 def _cmd_claim(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
         task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
@@ -892,6 +904,17 @@ def _goal_gate_error(conn, tid: str, evidence: str, handoff: str, blocked_hint: 
     return None
 
 
+def _acceptance_refusal(conn, tid: str) -> Optional[str]:
+    """The failed completion-contract receipt that just refused ``tid`` ("<Label> <classification>: <detail>
+    <recovery>", as stored on the card), or None when the refusal was something else."""
+    row = conn.execute("SELECT kind, payload FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                       (tid,)).fetchone()
+    if not row or row[0] not in ("commit_acceptance", "pr_acceptance"):
+        return None
+    task = kb.get_task(conn, tid)
+    return (getattr(task, "last_failure_error", None) or "").strip() or None
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids, rc = _require_ids(args)
@@ -907,6 +930,13 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     metadata, rc = _parse_metadata_flag(raw_meta)
     if rc:
         return rc
+    # The acceptance override is the operator's audited escape hatch (recorded as actor=operator); a worker holding
+    # a card must not wave its own completion past the contract.
+    worker = bool(os.environ.get("HERMES_KANBAN_TASK"))
+    if worker and getattr(args, "override_acceptance", False):
+        return _err("kanban complete --override-acceptance is orchestrator-only; a worker fixes what the "
+                    "acceptance check names, or blocks with it as the reason")
+    override_hint = "" if worker else " Or re-run with --override-acceptance (audited)."
     fail_msg: dict[str, str] = {}
     with kbc.connect_closing() as conn:
         def op(tid):
@@ -921,7 +951,8 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
                                         expected_run_id=_worker_run_id_for(tid),
-                                        force=bool(getattr(args, "force", False)))
+                                        force=bool(getattr(args, "force", False)),
+                                        override_acceptance=bool(getattr(args, "override_acceptance", False)))
             except kb.LiveClaimError:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
@@ -939,9 +970,16 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                     detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
                     fail_msg[tid] = (f"cannot complete {tid}: unsatisfied parent dependencies: {detail}; "
                                      f"complete the parents first, or `hermes kanban unlink <parent> {tid}`.")
+                elif refusal := _acceptance_refusal(conn, tid):
+                    fail_msg[tid] = f"cannot complete {tid}: {refusal}{override_hint}"
             return done
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
+
+
+def _kbn_block_actor() -> dict:
+    from hermes_cli.kanban_db_notify import block_actor
+    return block_actor()
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:
@@ -971,11 +1009,15 @@ def _cmd_edit(args: argparse.Namespace) -> int:
 
 
 def _commented(conn, reason: Optional[str], author, prefix: str, op):
-    """Wrap a per-task ``op`` so a ``reason`` is first recorded as a ``PREFIX: reason`` comment."""
+    """Wrap a per-task ``op`` so a ``reason`` is recorded as a ``PREFIX: reason`` comment once ``op`` succeeded.
+    After, not before: a worker waiting on its card for an answer (``kanban_comment`` with ``await_reply_minutes``)
+    takes any new comment on a card it still holds for the reply, so a comment ahead of the block would reach it
+    as "continue the work"."""
     def run(tid):
-        if reason:
-            kb.add_comment(conn, tid, author, f"{prefix}: {reason}")
-        return op(tid)
+        done = op(tid)
+        if reason and done:
+            kb.add_comment(conn, tid, author, f"{prefix}: {reason}", reason_for=prefix.lower())
+        return done
     return run
 
 
@@ -1002,7 +1044,8 @@ def _cmd_block(args: argparse.Namespace) -> int:
             return f"Blocked {tid}{suffix}"
 
         op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
-            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid)))
+            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid),
+            **_kbn_block_actor()))
         return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot block {tid}")
 
 
@@ -1323,7 +1366,7 @@ _HANDLERS = {
     "assign": _cmd_assign, "set-model": _cmd_set_model,
     "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
     "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
-    "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
+    "link": _cmd_link, "unlink": _cmd_unlink, "replace": _cmd_replace, "claim": _cmd_claim,
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
     "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
