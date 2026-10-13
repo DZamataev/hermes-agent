@@ -15,6 +15,7 @@ interface ChatBarStateOptions {
   contextSuggestions: ChatBarState['tools']['suggestions']
   currentModel: string
   currentProvider: string
+  delegationMenuContent?: React.ReactNode
   gateway: HermesGateway | null
   gatewayOpen: boolean
   modelMenuContent?: React.ReactNode
@@ -32,6 +33,7 @@ export function useChatBarState({
   contextSuggestions,
   currentModel,
   currentProvider,
+  delegationMenuContent,
   gateway,
   gatewayOpen,
   modelMenuContent,
@@ -73,6 +75,7 @@ export function useChatBarState({
         modelMenuContent,
         quickModels,
         reasoningMenuContent,
+        delegationMenuContent,
         supportsReasoning
       },
       tools: {
@@ -89,6 +92,7 @@ export function useChatBarState({
       contextSuggestions,
       currentModel,
       currentProvider,
+      delegationMenuContent,
       gatewayOpen,
       modelMenuContent,
       quickModels,

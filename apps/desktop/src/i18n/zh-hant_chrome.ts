@@ -248,6 +248,13 @@ export const zhHantChrome = {
     windowControls: '視窗控制項',
     paneControls: '窗格控制項',
     appControls: '應用程式控制項',
+    delegation: {
+      pillPrefix: '子代理：',
+      auto: '自動',
+      autoTitle: '子代理依每個任務的難度選擇模型（設定 → 子代理模型）',
+      forcedTitle: (model: string) => `此聊天中的所有子代理都使用 ${model} 執行`,
+      updateFailed: '子代理模型更新失敗'
+    },
     modelMenu: {
       search: '搜尋模型',
       noModels: '找不到模型',

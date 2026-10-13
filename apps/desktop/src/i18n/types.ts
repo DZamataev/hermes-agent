@@ -1341,6 +1341,16 @@ export interface Translations extends NoticeTranslations {
       deepLinkErrorUrl: string
       deepLinkErrorTooLarge: string
     }
+    delegationTiers: {
+      description: string
+      tiers: { easy: string; normal: string; hard: string }
+      hints: { easy: string; normal: string; hard: string }
+      defaultPill: string
+      inheritParent: string
+      inheritNormal: string
+      thinkingOff: string
+      clear: string
+    }
     model: {
       setupProviderFallback: string
       setUpProvider: (name: string) => string
@@ -3584,6 +3594,13 @@ export interface Translations extends NoticeTranslations {
     paneControls: string
     appControls: string
     modelMenu: ModelMenuTranslations
+    delegation: {
+      pillPrefix: string
+      auto: string
+      autoTitle: string
+      forcedTitle: (model: string) => string
+      updateFailed: string
+    }
     modelOptions: {
       noOptions: string
       options: string

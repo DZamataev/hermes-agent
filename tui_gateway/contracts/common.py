@@ -60,6 +60,15 @@ class McpServerStatus(OpenModel):
     error: str | None = None
 
 
+class DelegationOverride(OpenModel):
+    """A session's forced subagent route (composer "Subagents" pick) — ``tui_gateway/session_delegation.py``.
+    ``model`` is required to force anything; ``provider`` / ``reasoning_effort`` "" = inherit."""
+
+    provider: str = ""
+    model: str = ""
+    reasoning_effort: str = ""
+
+
 class SessionLiveInfo(OpenModel):
     """``tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of
     ``session.create`` / ``session.resume`` / ``session.activate`` results."""
@@ -92,6 +101,8 @@ class SessionLiveInfo(OpenModel):
     update_command: str = ""
     usage: Usage | None = None
     profile_name: str | None = None
+    # The session's forced subagent route; an empty object = Auto (config.yaml's delegation tiers).
+    delegation_override: DelegationOverride | None = None
     mcp_servers: list[McpServerStatus] = Field(default_factory=list)
     system_prompt: str | None = None
     credential_warning: str | None = None

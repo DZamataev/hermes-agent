@@ -511,6 +511,21 @@ export const arSettings = {
       channel: arUpdateChannel
     },
 
+    delegationTiers: {
+      description:
+        'يختار الوكلاء الفرعيون مستوى لكل مهمة بحسب صعوبتها؛ اختر النموذج الذي يعمل عليه كل مستوى. ويمكن للمحادثة أن تفرض نموذجًا واحدًا على جميع وكلائها الفرعيين من مربع الكتابة.',
+      tiers: { easy: 'سهل', normal: 'عادي', hard: 'صعب' },
+      hints: {
+        easy: 'بحث واستعلامات وتعديلات آلية',
+        normal: 'تنفيذ وتصحيح أخطاء اعتيادي — وهو الافتراضي أيضًا',
+        hard: 'مراجعة وتصميم وأخطاء دقيقة'
+      },
+      defaultPill: 'افتراضي',
+      inheritParent: 'مثل نموذج المحادثة',
+      inheritNormal: 'مثل «عادي»',
+      thinkingOff: 'التفكير متوقف',
+      clear: 'مسح'
+    },
     config: {
       developerTitle: 'المطوّر',
       resetOnboardingTitle: 'إعادة تعيين الإعداد الأولي',

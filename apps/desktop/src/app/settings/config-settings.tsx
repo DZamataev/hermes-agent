@@ -37,6 +37,7 @@ import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
 import { configSubpageForField } from './config-subpages'
+import { DelegationTierSettings } from './delegation-tier-settings'
 import { DeveloperSettings } from './developer-settings'
 import { FileOpenAppSetting } from './file-open-app-setting'
 import {
@@ -320,6 +321,7 @@ function ConfigSettingsInner({
   // among the schema-backed config keys.
   const showFileOpenApp = activeSectionId === 'workspace' && (subpage === undefined || subpage === 'files')
   const showSharedMetrics = activeSectionId === 'safety' && subpage === 'privacy'
+  const showDelegationTiers = activeSectionId === 'advanced' && (subpage === undefined || subpage === 'delegation')
 
   // Deep-link target from the command palette (?field=<key>): scroll the row
   // into view and flash it, then drop the param so it doesn't re-fire.
@@ -452,7 +454,7 @@ function ConfigSettingsInner({
     visibleFields.length === 0 &&
     (subpage === undefined
       ? activeSectionId !== 'chat'
-      : !showModelSettings && !showDesktopSettings && !showAttachments && !showSharedMetrics)
+      : !showModelSettings && !showDesktopSettings && !showAttachments && !showSharedMetrics && !showDelegationTiers)
 
   return renderPage(
     <>
@@ -501,6 +503,14 @@ function ConfigSettingsInner({
       {/* Shared metrics are two coupled opt-ins with a consent side effect, so they
           go through their own RPC rather than the generic field autosave. */}
       {showSharedMetrics ? <SharedMetricsSettings /> : null}
+      {/* Subagent difficulty tiers: three rows editing delegation.* / delegation.tiers.* through the
+          same debounced autosave as the schema fields below. */}
+      {showDelegationTiers ? (
+        <DelegationTierSettings
+          config={config}
+          onChange={writes => updateConfig(writes.reduce((next, [key, value]) => setNested(next, key, value), config))}
+        />
+      ) : null}
       {activeSectionId === 'voice' ? (
         <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
       ) : null}

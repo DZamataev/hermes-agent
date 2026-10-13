@@ -73,6 +73,8 @@ def _compute_host_turn_frame(
         # so the fail-open in-process path can still apply it if the host dispatch fails.
         "pending_model_switch": session.get("pending_model_switch"),
         "reasoning_config_override": session.get("create_reasoning_override"),
+        # The composer Subagents pick: the isolated turn's agent runs delegate_task, so it needs the pick too.
+        "delegation_override": session.get("delegation_override"),
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session), "attached_images": attached_images,
         "auth_user_id": _session_auth_user_id(session),

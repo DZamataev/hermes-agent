@@ -766,6 +766,21 @@ export const zhHantSettings = {
       updates: '更新',
       channel: zhHantUpdateChannel
     },
+    delegationTiers: {
+      description:
+        '子代理會依任務難度為每個任務選擇層級；請為每個層級選擇執行的模型。聊天仍可在輸入框中為其所有子代理強制指定同一個模型。',
+      tiers: { easy: '簡單', normal: '一般', hard: '困難' },
+      hints: {
+        easy: '搜尋、查詢、機械性修改',
+        normal: '一般實作與除錯——也是預設層級',
+        hard: '審查、設計、隱蔽的錯誤'
+      },
+      defaultPill: '預設',
+      inheritParent: '與聊天模型相同',
+      inheritNormal: '與「一般」相同',
+      thinkingOff: '關閉思考',
+      clear: '清除'
+    },
     config: {
       fileOpenAppTitle: "預設開啟檔案的位置",
       fileOpenAppDesc: "從 Hermes 送出的檔案要在哪裡開啟。系統預設會遵循作業系統的檔案關聯，而某些安裝程式和工具鏈更新會默默改寫它——在此選擇應用程式即可固定。僅列出在這台電腦上找到的應用程式。",

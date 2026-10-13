@@ -955,6 +955,21 @@ export const jaOverrides = {
       }
     }),
     about: { updates: '更新', channel: jaUpdateChannel },
+    delegationTiers: {
+      description:
+        'サブエージェントはタスクの難易度に応じてティアを選びます。各ティアで使うモデルを設定してください。チャットごとに、コンポーザーからすべてのサブエージェントに 1 つのモデルを強制することもできます。',
+      tiers: { easy: '簡単', normal: '標準', hard: '難しい' },
+      hints: {
+        easy: '検索、調べもの、機械的な編集',
+        normal: '通常の実装とデバッグ — 既定でもあります',
+        hard: 'レビュー、設計、見つけにくいバグ'
+      },
+      defaultPill: '既定',
+      inheritParent: 'チャットのモデルと同じ',
+      inheritNormal: '「標準」と同じ',
+      thinkingOff: '思考オフ',
+      clear: 'クリア'
+    },
     config: {
       fileOpenAppTitle: "ファイルを開く既定の場所",
       fileOpenAppDesc: "Hermes から送り出したファイルをどこで開くか。システム既定は OS のファイル関連付けに従いますが、インストーラーやツールチェーンの更新が黙って書き換えることがあります。ここでアプリを選ぶと固定できます。このコンピューターで見つかったアプリのみ表示されます。",
@@ -3033,6 +3048,13 @@ export const jaOverrides = {
     paneControls: 'ペインコントロール',
     appControls: 'アプリコントロール',
     modelMenu: jaModelMenu,
+    delegation: {
+      pillPrefix: 'サブエージェント:',
+      auto: '自動',
+      autoTitle: 'サブエージェントは各タスクの難易度に応じてモデルを選びます（設定 → サブエージェントのモデル）',
+      forcedTitle: (model: string) => `このチャットのすべてのサブエージェントは ${model} で動作します`,
+      updateFailed: 'サブエージェントのモデルを更新できませんでした'
+    },
     modelOptions: {
       noOptions: 'このモデルにはオプションがありません',
       options: 'オプション',

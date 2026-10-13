@@ -1242,6 +1242,21 @@ export const zhOverrides = {
       driverHealth: '驱动健康状态'
     },
     about: { updates: '更新', channel: zhUpdateChannel },
+    delegationTiers: {
+      description:
+        '子代理会按任务难度为每个任务选择层级；请为每个层级选择运行的模型。聊天仍可在输入框中为其所有子代理强制指定同一个模型。',
+      tiers: { easy: '简单', normal: '普通', hard: '困难' },
+      hints: {
+        easy: '搜索、查询、机械性修改',
+        normal: '常规实现与调试——也是默认层级',
+        hard: '评审、设计、隐蔽的缺陷'
+      },
+      defaultPill: '默认',
+      inheritParent: '与聊天模型相同',
+      inheritNormal: '与“普通”相同',
+      thinkingOff: '关闭思考',
+      clear: '清除'
+    },
     config: {
       fileOpenAppTitle: "默认打开文件的位置",
       fileOpenAppDesc: "从 Hermes 发送出去的文件在哪里打开。系统默认会遵循操作系统的文件关联，而某些安装程序和工具链更新会悄悄改写它——在此选择应用即可固定。仅列出在这台电脑上找到的应用。",
@@ -4011,6 +4026,13 @@ export const zhOverrides = {
     paneControls: '面板控件',
     appControls: '应用控件',
     modelMenu: zhModelMenu,
+    delegation: {
+      pillPrefix: '子代理：',
+      auto: '自动',
+      autoTitle: '子代理按每个任务的难度选择模型（设置 → 子代理模型）',
+      forcedTitle: (model: string) => `此聊天中的所有子代理都使用 ${model} 运行`,
+      updateFailed: '子代理模型更新失败'
+    },
     modelOptions: {
       noOptions: '此模型没有可用选项',
       options: '选项',

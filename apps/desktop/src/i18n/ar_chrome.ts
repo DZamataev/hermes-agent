@@ -348,6 +348,13 @@ export const arChrome = {
     windowControls: 'تحكم النافذة',
     paneControls: 'تحكم اللوحات',
     appControls: 'تحكم التطبيق',
+    delegation: {
+      pillPrefix: 'الوكلاء الفرعيون:',
+      auto: 'تلقائي',
+      autoTitle: 'يختار الوكلاء الفرعيون النموذج بحسب صعوبة كل مهمة (الإعدادات ← نماذج الوكلاء الفرعيين)',
+      forcedTitle: (model: string) => `كل وكيل فرعي في هذه المحادثة يعمل على ${model}`,
+      updateFailed: 'تعذّر تحديث نموذج الوكلاء الفرعيين'
+    },
     modelMenu: {
       search: 'البحث عن نموذج...',
       noModels: 'لا توجد نماذج',

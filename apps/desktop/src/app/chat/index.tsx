@@ -7,6 +7,7 @@ import { useLocation } from 'react-router'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { sessionShouldHaveTranscript } from '@/app/session/hooks/use-session-actions/utils'
+import { DelegationMenuPanel } from '@/app/shell/delegation-menu-panel'
 import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
@@ -690,12 +691,34 @@ const ChatViewContent = memo(function ChatViewContent({
 
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
+  // The Subagents pill's menu, bound to THIS surface's catalog owner (a tile queries its own backend).
+  const delegationMenuContent = useMemo(
+    () =>
+      gatewayOpen ? (
+        <DelegationMenuPanel
+          gateway={gateway || undefined}
+          ownerConnectionId={modelOptionsOwnerConnectionId}
+          profile={modelOptionsProfile || activeGatewayProfile}
+          requestGateway={requestModelOptionsForOwner}
+        />
+      ) : null,
+    [
+      activeGatewayProfile,
+      gateway,
+      gatewayOpen,
+      modelOptionsOwnerConnectionId,
+      modelOptionsProfile,
+      requestModelOptionsForOwner
+    ]
+  )
+
   const chatBarState = useChatBarState({
     activeGatewayProfile,
     activeSessionId,
     contextSuggestions,
     currentModel,
     currentProvider,
+    delegationMenuContent,
     gateway,
     gatewayOpen,
     modelMenuContent,
