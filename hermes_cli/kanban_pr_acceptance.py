@@ -70,7 +70,11 @@ def collect_commit_acceptance(conn, task_id: str, run_id: int | None, no_change:
     start = _json_dict(_row_get(_latest_event(conn, task_id, "workspace_head", run_id), "payload")).get("head")
     if not path or not start:
         return receipt
-    if _worktree_is_dirty(path):
+    # .worktreeinclude symlinks back to the main checkout are scaffolding, not the worker's changes.
+    from hermes_cli.kanban_db_workspace import _git_common_dir
+    common = _git_common_dir(Path(path))
+    repo_root = str(common.parent) if common is not None and common.name == ".git" else path
+    if _worktree_is_dirty(path, repo_root):
         receipt.update(classification="dirty", detail=_dirty_paths(path),
                        recovery="commit or discard, then retry kanban_complete.")
         return receipt
@@ -189,9 +193,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
         repo, number = match[1], int(match[2])
         receipt["pr_url"] = url
         owner, name = repo.split("/")
-        query = '''{repository(owner:%s,name:%s){pullRequest(number:%d){headRefOid baseRefName state
-            baseRef{branchProtectionRule{requiredStatusChecks{context app{databaseId}}}}}}}''' % (
-                json.dumps(owner), json.dumps(name), number)
+        query = f'{{repository(owner:{json.dumps(owner)},name:{json.dumps(name)}){{pullRequest(number:{number:d}){{headRefOid baseRefName state\n            baseRef{{branchProtectionRule{{requiredStatusChecks{{context app{{databaseId}}}}}}}}}}}}}}'
         repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]
         if repository is None:
             # A private repo the login cannot read resolves to null, not an error.

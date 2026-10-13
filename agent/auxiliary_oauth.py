@@ -65,7 +65,7 @@ def declared_route_capabilities(provider: Any, model: Any, base_url: Any = None)
         _lift_model_capabilities(entry, _entry_model_key(entry, model), result)
         capabilities = result.get("capabilities")
         return capabilities if isinstance(capabilities, dict) else {}
-    except Exception:  # noqa: BLE001 — a config read must never break client construction
+    except AttributeError:  # a malformed entry (a non-string endpoint) declares nothing
         return {}
 
 
@@ -111,7 +111,7 @@ def rebound_capabilities(current: Any, providers: Any, model: Any, base_url: Any
         if name and name.lower() not in {"custom", "auto"}:
             try:
                 owned = named_custom_provider_entry(name)
-            except Exception:  # noqa: BLE001 — a malformed entry declares nothing
+            except AttributeError:  # a malformed entry declares nothing
                 owned = None
             if owned:
                 return dict(declared_route_capabilities(name, model, base_url))
@@ -197,7 +197,48 @@ def runtime_oauth_proxy(
     inherited = _inherited_oauth_proxy(main_runtime, provider, base_url, model)
     if inherited is not None:
         return inherited
-    return declared_oauth_proxy(provider, model, base_url)
+    return declared_oauth_proxy(_main_route_owner(main_runtime, provider, base_url) or provider, model, base_url)
+
+
+def _main_route_owner(main_runtime: Any, provider: Any, base_url: Any) -> Optional[str]:
+    """The named provider behind an anonymous ``custom``/``auto`` route on the main endpoint.
+
+    The main runtime of a named relay is normalized to ``provider: custom`` and keeps its name in
+    ``requested_provider``; an auxiliary route rebuilt from it (``provider: auto`` with another
+    model, a keyless ``custom`` call) is still that relay at that endpoint, so another model's
+    declaration is looked up under the relay's name. Only at the main runtime's own endpoint, and
+    only when the named entry owns it (``named_route_identity``)."""
+    if str(provider or "").strip().lower() not in {"custom", "auto", "main"} or not isinstance(main_runtime, dict):
+        return None
+    runtime_base = main_runtime.get("base_url")
+    if not base_url or not runtime_base or normalize_route_base_url(base_url) != normalize_route_base_url(runtime_base):
+        return None
+    name = str(main_runtime.get("requested_provider") or "").strip().lower().removeprefix("custom:")
+    return named_route_identity(name, base_url)
+
+
+def auto_route_model(override: Any, main_model: str, normalized_main: Optional[str]) -> str:
+    """The model a ``provider: auto`` call sends on the main route: the task's *override* unless
+    it is an OpenRouter-format ``vendor/model`` and the route's own model is not (a local server
+    does not serve it; the route keeps its model). Decided BEFORE the client is built, so the
+    transport's auth and transforms are those of the model the request carries."""
+    if override and not ("/" in override and "/" not in (normalized_main or main_model)):
+        return str(override)
+    return main_model
+
+
+def cached_route_policy(runtime: Dict[str, Any], provider: Any, base_url: Any, model: Any) -> Optional[bool]:
+    """The OAuth-proxy policy a client built for this cache slot would freeze in.
+
+    Client construction fixes auth and transforms while ``_build_call_kwargs`` re-reads the
+    declaration for the affinity header on every request, so the cache identity carries the
+    resolved value: a ``config.yaml`` edit to it builds a fresh client instead of mixing two policy
+    generations on one request. ``auto`` and a URL-less ``custom`` resolve on the main endpoint."""
+    name = str(provider or "").strip().lower()
+    if name in {"auto", "custom", "main"} and not base_url:
+        base_url = runtime.get("base_url")
+        provider = runtime.get("provider") if name == "auto" else provider
+    return runtime_oauth_proxy(runtime, provider, base_url, model or runtime.get("model"))
 
 
 def named_route_identity(prov: Optional[str], base_url: Optional[str]) -> Optional[str]:
@@ -219,7 +260,7 @@ def named_route_identity(prov: Optional[str], base_url: Optional[str]) -> Option
         return None
     dashed = name.replace(" ", "-")
     if dashed != name:
-        from hermes_cli.auth import known_provider_id
+        from hermes_cli.auth_plugin_providers import known_provider_id
         if known_provider_id(dashed) is None:
             name = dashed
     from hermes_cli.route_identity import named_provider_owns_endpoint
