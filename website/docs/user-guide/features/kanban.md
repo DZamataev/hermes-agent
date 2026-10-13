@@ -599,6 +599,14 @@ read its exit status — books the same death the same way the gateway-embedded
 dispatcher does; a worker killed before it reaches that line is a plain
 `crashed` (`pid <n> not alive`).
 
+**Model fallback in workers.** `kanban.worker_fallback` (default `allow`) decides what a
+dispatcher-spawned worker does when its model fails over. With `allow` it moves down the
+fallback chain like any session; the switch is recorded on the run and shown in the
+completion. With `wait` the switch is refused: a quota wall ends the run as `rate_limited`
+and the card is requeued for the same model without counting a failure, while a non-quota
+failover (server errors, empty replies) ends the run as an ordinary failure. Interactive
+sessions are never affected; set it per worker profile.
+
 **Agent-side prevention:** Before the worker exits, Hermes injects up to two
 synthetic nudges when it detects the model is about to stop without a terminal
 board tool call. This catches the common case where the model narrates the next
