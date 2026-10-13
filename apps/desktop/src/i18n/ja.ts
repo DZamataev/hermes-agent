@@ -3615,6 +3615,24 @@ export const jaOverrides = {
       plugin: 'プラグイン',
       startsLater: '始めるときに設定します。'
     },
+    spawnTask: {
+      defaultModel: 'デフォルトのモデル',
+      modelLabel: '新しいセッションのモデル',
+      mode: { tab: '新しいタブで開始', worktree: 'ワークツリーで開始' },
+      dismiss: '閉じる',
+      pin: 'ピン留め',
+      dismissed: title => `サイドタスクを閉じました: ${title}`,
+      launched: '新しいセッションで開始しました',
+      openSession: '開く',
+      showPrompt: 'プロンプトを表示',
+      hidePrompt: 'プロンプトを隠す',
+      launchFailed: 'サイドタスクを開始できませんでした',
+      kickoffFailed: 'サイドタスクが新しいセッションに届きませんでした。チップは引き続き使えます',
+      kickoffUnknown: 'サイドタスクの送信中に接続が切れました。新しいタブで実行中の可能性があります',
+      worktreeNeedsRepo: 'ワークツリーには git リポジトリが必要です。新しいタブで開始してください。',
+      worktreeNoBase: 'このチェックアウトの現在のコミットを読み取れなかったため、ワークツリーは作成されませんでした',
+      worktreeOtherBackend: 'ワークツリーはこのウィンドウのバックエンド上のチャットでのみ作成できます。新しいタブで開始してください'
+    },
     startChat: {
       starting: title => `「${title}」を開始中…`,
       startingUntitled: 'チャットを開始中…',

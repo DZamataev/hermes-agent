@@ -135,6 +135,24 @@ export const arAssistant = {
       plugin: 'إضافة',
       startsLater: 'سنُعِدّ هذه عندما تبدأ.'
     },
+    spawnTask: {
+      defaultModel: 'النموذج الافتراضي',
+      modelLabel: 'نموذج الجلسة الجديدة',
+      mode: { tab: 'البدء في تبويب جديد', worktree: 'البدء في شجرة عمل' },
+      dismiss: 'تجاهل',
+      pin: 'تثبيت',
+      dismissed: title => `تم تجاهل المهمة الجانبية: ${title}`,
+      launched: 'بدأت في جلسة جديدة',
+      openSession: 'فتح',
+      showPrompt: 'إظهار الموجّه',
+      hidePrompt: 'إخفاء الموجّه',
+      launchFailed: 'تعذّر بدء المهمة الجانبية',
+      kickoffFailed: 'لم تصل المهمة الجانبية إلى جلستها الجديدة؛ تبقى البطاقة متاحة',
+      kickoffUnknown: 'انقطع الاتصال أثناء إرسال المهمة الجانبية؛ ربما تعمل الآن في تبويبها الجديد',
+      worktreeNeedsRepo: 'شجرة العمل تتطلب مستودع git. ابدأها في تبويب جديد بدلًا من ذلك.',
+      worktreeNoBase: 'تعذّرت قراءة الإيداع الحالي لهذه النسخة، فلم تُنشأ شجرة عمل',
+      worktreeOtherBackend: 'لا يمكن إنشاء شجرة عمل إلا لمحادثة على الواجهة الخلفية لهذه النافذة؛ ابدأها في تبويب جديد بدلًا من ذلك'
+    },
     startChat: {
       starting: title => `جار بدء "${title}"...`,
       startingUntitled: 'جار بدء محادثة...',
