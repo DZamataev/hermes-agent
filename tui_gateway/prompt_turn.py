@@ -1211,7 +1211,9 @@ def _run_prompt_submit(
             if status == "complete":
                 # Before message.complete: the desktop re-reads the sign-in offer on that event.
                 from tui_gateway.free_tier_task_done import note_task_done
+                from tui_gateway.suggest_cache import schedule_after_turn
                 note_task_done(session, st.result, st.agent, display_kind)
+                schedule_after_turn(session)  # clients ask for it on message.complete
             _emit("message.complete", sid, payload)
             goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
             if status == "complete":

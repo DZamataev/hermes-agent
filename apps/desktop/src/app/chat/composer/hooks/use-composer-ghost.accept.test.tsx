@@ -23,8 +23,12 @@ vi.mock('@assistant-ui/react', () => ({
 
 const GHOST = 'run the tests'
 
+// Session A's last turn has a suggestion; session B's has none.
 const gateway = {
-  request: vi.fn(async () => ({ candidates: [{ kind: 'prediction', text: GHOST }], history_version: 1 }))
+  request: vi.fn(async (_method: string, params: { session_id: string }) => ({
+    candidates: params.session_id === 'session-A' ? [{ kind: 'prediction', text: GHOST }] : [],
+    history_version: 1
+  }))
 } as unknown as HermesGateway
 
 // The real draft hook and the real ghost hook on a real contentEditable, wired the way ChatBar
@@ -208,12 +212,20 @@ describe('accepting the ghost reply in a focused composer', () => {
     expect(editor.getAttribute('data-placeholder')).toBe(GHOST)
   })
 
-  it('switching from a busy session to an idle one does not ask for a prediction', () => {
+  it('a session is read once when it comes into view, and again only when its turn ends', async () => {
     const view = render(<Harness busy writer="loadIntoComposer" />)
+    const editor = view.getByTestId('editor')
 
-    view.rerender(<Harness busy={false} sessionId="session-B" writer="loadIntoComposer" />)
+    view.rerender(<Harness busy={false} writer="loadIntoComposer" />) // A's turn ends: read A
+    await waitFor(() => expect(editor.getAttribute('data-placeholder')).toBe(GHOST))
+    view.rerender(<Harness busy={false} sessionId="session-B" writer="loadIntoComposer" />) // B first shown: read B
+    view.rerender(<Harness busy={false} writer="loadIntoComposer" />) // back to A: already known
+    view.rerender(<Harness busy={false} sessionId="session-B" writer="loadIntoComposer" />) // B again: known
 
-    expect(gateway.request).not.toHaveBeenCalled()
+    expect(vi.mocked(gateway.request).mock.calls.map(([, params]) => (params as { session_id: string }).session_id)).toEqual([
+      'session-A',
+      'session-B'
+    ])
   })
 
   it('Escape dismisses the ghost without writing anything', async () => {

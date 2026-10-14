@@ -18,6 +18,14 @@ def _reply(text):
     return types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=text))])
 
 
+def _turn_ends_then_read(sid, session):
+    """A turn completes (the gateway computes its suggestion), then a client reads it back."""
+    from tui_gateway.suggest_cache import schedule_after_turn
+
+    schedule_after_turn(session)
+    return srv._methods["complete.suggest"](1, {"session_id": sid})["result"]
+
+
 def test_suggest_gating_and_prediction_fallback(monkeypatch):
     calls = []
     replies = ["USER: Open the PR too"]  # an echoed role label is stripped
@@ -33,7 +41,7 @@ def test_suggest_gating_and_prediction_fallback(monkeypatch):
     def run(history, **display):
         session["history"] = history
         monkeypatch.setattr(srv, "_load_cfg", lambda: {"display": display})
-        return srv._methods["complete.suggest"](1, {"session_id": "s1"})["result"]
+        return _turn_ends_then_read("s1", session)
 
     ask = [{"role": "assistant", "content": "Want me to delete it?"}, {"role": "user", "content": "no"},
            {"role": "assistant", "content": [{"type": "text", "text": "Done. Want me to push?"}]}]
@@ -64,6 +72,64 @@ def test_suggest_gating_and_prediction_fallback(monkeypatch):
 
     monkeypatch.setattr(aux, "call_llm", stale_llm)
     assert run(done, composer_predictions=True)["candidates"] == []
+
+
+def test_reading_never_asks_the_model_and_every_reader_gets_the_one_result(monkeypatch):
+    """The prediction is computed once, when the turn completes, on the warm cache. Reading it
+    back (any number of clients, a composer opening the session later) never makes a model
+    request; without a completed turn only the free extractor answers."""
+    import threading
+
+    import tui_gateway.suggest_predict as predict
+
+    done = [{"role": "user", "content": "plan it"}, {"role": "assistant", "content": "Planned."},
+            {"role": "user", "content": "fix it"}, {"role": "assistant", "content": "Want me to push?"}]
+    session = {"history": done, "history_version": 3, "history_lock": None, "agent": None}
+    monkeypatch.setitem(srv._sessions, "s4", session)
+    monkeypatch.setattr(srv, "_load_cfg", lambda: {"display": {}})
+    calls, release = [], threading.Event()
+
+    def slow_predict(history, coerce, **kw):
+        calls.append(len(history))
+        assert release.wait(5)
+        return "Push it"
+
+    monkeypatch.setattr(predict, "predict_next_message", slow_predict)
+
+    def read():
+        return srv._methods["complete.suggest"](1, {"session_id": "s4"})["result"]
+
+
+    # No turn has completed yet: the extractor answers, the model is not asked.
+    assert read() == {"candidates": [{"text": "Yes, go ahead", "kind": "confirm"}], "history_version": 3}
+    assert calls == []
+
+    from tui_gateway.suggest_cache import schedule_after_turn
+
+    schedule_after_turn(session)
+    readers = [threading.Thread(target=lambda: results.append(read())) for _ in range(3)]
+    results: list = []
+    for reader in readers:
+        reader.start()
+    release.set()  # the readers were waiting for the turn's prediction, not starting their own
+    for reader in readers:
+        reader.join(5)
+
+    expected = {"candidates": [{"text": "Push it", "kind": "prediction"}], "history_version": 3}
+    assert results == [expected] * 3 and read() == expected and calls == [4]
+
+
+def test_a_hosted_room_turn_gets_no_suggestion(monkeypatch):
+    import tui_gateway.suggest_predict as predict
+    from tui_gateway.suggest_cache import schedule_after_turn
+
+    session = {"history": [], "history_version": 1, "history_lock": None, "agent": None,
+               "_hosted_room_task": {"id": "t"}}
+    monkeypatch.setattr(srv, "_load_cfg", lambda: {"display": {}})
+    monkeypatch.setattr(predict, "predict_next_message", lambda *a, **kw: (_ for _ in ()).throw(AssertionError))
+
+    schedule_after_turn(session)
+    assert "_composer_suggestion" not in session
 
 
 def _fork_harness(monkeypatch, *, task_cfg=None, run=None, routed=False):
@@ -333,14 +399,14 @@ def test_a_turn_admitted_right_after_the_snapshot_is_seen_as_new(monkeypatch):
     monkeypatch.setattr(predict, "predict_next_message",
                         lambda history, coerce, *, main_runtime=None, agent=None, stale=None: seen.append(stale()) or "x y")
 
-    assert srv._methods["complete.suggest"](1, {"session_id": "s3"})["result"]["candidates"] == [] and seen == [True]
+    assert _turn_ends_then_read("s3", session)["candidates"] == [] and seen == [True]
 
     # A turn record without a timestamp is still a turn that was not there at the start.
     session.update(history_lock=None, inflight_turn=None)
     monkeypatch.setattr(predict, "predict_next_message",
                         lambda history, coerce, *, main_runtime=None, agent=None, stale=None:
                         session.update(inflight_turn={"assistant": "", "streaming": True}) or "x y")
-    assert srv._methods["complete.suggest"](1, {"session_id": "s3"})["result"]["candidates"] == []
+    assert _turn_ends_then_read("s3", session)["candidates"] == []
 
 
 def test_a_new_turn_supersedes_the_prediction_before_history_moves(monkeypatch):
@@ -365,7 +431,7 @@ def test_a_new_turn_supersedes_the_prediction_before_history_moves(monkeypatch):
 
     monkeypatch.setattr(predict, "predict_next_message", fake_predict)
     def run():
-        return srv._methods["complete.suggest"](1, {"session_id": "s2"})["result"]["candidates"]
+        return _turn_ends_then_read("s2", session)["candidates"]
 
     on_predict = {"inflight_turn": None}  # the old turn finished clearing
     assert run() == [{"text": "Open the PR too", "kind": "prediction"}] and seen == {"before": False, "after": False}

@@ -244,6 +244,10 @@ Suggestions come from two sources:
    reply is the fallback when the model has no guess. A prediction that arrives after a new turn has
    started is discarded.
 
+The prediction is made once, by the gateway, as soon as a turn completes, whether or not any window
+shows that session: that is when the prompt cache is warm. Every client then reads the same result,
+and opening a session later, or in a second window, never asks the model again.
+
 By default the prediction runs on **the session's own model** as a detached fork of the
 conversation (the same rail as `/btw`): the request replays the conversation byte-for-byte and adds
 one short instruction, so it is a prompt-cache read plus a few output tokens, and the model sees the
