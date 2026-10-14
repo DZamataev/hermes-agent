@@ -8,7 +8,7 @@ import type { QueueEditState } from '../composer-utils'
 import { caretOffsetInEditor } from '../rich-editor'
 
 import { useComposerDraft } from './use-composer-draft'
-import { useComposerGhost } from './use-composer-ghost'
+import { resetSessionGhosts, useComposerGhost } from './use-composer-ghost'
 
 const mockComposerApi = { setText: vi.fn() }
 
@@ -32,20 +32,22 @@ const gateway = {
 // the composer-state setter alone is the wrong one.
 function Harness({
   busy,
+  sessionId = 'session-A',
   typed,
   writer
 }: {
   busy: boolean
+  sessionId?: string
   /** What the user has typed, as the composer state reports it (the AUI state is mocked empty). */
   typed?: string
   writer: 'loadIntoComposer' | 'setComposerText'
 }) {
   const draft = useComposerDraft({
-    activeQueueSessionKey: 'session-A',
+    activeQueueSessionKey: sessionId,
     focusKey: null,
     inputDisabled: false,
     queueEditRef: { current: null as QueueEditState | null },
-    sessionId: 'session-A'
+    sessionId
   })
 
   const ghost = useComposerGhost({
@@ -55,7 +57,7 @@ function Harness({
     isEditorEmpty: () => (draft.editorRef.current?.textContent ?? '') === '',
 
     placeholder: 'Ask anything',
-    sessionId: 'session-A',
+    sessionId,
     trigger: null,
     writeDraft: text =>
       writer === 'loadIntoComposer'
@@ -94,6 +96,8 @@ describe('accepting the ghost reply in a focused composer', () => {
     cleanup()
     mainComposerScope.clear()
     clearSessionDraft('session-A')
+    clearSessionDraft('session-B')
+    resetSessionGhosts()
     vi.clearAllMocks()
   })
 
@@ -168,6 +172,48 @@ describe('accepting the ghost reply in a focused composer', () => {
     editor.textContent = ''
     view.rerender(<Harness busy={false} typed="" writer="loadIntoComposer" />)
     expect(editor.getAttribute('data-placeholder')).toBe(GHOST)
+  })
+
+  it('switching to another session and back keeps the suggestion', async () => {
+    await showGhost('loadIntoComposer')
+
+    // Session A's composer goes away and one for session B takes its place.
+    cleanup()
+    const b = render(<Harness busy={false} sessionId="session-B" writer="loadIntoComposer" />)
+    expect(b.getByTestId('editor').getAttribute('data-placeholder')).toBe('Ask anything')
+
+    // A composer remounted on session A (another pane, or a re-targeted one) finds it again.
+    b.rerender(<Harness busy={false} sessionId="session-A" writer="loadIntoComposer" />)
+    const back = b.getByTestId('editor')
+    expect(back.getAttribute('data-placeholder')).toBe(GHOST)
+
+    act(() => back.focus())
+    expect(fireEvent.keyDown(back, { key: 'Tab' })).toBe(false)
+    expect(back.textContent).toBe(GHOST)
+  })
+
+  it('a reply that lands after switching away is kept for the session that asked', async () => {
+    let resolve: (value: unknown) => void = () => undefined
+    vi.mocked(gateway.request).mockImplementationOnce(() => new Promise(r => (resolve = r)) as never)
+
+    const view = render(<Harness busy writer="loadIntoComposer" />)
+    view.rerender(<Harness busy={false} writer="loadIntoComposer" />)
+    view.rerender(<Harness busy={false} sessionId="session-B" writer="loadIntoComposer" />)
+
+    await act(async () => resolve({ candidates: [{ kind: 'prediction', text: GHOST }], history_version: 1 }))
+    const editor = view.getByTestId('editor')
+    expect(editor.getAttribute('data-placeholder')).toBe('Ask anything') // not shown in B
+
+    view.rerender(<Harness busy={false} sessionId="session-A" writer="loadIntoComposer" />)
+    expect(editor.getAttribute('data-placeholder')).toBe(GHOST)
+  })
+
+  it('switching from a busy session to an idle one does not ask for a prediction', () => {
+    const view = render(<Harness busy writer="loadIntoComposer" />)
+
+    view.rerender(<Harness busy={false} sessionId="session-B" writer="loadIntoComposer" />)
+
+    expect(gateway.request).not.toHaveBeenCalled()
   })
 
   it('Escape dismisses the ghost without writing anything', async () => {

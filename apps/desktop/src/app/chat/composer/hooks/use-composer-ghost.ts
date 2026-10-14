@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { atom } from 'nanostores'
+import { useCallback, useEffect, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
 
@@ -11,7 +13,8 @@ import type { HermesGateway } from '@/hermes'
  * accepts it into real text. It is the turn's suggestion, not the empty
  * composer's: typing (or accepting it) only hides it, and it comes back
  * whenever the composer is empty again, until Esc dismisses it or the next turn
- * replaces it. Decorative by contract — any RPC failure resolves to "no ghost",
+ * replaces it. It is kept per session, so switching to another conversation and back finds it
+ * again. Decorative by contract — any RPC failure resolves to "no ghost",
  * never an error, and never blocks the composer.
  *
  * Backend note: `complete.suggest` is the same gateway RPC the Ink TUI uses;
@@ -43,6 +46,33 @@ export function ghostVisible(o: { busy: boolean; dismissed: boolean; empty: bool
 
 /** Plain Tab only: a modified Tab keeps its native meaning. */
 const isPlainTab = (e: KeyboardEvent) => e.key === 'Tab' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey
+
+interface SessionGhost {
+  dismissed: boolean
+  ghost: string
+  /** Token of the session's latest request: a reply to an older one is dropped. */
+  seq: number
+}
+
+const NO_GHOST: SessionGhost = { dismissed: false, ghost: '', seq: 0 }
+
+/**
+ * Each session's suggestion for its last turn. Module-level, not component state: a session
+ * switch re-targets the composer (or remounts it in another pane), and the suggestion must
+ * survive both.
+ */
+const $sessionGhosts = atom<Readonly<Record<string, SessionGhost>>>({})
+
+function patchSessionGhost(sessionId: string, patch: Partial<SessionGhost>): void {
+  const all = $sessionGhosts.get()
+
+  $sessionGhosts.set({ ...all, [sessionId]: { ...(all[sessionId] ?? NO_GHOST), ...patch } })
+}
+
+/** Test seam: forget every session's suggestion. */
+export function resetSessionGhosts(): void {
+  $sessionGhosts.set({})
+}
 
 export function useComposerGhost(opts: {
   busy: boolean
@@ -77,18 +107,18 @@ export function useComposerGhost(opts: {
 } {
   const { busy, gateway, hasText, isEditorEmpty, placeholder, sessionId, trigger, writeDraft } = opts
   const empty = !hasText
-  const [ghost, setGhost] = useState('')
-  const [dismissed, setDismissed] = useState(false)
-  const prevBusyRef = useRef(busy)
-  const seqRef = useRef(0)
+  const entry = useStore($sessionGhosts)[sessionId ?? ''] ?? NO_GHOST
+  const { dismissed, ghost } = entry
+  const prevRef = useRef({ busy, sessionId })
 
-  // Fire exactly once per completed turn: on the busy → idle transition.
-  // eslint-disable-next-line no-restricted-syntax -- this records a prop edge and request token, not an atom mirror
+  // Fire exactly once per completed turn: on the busy → idle transition OF THE SAME session.
+  // Switching from a busy conversation to an idle one is not a turn ending.
+  // eslint-disable-next-line no-restricted-syntax -- this records a prop edge, not an atom mirror
   useEffect(() => {
-    const wasBusy = prevBusyRef.current
-    prevBusyRef.current = busy
+    const prev = prevRef.current
+    prevRef.current = { busy, sessionId }
 
-    if (!wasBusy || busy) {
+    if (prev.sessionId !== sessionId || !prev.busy || busy) {
       return
     }
 
@@ -96,30 +126,22 @@ export function useComposerGhost(opts: {
       return
     }
 
-    const seq = ++seqRef.current
+    const seq = ($sessionGhosts.get()[sessionId]?.seq ?? 0) + 1
 
-    setDismissed(false)
-    setGhost('')
+    patchSessionGhost(sessionId, { dismissed: false, ghost: '', seq })
 
     gateway
       .request<SuggestResult>('complete.suggest', { session_id: sessionId })
       .then(result => {
-        if (seq === seqRef.current) {
-          setGhost(firstGhostCandidate(result))
+        // Stored under the session that asked, wherever the composer is now.
+        if ($sessionGhosts.get()[sessionId]?.seq === seq) {
+          patchSessionGhost(sessionId, { ghost: firstGhostCandidate(result) })
         }
       })
       .catch(() => {
         // Decorative: a failed suggestion must never reach the composer.
       })
   }, [busy, empty, gateway, sessionId])
-
-  // A different conversation invalidates any in-flight or shown suggestion.
-  // eslint-disable-next-line no-restricted-syntax -- this invalidates a request token and does not mirror reactive state
-  useEffect(() => {
-    seqRef.current += 1
-    setGhost('')
-    setDismissed(false)
-  }, [sessionId])
 
   const visible = ghostVisible({ busy, dismissed, empty, ghost })
 
@@ -132,14 +154,14 @@ export function useComposerGhost(opts: {
   }, [ghost, visible])
 
   const dismissGhost = useCallback((): boolean => {
-    if (!visible) {
+    if (!visible || !sessionId) {
       return false
     }
 
-    setDismissed(true)
+    patchSessionGhost(sessionId, { dismissed: true })
 
     return true
-  }, [visible])
+  }, [sessionId, visible])
 
   const handleGhostKeyDown = useCallback(
     (event: { key: string; nativeEvent: KeyboardEvent; preventDefault: () => void }): boolean => {
@@ -155,16 +177,16 @@ export function useComposerGhost(opts: {
         return true
       }
 
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' && sessionId) {
         event.preventDefault()
-        setDismissed(true)
+        patchSessionGhost(sessionId, { dismissed: true })
 
         return true
       }
 
       return false
     },
-    [ghost, isEditorEmpty, trigger, visible, writeDraft]
+    [ghost, isEditorEmpty, sessionId, trigger, visible, writeDraft]
   )
 
   return {
