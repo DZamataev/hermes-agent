@@ -8,9 +8,11 @@ import type { HermesGateway } from '@/hermes'
  * When an agent turn completes (busy true → false) and the composer is empty,
  * ask the gateway's deterministic `complete.suggest` for a likely reply and
  * surface the first candidate as ghost text in the placeholder slot. Tab or
- * Right arrow accepts it into real text; typing or a new turn clears it; Esc dismisses it
- * until the next turn. Decorative by contract — any RPC failure resolves to
- * "no ghost", never an error, and never blocks the composer.
+ * Right arrow accepts it into real text. It is the turn's suggestion, not the
+ * empty composer's: typing (or accepting it) only hides it, and it comes back
+ * whenever the composer is empty again, until Esc dismisses it or the next turn
+ * replaces it. Decorative by contract — any RPC failure resolves to "no ghost",
+ * never an error, and never blocks the composer.
  *
  * Backend note: `complete.suggest` is the same gateway RPC the Ink TUI uses;
  * `gateway.request` returns the unwrapped result (matching `useSlashCompletions`).
@@ -113,14 +115,6 @@ export function useComposerGhost(opts: {
       })
   }, [busy, empty, gateway, sessionId])
 
-  // Typing (empty → false) clears the ghost so it never overlaps real text.
-  useEffect(() => {
-    if (!empty) {
-      setGhost('')
-      setDismissed(false)
-    }
-  }, [empty])
-
   // A different conversation invalidates any in-flight or shown suggestion.
   // eslint-disable-next-line no-restricted-syntax -- this invalidates a request token and does not mirror reactive state
   useEffect(() => {
@@ -135,8 +129,6 @@ export function useComposerGhost(opts: {
     if (!visible) {
       return null
     }
-
-    setGhost('')
 
     return ghost
   }, [ghost, visible])
@@ -160,7 +152,6 @@ export function useComposerGhost(opts: {
       if (isGhostAcceptKey(event.nativeEvent)) {
         // preventDefault keeps Tab from moving focus to the model picker.
         event.preventDefault()
-        setGhost('')
         writeDraft(ghost)
 
         return true
