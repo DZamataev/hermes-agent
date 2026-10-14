@@ -30,7 +30,16 @@ const gateway = {
 // The real draft hook and the real ghost hook on a real contentEditable, wired the way ChatBar
 // wires them. `writer` picks what accepted text is written with, so the test can also show why
 // the composer-state setter alone is the wrong one.
-function Harness({ busy, writer }: { busy: boolean; writer: 'loadIntoComposer' | 'setComposerText' }) {
+function Harness({
+  busy,
+  typed,
+  writer
+}: {
+  busy: boolean
+  /** What the user has typed, as the composer state reports it (the AUI state is mocked empty). */
+  typed?: string
+  writer: 'loadIntoComposer' | 'setComposerText'
+}) {
   const draft = useComposerDraft({
     activeQueueSessionKey: 'session-A',
     focusKey: null,
@@ -42,7 +51,7 @@ function Harness({ busy, writer }: { busy: boolean; writer: 'loadIntoComposer' |
   const ghost = useComposerGhost({
     busy,
     gateway,
-    hasText: draft.hasText,
+    hasText: typed === undefined ? draft.hasText : typed !== '',
     isEditorEmpty: () => (draft.editorRef.current?.textContent ?? '') === '',
 
     placeholder: 'Ask anything',
@@ -96,7 +105,6 @@ describe('accepting the ghost reply in a focused composer', () => {
     expect(notPrevented).toBe(false) // Tab must not move focus
     expect(editor.textContent).toBe(GHOST)
     expect(caretOffsetInEditor(editor)).toBe(GHOST.length)
-    expect(editor.getAttribute('data-placeholder')).toBe('Ask anything')
     expect(mockComposerApi.setText).toHaveBeenCalledWith(GHOST)
   })
 
@@ -121,6 +129,45 @@ describe('accepting the ghost reply in a focused composer', () => {
     expect(notPrevented).toBe(true) // the key keeps its native meaning
     expect(editor.textContent).toBe('f')
     expect(mockComposerApi.setText).not.toHaveBeenCalledWith(GHOST)
+  })
+
+  it('the ghost comes back after typed text is deleted, and Tab accepts it', async () => {
+    const view = render(<Harness busy writer="loadIntoComposer" />)
+    const editor = view.getByTestId('editor')
+
+    act(() => editor.focus())
+    view.rerender(<Harness busy={false} writer="loadIntoComposer" />)
+    await waitFor(() => expect(editor.getAttribute('data-placeholder')).toBe(GHOST))
+
+    // The user starts a message of their own: the ghost hides.
+    editor.textContent = 'fi'
+    view.rerender(<Harness busy={false} typed="fi" writer="loadIntoComposer" />)
+    expect(editor.getAttribute('data-placeholder')).toBe('Ask anything')
+
+    // ... and deletes it again: the turn's suggestion is offered once more.
+    editor.textContent = ''
+    view.rerender(<Harness busy={false} typed="" writer="loadIntoComposer" />)
+    expect(editor.getAttribute('data-placeholder')).toBe(GHOST)
+
+    expect(fireEvent.keyDown(editor, { key: 'Tab' })).toBe(false)
+    expect(editor.textContent).toBe(GHOST)
+  })
+
+  it('an accepted suggestion that is deleted again is offered again', async () => {
+    const view = render(<Harness busy writer="loadIntoComposer" />)
+    const editor = view.getByTestId('editor')
+
+    act(() => editor.focus())
+    view.rerender(<Harness busy={false} writer="loadIntoComposer" />)
+    await waitFor(() => expect(editor.getAttribute('data-placeholder')).toBe(GHOST))
+
+    fireEvent.keyDown(editor, { key: 'Tab' })
+    view.rerender(<Harness busy={false} typed={GHOST} writer="loadIntoComposer" />)
+    expect(editor.getAttribute('data-placeholder')).toBe('Ask anything')
+
+    editor.textContent = ''
+    view.rerender(<Harness busy={false} typed="" writer="loadIntoComposer" />)
+    expect(editor.getAttribute('data-placeholder')).toBe(GHOST)
   })
 
   it('Escape dismisses the ghost without writing anything', async () => {
