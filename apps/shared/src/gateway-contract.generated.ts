@@ -3020,6 +3020,7 @@ export interface SessionCreateParams {
   parent_session_id?: string | null
   title?: string | null
   title_dedupe?: boolean
+  spawn_report_to?: string | null
   model?: string | null
   provider?: string | null
   reasoning_effort?: string | null

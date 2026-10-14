@@ -161,14 +161,15 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
     print(f"[tui_gateway] {what}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
-def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> None:
-    """message.start + _run_prompt_submit for a claimed (running=True) turn; releases on failure."""
+def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs):
+    """message.start + _run_prompt_submit for a claimed (running=True) turn; releases on failure.
+    Returns whether the turn started."""
     try:
         from gateway.warning_notifications import render_notification
         with _session_profile_runtime_scope(session):
             render_notification(lambda: _emit("message.start", sid), platform="tui",
                                 diagnostic=(kwargs.get("display_metadata") or {}).get("notification_category") == "diagnostic")
-        _run_prompt_submit(rid, sid, session, text, **kwargs)
+        return _run_prompt_submit(rid, sid, session, text, **kwargs)
     except Exception as exc:
         _notif_log_failure(what, exc)
         _notif_release_turn(session)
@@ -591,6 +592,38 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
                       **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
 
 
+def _notif_poll_spawn_reports(sid: str, session: dict) -> None:
+    """Run the oldest spawn-task report addressed to this session as a notification turn (one per
+    poll). Addressed by the stored id the chip saw at launch: compression may have rotated it since,
+    so the address is resolved through the lineage. Nothing to claim leaves the report for its owner."""
+    from tools.spawn_task_reports import (claim_report, display_text, finish_report, format_report,
+                                          pending_reports, release_report)
+    pending = pending_reports(_session_home(session))
+    if not pending:
+        return
+    keys = _notif_current_keys(sid, session)
+    mine = next(((path, record) for path, record in pending
+                 if record["to"] in keys or _notif_resolve_event_key(record["to"], session) in keys), None)
+    if mine is None or not _notif_claim_turn(session):
+        return
+    path, record = mine
+    if (claimed := claim_report(path)) is None:
+        _notif_release_turn(session)
+        return
+    try:
+        started = _notif_submit(
+            f"__notif__{int(time.time() * 1000)}", sid, session, format_report(record),
+            "spawn-task report dispatch failed", display_kind="async_delegation_complete",
+            display_metadata={"display_text": display_text(record), "task_count": 1})
+    except Exception:
+        started = False
+    if not started:
+        _notif_release_turn(session)
+        release_report(claimed)
+        return
+    finish_report(claimed)
+
+
 def _background_notifications_off(session: dict) -> bool:
     """Whether the owning profile set ``display.background_process_notifications: off``. Same
     gate the messaging gateway applies to its process-event injection; only ``off`` matters
@@ -882,6 +915,10 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
         if now - last_kanban_poll >= _KANBAN_POLL_SECONDS:
             last_kanban_poll = now
             _notif_poll_kanban(sid, session)
+            try:
+                _notif_poll_spawn_reports(sid, session)
+            except Exception as exc:
+                _notif_log_failure("spawn-task report poll failed", exc)
         try:
             evt = queue.get(timeout=0.5)
         except Exception:

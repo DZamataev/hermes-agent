@@ -171,3 +171,24 @@ def test_compression_keeps_the_receipt_a_chip_renders_from():
     # A refusal is not a receipt: it must not turn into a launchable one.
     refusal = json.dumps({"error": "spawn_task needs a self-contained prompt " + "x" * 200})
     assert "success" not in _summarize_tool_result("spawn_task", args, refusal)
+
+
+def test_notify_on_done_is_an_opt_in_carried_on_the_receipt():
+    """The offering session decides whether it wants the result back; the chip
+    reads the decision from the receipt, never from the raw model argument."""
+    plain = json.loads(st.spawn_task_tool(title="T", prompt="p"))
+    asked = json.loads(st.spawn_task_tool(title="T", prompt="p", notify_on_done=True))
+    junk = json.loads(st.spawn_task_tool(title="T", prompt="p", notify_on_done="yes"))
+
+    assert plain["notify_on_done"] is False
+    assert asked["notify_on_done"] is True
+    assert junk["notify_on_done"] is False
+
+
+def test_the_schema_tells_the_model_how_a_result_arrives():
+    from tools.spawn_task_reports import SPAWN_TASK_RESULT_PREFIX
+
+    prop = st.SPAWN_TASK_SCHEMA["parameters"]["properties"]["notify_on_done"]
+    assert prop["type"] == "boolean"
+    assert SPAWN_TASK_RESULT_PREFIX in prop["description"]
+    assert "notify_on_done" not in st.SPAWN_TASK_SCHEMA["parameters"]["required"]
