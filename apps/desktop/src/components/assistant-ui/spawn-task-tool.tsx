@@ -4,6 +4,7 @@ import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { useMemo, useState } from 'react'
 
+import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { useSessionView } from '@/app/chat/session-view'
 import { ModelCatalogMenu, ModelMenuCloseContext, type ModelMenuController } from '@/app/shell/model-catalog-menu'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
@@ -16,8 +17,10 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/compon
 import { useI18n } from '@/i18n'
 import { displayModelName } from '@/lib/model-status-label'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { getModelPreset } from '@/store/model-presets'
+import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
 import {
   $spawnTaskChips,
   $spawnTaskChoices,
@@ -79,22 +82,32 @@ export function SpawnTaskTool(props: ToolCallMessagePartProps) {
   const receipt = parseMaybeObject(props.result)
   const title = receipt.success === true ? text(receipt.title) : ''
   const prompt = text(props.args?.prompt)
+  const notify = receipt.notify_on_done === true
 
   if (toolCallFailed(props) || !title || !prompt) {
     return <ToolFallback {...props} />
   }
 
-  return <SpawnTaskChip prompt={prompt} title={title} tldr={text(props.args?.tldr)} toolCallId={props.toolCallId} />
+  return (
+    <SpawnTaskChip
+      notify={notify}
+      prompt={prompt}
+      title={title}
+      tldr={text(props.args?.tldr)}
+      toolCallId={props.toolCallId}
+    />
+  )
 }
 
 interface SpawnTaskChipProps {
+  notify: boolean
   prompt: string
   title: string
   tldr: string
   toolCallId: string
 }
 
-function SpawnTaskChip({ prompt, title, tldr, toolCallId }: SpawnTaskChipProps) {
+function SpawnTaskChip({ notify, prompt, title, tldr, toolCallId }: SpawnTaskChipProps) {
   const { t } = useI18n()
   const copy = t.assistant.spawnTask
   const view = useSessionView()
@@ -124,7 +137,7 @@ function SpawnTaskChip({ prompt, title, tldr, toolCallId }: SpawnTaskChipProps) 
 
   const launch = (mode: SpawnTaskMode) =>
     void launchSpawnTask(
-      { cwd, ownerStoredSessionId, prompt, title, toolCallId },
+      { cwd, ...(notify ? { notify: true } : {}), ownerStoredSessionId, prompt, title, toolCallId },
       { ...choice, mode },
       owner.choiceScope
     )
@@ -149,12 +162,14 @@ function SpawnTaskChip({ prompt, title, tldr, toolCallId }: SpawnTaskChipProps) 
           {expanded ? (
             <p className={cn(CAPTION, 'whitespace-pre-wrap text-(--ui-text-secondary) wrap-anywhere')}>{prompt}</p>
           ) : null}
+          {notify ? <span className={cn(CAPTION, 'text-(--ui-text-tertiary)')}>{copy.notifyHere}</span> : null}
         </div>
       </div>
 
       {outcome?.state === 'launched' ? (
         <div className="flex min-w-0 items-center gap-2 pl-6.5">
           <span className={cn(CAPTION, 'text-(--ui-text-tertiary)')}>{copy.launched}</span>
+          <SpawnedSessionStatus storedSessionId={outcome.storedSessionId} />
           <Button
             onClick={() =>
               void import('@/app/open-session').then(({ openSession }) =>
@@ -223,5 +238,20 @@ function SpawnTaskChip({ prompt, title, tldr, toolCallId }: SpawnTaskChipProps) 
         </div>
       )}
     </div>
+  )
+}
+
+/** What the spawned session is doing, from the same state the sidebar dot
+ *  paints (lineage-aware, so a compressed child still answers). */
+function SpawnedSessionStatus({ storedSessionId }: { storedSessionId: string }) {
+  const { t } = useI18n()
+  const bucket = useStoreSelector($sessionDotStateById, states => sessionStatusBucket(states[storedSessionId]))
+  const label = t.assistant.spawnTask.status[bucket === 'draft' ? 'idle' : bucket]
+
+  return (
+    <span className={cn(CAPTION, 'flex items-center gap-1.5 text-(--ui-text-secondary)')}>
+      <SessionStatusDot storedSessionId={storedSessionId} />
+      <span data-testid="spawn-task-status">{label}</span>
+    </span>
   )
 }

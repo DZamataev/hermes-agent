@@ -84,6 +84,7 @@ export function createOverrides(
   return {
     ...(choice.model ? { fast: choice.fast, model: { model: choice.model, provider: choice.provider } } : {}),
     ...(choice.effort ? { reasoningEffort: choice.effort } : {}),
+    ...(offer.notify && offer.ownerStoredSessionId ? { spawnReportTo: offer.ownerStoredSessionId } : {}),
     onComposerScopeAssigned: stored => onKickoff(queueTileKickoff(stored, offer.prompt)),
     ownSelection: true,
     title: offer.title,

@@ -5343,7 +5343,14 @@ export const esOverrides = {
       kickoffUnknown: 'La conexión se cortó al enviar la tarea; puede que ya se esté ejecutando en su nueva pestaña',
       worktreeNeedsRepo: 'Un worktree necesita un repositorio git. Iníciala en una pestaña nueva.',
       worktreeNoBase: 'No se pudo leer el commit actual de este checkout; no se creó el worktree',
-      worktreeOtherBackend: 'Solo se puede crear un worktree para un chat en el backend de esta ventana; iníciala en una pestaña nueva'
+      worktreeOtherBackend: 'Solo se puede crear un worktree para un chat en el backend de esta ventana; iníciala en una pestaña nueva',
+      notifyHere: 'El resultado volverá a este chat',
+      status: {
+        working: 'Trabajando',
+        'needs-input': 'Necesita tu respuesta',
+        unread: 'Terminada — respuesta nueva',
+        idle: 'Inactiva'
+      }
     },
     mcpSetup: {
       installTitle: 'Añadir servidores MCP',

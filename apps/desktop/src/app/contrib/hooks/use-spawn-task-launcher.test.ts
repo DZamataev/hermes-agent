@@ -126,6 +126,16 @@ describe('spawn-task launcher', () => {
     })
   })
 
+  it('asks the new session to report back only when the offer wanted the result', async () => {
+    mountLauncher()
+
+    await launchSpawnTask(OFFER, CHOICE, 'scope')
+    await launchSpawnTask({ ...OFFER, notify: true, toolCallId: 'c2' }, CHOICE, 'scope')
+
+    expect(open.mock.calls[0]![1].createOverrides).not.toHaveProperty('spawnReportTo')
+    expect(open.mock.calls[1]![1].createOverrides).toMatchObject({ spawnReportTo: OFFER.ownerStoredSessionId })
+  })
+
   it('hands the tile the task text verbatim, slash and all', async () => {
     let queued: null | string = null
 

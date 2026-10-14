@@ -22,6 +22,16 @@ import {
 
 import { SpawnTaskTool } from './spawn-task-tool'
 
+const dotStates = vi.hoisted(() => ({ value: {} as Record<string, string> }))
+
+vi.mock('@/store/session-dot-state', async importOriginal => {
+  const { atom: makeAtom } = await import('nanostores')
+  const real = await importOriginal<Record<string, unknown>>()
+  const $sessionDotStateById = makeAtom(dotStates.value)
+
+  return { ...real, $sessionDotStateById }
+})
+
 const getGlobalModelOptions = vi.fn()
 
 vi.mock('@/hermes', () => ({
@@ -249,6 +259,50 @@ describe('the spawn-task chip', () => {
     renderChip({ ...PROPS, ...part, toolName: 'spawn_task' })
 
     expect(screen.getByRole('button', { name: 'Start in new tab' })).toBeTruthy()
+  })
+
+  it('an offer that wants the result launches with it and says where it will arrive', async () => {
+    renderChip({ ...PROPS, result: { notify_on_done: true, success: true, title: ARGS.title } })
+
+    expect(screen.getByText('The result will come back to this chat')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Start in new tab' }))
+
+    await waitFor(() =>
+      expect(launcher).toHaveBeenCalledWith(
+        expect.objectContaining({ notify: true, ownerStoredSessionId: 'stored-parent' }),
+        expect.anything()
+      )
+    )
+  })
+
+  it('an offer that does not want the result never asks for it', async () => {
+    renderChip()
+
+    expect(screen.queryByText('The result will come back to this chat')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Start in new tab' }))
+
+    await waitFor(() => expect(launcher).toHaveBeenCalled())
+    expect(launcher.mock.calls[0]![0]).not.toMatchObject({ notify: true })
+  })
+
+  it('a launched chip shows what its session is doing', async () => {
+    const { $sessionDotStateById } = await import('@/store/session-dot-state')
+    renderChip()
+    fireEvent.click(screen.getByRole('button', { name: 'Start in new tab' }))
+    await waitFor(() => expect(screen.getByText('Started in a new session')).toBeTruthy())
+
+    const cases: [string, string][] = [
+      ['working', 'Working'],
+      ['stalled', 'Working'],
+      ['needs-input', 'Needs your input'],
+      ['unread', 'Finished — new reply'],
+      ['idle', 'Idle']
+    ]
+
+    for (const [state, label] of cases) {
+      act(() => ($sessionDotStateById as unknown as { set: (v: unknown) => void }).set({ 'stored-child': state }))
+      expect(screen.getByTestId('spawn-task-status').textContent).toBe(label)
+    }
   })
 
   it('a dismissed chip stays dismissed and never launches', () => {

@@ -18,6 +18,9 @@ export interface SessionCreateOverrides {
    *  fast never ride along, so an unset field means the profile's default. */
   ownSelection?: boolean
   reasoningEffort?: string
+  /** A spawn-task session whose offer asked for the result: the offering
+   *  session's stored id, which gets the first finished turn's reply. */
+  spawnReportTo?: string
   title?: string
   /** The title is a proposal (model-written): if another session holds it,
    *  keep it as `<title> (N)` instead of dropping it for an auto-title. */
@@ -42,6 +45,7 @@ export interface SessionCreateOverrideParams {
   model?: string
   provider?: string
   reasoning_effort?: string
+  spawn_report_to?: string
   title?: string
   title_dedupe?: boolean
 }
@@ -65,6 +69,10 @@ export function sessionCreateOverrideParams(
   if (model) {
     params.model = model
     params.provider = overrides?.model?.provider.trim() ?? ''
+  }
+
+  if (overrides?.spawnReportTo) {
+    params.spawn_report_to = overrides.spawnReportTo
   }
 
   if (overrides?.reasoningEffort) {

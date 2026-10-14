@@ -3840,7 +3840,14 @@ export const ruOverrides = {
       kickoffUnknown: 'Связь оборвалась при отправке задачи; возможно, она уже выполняется в новой вкладке',
       worktreeNeedsRepo: 'Для worktree нужен git-репозиторий. Запустите во вкладке.',
       worktreeNoBase: 'Не удалось прочитать текущий коммит этого checkout, worktree не создан',
-      worktreeOtherBackend: 'Worktree можно создать только для чата на бэкенде этого окна; запустите задачу в новой вкладке'
+      worktreeOtherBackend: 'Worktree можно создать только для чата на бэкенде этого окна; запустите задачу в новой вкладке',
+      notifyHere: 'Результат вернётся в этот чат',
+      status: {
+        working: 'Работает',
+        'needs-input': 'Ждёт вашего ответа',
+        unread: 'Готово — новый ответ',
+        idle: 'Простаивает'
+      }
     },
     mcpSetup: {
       installTitle: 'Добавить MCP-серверы',
