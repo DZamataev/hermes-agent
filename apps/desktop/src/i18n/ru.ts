@@ -3846,8 +3846,7 @@ export const ruOverrides = {
         draft: 'Запускается',
         working: 'Работает',
         'needs-input': 'Ждёт вашего ответа',
-        unread: 'Завершён — не прочитан',
-        idle: 'Простаивает'
+        unread: 'Завершён — не прочитан'
       }
     },
     mcpSetup: {

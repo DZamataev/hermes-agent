@@ -5354,8 +5354,7 @@ export const deOverrides = {
         draft: 'Startet',
         working: 'Arbeitet',
         'needs-input': 'Wartet auf dich',
-        unread: 'Abgeschlossen – ungelesen',
-        idle: 'Untätig'
+        unread: 'Abgeschlossen – ungelesen'
       }
     },
     mcpSetup: {

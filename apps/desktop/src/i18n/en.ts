@@ -4891,8 +4891,7 @@ export const en: Translations = {
         draft: 'Starting',
         working: 'Working',
         'needs-input': 'Needs your input',
-        unread: 'Finished — unread',
-        idle: 'Idle'
+        unread: 'Finished — unread'
       }
     },
     mcpSetup: {

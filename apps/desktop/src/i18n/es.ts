@@ -5349,8 +5349,7 @@ export const esOverrides = {
         draft: 'Iniciando',
         working: 'Trabajando',
         'needs-input': 'Necesita tu respuesta',
-        unread: 'Finalizada — sin leer',
-        idle: 'Inactiva'
+        unread: 'Finalizada — sin leer'
       }
     },
     mcpSetup: {

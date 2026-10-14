@@ -40,10 +40,10 @@ def _agent(session_id="child-key", reply="All done: fixed the flake."):
     return agent
 
 
-def _run_turn(monkeypatch, db, home, session, text="go"):
+def _run_turn(monkeypatch, db, home, session, text="go", on_emit=None):
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_hermes_home", home)
-    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_emit", on_emit or (lambda *a, **kw: None))
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
     monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
@@ -148,6 +148,55 @@ class TestChildReportsItsFirstFinishedTurn:
         _run_turn(monkeypatch, db, tmp_path, _session(agent=_agent()), text="and one more thing")
 
         assert len(reports.pending_reports(tmp_path)) == 1
+
+    def test_a_raising_row_read_still_finishes_the_turn(self, monkeypatch, tmp_path):
+        """Every session's first finished turn reads its row for the address. A read that
+        raises (busy/broken state.db) used to leave ``stored`` unbound — an UnboundLocalError
+        that turned ANY session's completed turn into an error turn (находка 3)."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+
+        def _boom(*_a, **_kw):
+            raise RuntimeError("state.db is locked")
+
+        monkeypatch.setattr(db, "get_session_model_config_value", _boom)
+        session = _session(agent=_agent())
+        events: list[tuple] = []
+
+        _run_turn(monkeypatch, db, tmp_path, session, on_emit=lambda *a, **kw: events.append(a))
+
+        completes = [a for a in events if a and a[0] == "message.complete"]
+        assert any((a[2] or {}).get("status") == "complete" for a in completes)
+        assert not any((a[2] or {}).get("status") == "error" for a in completes)
+        assert not session.get("_spawn_report_addr_read")  # read failed: retried next turn
+        assert reports.pending_reports(tmp_path) == []
+
+    def test_a_failed_report_write_is_retried_on_the_next_finished_turn(self, monkeypatch, tmp_path):
+        """The docstring promises a failed write is retried. On the row-only path (a resumed
+        child) the read left nothing in the dict, so there was nothing left armed to retry
+        with (находка 4)."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("child-key", source="desktop", model_config={"spawn_report_to": "parent-key"})
+        writes = {"n": 0}
+        real_write = reports.write_report
+
+        def flaky_write(*a, **kw):
+            writes["n"] += 1
+            if writes["n"] == 1:
+                raise OSError("disk full")
+            return real_write(*a, **kw)
+
+        monkeypatch.setattr(reports, "write_report", flaky_write)
+        session = _session(agent=_agent())  # rebuilt from scratch, like a resume
+
+        _run_turn(monkeypatch, db, tmp_path, session)  # first write fails
+        assert reports.pending_reports(tmp_path) == []
+        assert session.get("spawn_report_to") == "parent-key"  # still armed
+
+        _run_turn(monkeypatch, db, tmp_path, session, text="and one more thing")  # retried
+
+        [(_path, record)] = reports.pending_reports(tmp_path)
+        assert record["to"] == "parent-key" and record["from"] == "child-key"
+        assert writes["n"] == 2
 
 
 def test_create_arms_the_report_target(monkeypatch, tmp_path):
@@ -260,6 +309,21 @@ class TestTheMailboxHealsItself:
         _claim(_path)
 
         assert reports.pending_reports(tmp_path) == []
+
+    def test_an_old_report_freshly_claimed_is_not_requeued(self, tmp_path):
+        """The requeue clock must measure the CLAIM, not the report: a report that waited an
+        hour in the mailbox (the offering tab was closed) is claimed just now and must stay
+        invisible to any other poller's pass — rename preserves the report's mtime, so the
+        claim has to stamp its own (находка 2)."""
+        path = _write(tmp_path)
+        old = time.time() - reports.CLAIM_STALE_SECONDS - 60
+        os.utime(path, (old, old))  # the report itself is old
+
+        claimed = _claim(path)
+
+        assert time.time() - claimed.stat().st_mtime < reports.CLAIM_STALE_SECONDS
+        assert reports.pending_reports(tmp_path) == []  # not requeued behind the deliverer
+        assert claimed.exists() and not path.exists()
 
     def test_reports_past_the_ttl_are_pruned_in_one_log_line(self, tmp_path, caplog):
         """An address nothing resolves (the offering session was deleted, or the child ran in

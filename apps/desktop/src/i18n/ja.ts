@@ -3637,8 +3637,7 @@ export const jaOverrides = {
         draft: '開始中',
         working: '実行中',
         'needs-input': '入力待ち',
-        unread: '完了 — 未読',
-        idle: 'アイドル'
+        unread: '完了 — 未読'
       }
     },
     startChat: {

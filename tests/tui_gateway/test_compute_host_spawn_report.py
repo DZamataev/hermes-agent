@@ -75,3 +75,31 @@ def test_a_live_child_session_is_not_re_armed_by_a_stale_frame(monkeypatch):
         assert session.get("pending_title") is None
     finally:
         server._sessions.pop("live-sid", None)
+
+
+def test_a_finished_child_turn_disarms_the_parent_so_a_respawn_does_not_report_again(monkeypatch):
+    """After a compute-host respawn the child is rebuilt from the PARENT's frame. The arm is
+    one-shot create-time intent, so the parent must drop its copy once the child's turn is
+    done — otherwise the rebuilt child adopts a stale arm and writes a second report (находка 1)."""
+    host = _host(monkeypatch)
+    parent = _session(spawn_report_to="offering-key")
+    server._sessions["sid"] = parent
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_compute_host_session_info", lambda session: {})
+    monkeypatch.setattr(server, "_drain_queued_prompt", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_release_deferred_active_session_lease", lambda session: None)
+    try:
+        # Turn 1: the frame carries the arm; the freshly built child adopts it.
+        frame = server._compute_host_turn_frame("r1", "sid", parent, "hello")
+        child = host._ensure_server_session(server, {**frame, "sid": "child-sid"})
+        assert child["spawn_report_to"] == "offering-key"
+        # The child reports and clears its own copy; the turn settles successfully.
+        child["spawn_report_to"] = None
+        server._on_compute_host_turn_done("r1", "sid", parent, {"type": "turn.end"})
+
+        assert parent.get("spawn_report_to") is None
+        # Compute host respawned (its sessions are gone): the rebuilt child must not be
+        # re-armed from a stale frame, or its next finished turn reports the task again.
+        assert server._compute_host_turn_frame("r2", "sid", parent, "later")["spawn_report_to"] is None
+    finally:
+        server._sessions.pop("sid", None)

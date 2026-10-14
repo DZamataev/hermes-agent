@@ -389,13 +389,21 @@ def _spawn_report_target(session: dict) -> str:
     target = str(session.get("spawn_report_to") or "").strip()
     if target or session.get("_spawn_report_addr_read"):
         return target
-    session["_spawn_report_addr_read"] = True
     key = str(session.get("session_key") or "")
     if not key:
         return ""
+    stored: str | None = None
     with contextlib.suppress(Exception), _session_db(session) as db:
-        stored = db.get_session_model_config_value(key, "spawn_report_to") if db is not None else None
-    return str(stored or "").strip()
+        if db is not None:
+            stored = db.get_session_model_config_value(key, "spawn_report_to")
+        # Read-marked only once the read survives: a busy/broken state.db must be retried
+        # on the next finished turn (an UnboundLocalError here would fail the WHOLE turn).
+        session["_spawn_report_addr_read"] = True
+        # Write the row's value back into the dict: the live copy then owns the retry, so a
+        # failed report WRITE is retried on the next turn (a read-only row left nothing armed).
+        if value := str(stored or "").strip():
+            session["spawn_report_to"] = value
+    return str(session.get("spawn_report_to") or "").strip()
 
 
 def _report_spawn_task_result(session: dict, target: str) -> None:

@@ -210,7 +210,6 @@
     "assistant.spawnTask.pin",
     "assistant.spawnTask.showPrompt",
     "assistant.spawnTask.status.draft",
-    "assistant.spawnTask.status.idle",
     "assistant.spawnTask.status.needs-input",
     "assistant.spawnTask.status.unread",
     "assistant.spawnTask.status.working",

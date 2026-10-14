@@ -5363,8 +5363,7 @@ export const frOverrides = {
         draft: 'Démarrage',
         working: 'En cours',
         'needs-input': 'Attend votre réponse',
-        unread: 'Terminée — non lue',
-        idle: 'Inactive'
+        unread: 'Terminée — non lue'
       }
     },
     mcpSetup: {

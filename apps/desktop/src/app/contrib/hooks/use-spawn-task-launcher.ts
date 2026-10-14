@@ -7,9 +7,9 @@ import { isGitRepoPath } from '@/store/coding-status'
 import { notify, notifyError } from '@/store/notifications'
 import type { AgentProfileRoute } from '@/store/profile'
 import { removeWorktreePath, startWorkInRepo } from '@/store/projects'
-import { $connection, knownSessionOwner, ownerLookupSessionRows, setSessions } from '@/store/session'
+import { $connection, setSessions } from '@/store/session'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
-import { discardSessionTile, sessionTileOwnerRoute } from '@/store/session-states'
+import { discardSessionTile } from '@/store/session-states'
 import {
   type KickoffOutcome,
   type QueuedKickoff,
@@ -19,6 +19,7 @@ import {
   type SpawnTaskLauncher,
   type SpawnTaskOffer
 } from '@/store/spawn-task'
+import { spawnTaskOwner } from '@/store/spawn-task-owner'
 import { canHostSessionTiles } from '@/store/windows'
 
 type OpenNewSessionTile = (
@@ -33,12 +34,10 @@ type OpenNewSessionTile = (
 ) => Promise<null | string>
 
 /** The spawned session runs where the offering one does: same connection and
- *  profile. A bare profile name is all an older row may know. */
+ *  profile. A bare profile name is all an older row may know. One ladder — the
+ *  same one the chip's promise uses, so the two can never disagree (Д5). */
 function ownerFor(offer: SpawnTaskOffer) {
-  return offer.ownerStoredSessionId
-    ? (sessionTileOwnerRoute(offer.ownerStoredSessionId) ??
-        knownSessionOwner(ownerLookupSessionRows(), offer.ownerStoredSessionId))
-    : undefined
+  return spawnTaskOwner(offer.ownerStoredSessionId)
 }
 
 /** Same identity rule as `tileBackendIdentityChanged` (session-tile): an
@@ -84,10 +83,12 @@ export function createOverrides(
   return {
     ...(choice.model ? { fast: choice.fast, model: { model: choice.model, provider: choice.provider } } : {}),
     ...(choice.effort ? { reasoningEffort: choice.effort } : {}),
-    // Only with a resolved owner: an unresolvable one would land the new session on the
-    // project tree's profile, and the report would be written into a profile whose poller
-    // never scans for it (Д4).
-    ...(offer.notify && offer.ownerStoredSessionId && ownerFor(offer) ? { spawnReportTo: offer.ownerStoredSessionId } : {}),
+    // Only with an owner that resolves: otherwise the launch would drop `spawn_report_to`
+    // while the chip still promised the result. The launcher resolves the offering owner
+    // through the SAME ladder (`spawnTaskOwner`), so the promise and the send agree (Д5).
+    ...(offer.notify && offer.ownerStoredSessionId && ownerFor(offer)
+      ? { spawnReportTo: offer.ownerStoredSessionId }
+      : {}),
     onComposerScopeAssigned: stored => onKickoff(queueTileKickoff(stored, offer.prompt)),
     ownSelection: true,
     title: offer.title,

@@ -4610,8 +4610,7 @@ export const zhOverrides = {
         draft: '正在启动',
         working: '进行中',
         'needs-input': '等待你的输入',
-        unread: '已完成 — 未读',
-        idle: '空闲'
+        unread: '已完成 — 未读'
       }
     },
     startChat: {

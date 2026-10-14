@@ -157,8 +157,7 @@ export const arAssistant = {
         draft: 'قيد البدء',
         working: 'قيد العمل',
         'needs-input': 'بانتظار ردّك',
-        unread: 'اكتملت وفيها جديد',
-        idle: 'خاملة'
+        unread: 'اكتملت وفيها جديد'
       }
     },
     startChat: {

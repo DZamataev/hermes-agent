@@ -12,6 +12,7 @@ import { $pinnedSessionIds } from '@/store/layout'
 import { setModelPreset } from '@/store/model-presets'
 import { $visibleModels } from '@/store/model-visibility'
 import { $sessionDotStateById } from '@/store/session-dot-state'
+import { $sessionTiles } from '@/store/session-states'
 import {
   $spawnTaskChips,
   resetSpawnTaskStoreForTests,
@@ -114,6 +115,7 @@ beforeEach(() => {
   resetSpawnTaskStoreForTests()
   setDotStates({})
   $pinnedSessionIds.set([])
+  $sessionTiles.set([])
   queryClient.clear()
   queryClient.setDefaultOptions({ queries: { ...queryClient.getDefaultOptions().queries, retry: false } })
   $visibleModels.set(null)
@@ -134,6 +136,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $sessionTiles.set([])
   setSpawnTaskLauncher(null)
   queryClient.clear()
 })
@@ -270,6 +273,7 @@ describe('the spawn-task chip', () => {
   })
 
   it('an offer that wants the result launches with it and says where it will arrive', async () => {
+    $sessionTiles.set([{ ownerRoute: { connectionId: 'local', profile: 'default' }, storedSessionId: 'stored-parent' } as never])
     renderChip({ ...PROPS, result: { notify_on_done: true, success: true, title: ARGS.title } })
 
     expect(screen.getByText('The result will come back to this chat')).toBeTruthy()
@@ -305,20 +309,33 @@ describe('the spawn-task chip', () => {
     expect(launcher.mock.calls[0]![0]).not.toMatchObject({ notify: true })
   })
 
+  // A stored id that does not resolve (truncated page, another window, an evicted hint) is
+  // NOT a delivery: the launcher sends `spawn_report_to` only for a resolved owner, so the
+  // chip must gate its promise on the very same condition (Д5) — not just a non-empty id.
+  it('an offer that wants the result promises nothing when the owner does not resolve', async () => {
+    renderChip({ ...PROPS, result: { notify_on_done: true, success: true, title: ARGS.title } })
+
+    expect(screen.queryByText('The result will come back to this chat')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Start in new tab' }))
+
+    await waitFor(() => expect(launcher).toHaveBeenCalled())
+    expect(launcher.mock.calls[0]![0]).not.toMatchObject({ notify: true })
+  })
+
   it('a launched chip shows what its session is doing', async () => {
     renderChip()
     fireEvent.click(screen.getByRole('button', { name: 'Start in new tab' }))
     await waitFor(() => expect(screen.getByText('Started in a new session')).toBeTruthy())
 
-    // `draft` is its own answer — the session exists but no turn has run — and it is
-    // not the same thing as idle.
+    // `draft` is its own answer — the session exists but no turn has run. There is no
+    // `idle` case: the dot-state map never holds an `idle` entry (idle is the absence of
+    // a claim), so a resting child shows nothing rather than an invented label.
     const cases: [string, string][] = [
       ['draft', 'Starting'],
       ['working', 'Working'],
       ['stalled', 'Working'],
       ['needs-input', 'Needs your input'],
-      ['unread', 'Finished — unread'],
-      ['idle', 'Idle']
+      ['unread', 'Finished — unread']
     ]
 
     for (const [state, label] of cases) {
@@ -336,6 +353,19 @@ describe('the spawn-task chip', () => {
     await waitFor(() => expect(screen.getByText('Started in a new session')).toBeTruthy())
 
     setDotStates({ 'some-other-session': 'working' })
+
+    expect(screen.queryByTestId('spawn-task-status')).toBeNull()
+  })
+
+  // The dot-state map has no `idle` entry, so `status.idle` is gone. Should a mocked or
+  // future map ever hand the chip an `idle` bucket, it must stay quiet, not print an
+  // undefined label.
+  it('says nothing for a child the state map reports as idle', async () => {
+    renderChip()
+    fireEvent.click(screen.getByRole('button', { name: 'Start in new tab' }))
+    await waitFor(() => expect(screen.getByText('Started in a new session')).toBeTruthy())
+
+    setDotStates({ 'stored-child': 'idle' })
 
     expect(screen.queryByTestId('spawn-task-status')).toBeNull()
   })

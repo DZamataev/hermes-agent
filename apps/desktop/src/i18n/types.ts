@@ -4170,8 +4170,10 @@ export interface Translations extends NoticeTranslations {
       worktreeNoBase: string
       worktreeOtherBackend: string
       notifyHere: string
-      /** The launched session's state, by sidebar status bucket. */
-      status: { draft: string; working: string; 'needs-input': string; unread: string; idle: string }
+      /** The launched session's state, by sidebar status bucket. `idle` is not a bucket a
+       *  chip can paint: the dot-state map has no `idle` entry (idle is the absence of a
+       *  claim), so the chip renders nothing at rest rather than inventing the label. */
+      status: { draft: string; working: string; 'needs-input': string; unread: string }
     }
     mcpSetup: {
       installTitle: string

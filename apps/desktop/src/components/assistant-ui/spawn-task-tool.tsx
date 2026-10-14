@@ -114,9 +114,10 @@ function SpawnTaskChip({ notify, prompt, title, tldr, toolCallId }: SpawnTaskChi
   const cwd = useStore(view.$cwd)
   const ownerStoredSessionId = useStore(view.$storedId)
   const owner = useChipOwner(ownerStoredSessionId)
-  // No stored id = no offering session to report to, so the launch would drop
-  // `spawn_report_to` while the chip still promised the result (Д4).
-  const notifyHere = notify && Boolean(ownerStoredSessionId?.trim())
+  // The result comes back only when the offering owner resolves — the very same
+  // condition the launcher uses to send `spawn_report_to` (`spawnTaskOwner`), so
+  // the promise is never made without the delivery (Д4/Д5).
+  const notifyHere = notify && owner.ownerResolved
   const chipKey = spawnTaskChipKey({ prompt, title, toolCallId })
   const outcome = useStore($spawnTaskChips)[chipKey]
   const launching = useStore($spawnTaskLaunching).has(chipKey)
@@ -256,7 +257,9 @@ function SpawnedSessionStatus({ storedSessionId }: { storedSessionId: string }) 
     states[storedSessionId] ? sessionStatusBucket(states[storedSessionId]) : null
   )
 
-  if (!bucket) {
+  // No entry, or an `idle` bucket (the map has no such entry — idle is the absence of a
+  // claim): nothing to say about a resting child, so the chip stays quiet.
+  if (!bucket || bucket === 'idle') {
     return null
   }
 

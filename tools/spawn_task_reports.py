@@ -107,6 +107,13 @@ def claim_report(path: Path) -> Path | None:
         os.rename(path, claimed)
     except OSError:
         return None  # another poller took it
+    try:
+        # rename keeps the report's mtime; stamp the claim so ``_requeue_stale_claims``
+        # measures THIS claim's age, not the report's — a report that waited an hour in
+        # the mailbox is not stale the moment a live poller claims it.
+        os.utime(claimed, None)
+    except OSError:
+        pass  # the claim stands; only its staleness clock is off
     return claimed
 
 

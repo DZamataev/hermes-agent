@@ -259,6 +259,10 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
     # (kept on error so the fail-open in-process path can still apply it).
     if frame.get("type") != "turn.error":
         session.pop("pending_model_switch", None)
+        # Same one-shot create-time intent: the spawn-report arm crossed to the host only
+        # on the turn that BUILT the child. Clear the parent's copy here, or a respawned
+        # host rebuilds the child from a stale frame and reports the task a second time.
+        session.pop("spawn_report_to", None)
     if frame.get("type") == "turn.error":
         message = str(frame.get("message") or "compute host turn failed")
         _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})

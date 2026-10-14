@@ -212,8 +212,7 @@ export const zhHantAssistant = {
         draft: '正在啟動',
         working: '進行中',
         'needs-input': '等待你的輸入',
-        unread: '已完成 — 未讀',
-        idle: '閒置'
+        unread: '已完成 — 未讀'
       }
     },
     startChat: {
