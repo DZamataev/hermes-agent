@@ -5338,6 +5338,8 @@ export const esOverrides = {
       openSession: 'Abrir',
       showPrompt: 'Mostrar prompt',
       hidePrompt: 'Ocultar prompt',
+      promptLabel: 'Prompt para la nueva sesión',
+      reset: 'Restablecer',
       launchFailed: 'No se pudo iniciar la tarea secundaria',
       kickoffFailed: 'La tarea secundaria no llegó a su nueva sesión; el chip sigue disponible',
       kickoffUnknown: 'La conexión se cortó al enviar la tarea; puede que ya se esté ejecutando en su nueva pestaña',

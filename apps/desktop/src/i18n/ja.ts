@@ -3626,6 +3626,8 @@ export const jaOverrides = {
       openSession: '開く',
       showPrompt: 'プロンプトを表示',
       hidePrompt: 'プロンプトを隠す',
+      promptLabel: '新しいセッションのプロンプト',
+      reset: 'リセット',
       launchFailed: 'サイドタスクを開始できませんでした',
       kickoffFailed: 'サイドタスクが新しいセッションに届きませんでした。チップは引き続き使えます',
       kickoffUnknown: 'サイドタスクの送信中に接続が切れました。新しいタブで実行中の可能性があります',

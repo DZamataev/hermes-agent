@@ -167,6 +167,51 @@ describe('spawn-task launcher', () => {
     expect(queued).toBe('/yolo then fix it')
   })
 
+  // The chip's edit is what the new session receives — the offer's original
+  // prompt is only the fallback, and the chip's key still comes from it.
+  it('hands the tile the chip’s edited text instead of the offered one', async () => {
+    let queued: null | string = null
+
+    mountLauncher(
+      vi.fn(async (_dir: 'center', options: OpenOptions) => {
+        options.createOverrides.onComposerScopeAssigned?.('stored-new')
+        const kickoff = takeTileKickoff('stored-new')
+        queued = kickoff?.text ?? null
+        kickoff?.settle('sent')
+
+        return 'stored-new'
+      })
+    )
+
+    await launchSpawnTask({ ...OFFER, editedPrompt: '  /yolo then fix it properly  ' }, CHOICE, 'scope')
+
+    expect(queued).toBe('/yolo then fix it properly')
+    expect($spawnTaskChips.get()[spawnTaskChipKey(OFFER)]).toEqual({
+      prompt: '/yolo then fix it properly',
+      state: 'launched',
+      storedSessionId: 'stored-new'
+    })
+  })
+
+  it('hands the tile the offered text when the chip’s edit is blank', async () => {
+    let queued: null | string = null
+
+    mountLauncher(
+      vi.fn(async (_dir: 'center', options: OpenOptions) => {
+        options.createOverrides.onComposerScopeAssigned?.('stored-new')
+        const kickoff = takeTileKickoff('stored-new')
+        queued = kickoff?.text ?? null
+        kickoff?.settle('sent')
+
+        return 'stored-new'
+      })
+    )
+
+    await launchSpawnTask({ ...OFFER, editedPrompt: '   ' }, CHOICE, 'scope')
+
+    expect(queued).toBe('/yolo then fix it')
+  })
+
   // A tab that opened but never sent the task is not a launched chip: the
   // user must be told, and the chip must stay launchable.
   it('leaves the chip launchable when the tile refuses the first prompt', async () => {

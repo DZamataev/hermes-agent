@@ -40,6 +40,10 @@ export interface SpawnTaskChoice {
 export interface SpawnTaskOffer {
   /** Workspace the offering session runs in; a worktree branches off it. */
   cwd: string
+  /** The chip's edited task text, when the user changed it: the kickoff sends
+   *  this instead of `prompt` (blank after trim means unchanged). The chip's
+   *  identity still comes from the ORIGINAL `prompt` — see `spawnTaskChipKey`. */
+  editedPrompt?: string
   /** The offer asked for the result back (`notify_on_done` on the receipt). */
   notify?: boolean
   /** The offering session: the spawned one runs on the same backend + profile. */
@@ -49,7 +53,12 @@ export interface SpawnTaskOffer {
   toolCallId: string
 }
 
-export type SpawnTaskChipState = { state: 'dismissed' } | { state: 'launched'; storedSessionId: string }
+export type SpawnTaskChipState =
+  | { state: 'dismissed' }
+  /** `prompt` is the text the launch actually sent, stored only when the user
+   *  edited it; a state recorded before this existed (or an unedited chip)
+   *  falls back to the offer's original prompt. */
+  | { prompt?: string; state: 'launched'; storedSessionId: string }
 
 export type SpawnTaskLauncher = (
   offer: SpawnTaskOffer,
@@ -309,6 +318,13 @@ function setLaunching(key: string, on: boolean): void {
   $spawnTaskLaunching.set(next)
 }
 
+/** The text a launch sends: the chip's edit when there is one, else the offered
+ *  prompt. A blank-after-trim edit means the user cleared the field back to
+ *  nothing — send the original, never an empty kickoff. */
+export function spawnTaskPrompt(offer: Pick<SpawnTaskOffer, 'editedPrompt' | 'prompt'>): string {
+  return offer.editedPrompt?.trim() || offer.prompt
+}
+
 /** Launch one chip with `choice`. The choice is remembered either way (the
  *  user picked it); the chip is marked launched only when a session exists.
  *  Returns false when nothing was started — the chip stays launchable. */
@@ -340,7 +356,15 @@ export async function launchSpawnTask(
         return false
       }
 
-      recordChip(key, { state: 'launched', storedSessionId: launched.storedSessionId })
+      // Record the text the launch actually sent — the chip shows it back
+      // ("what went out"), never the offer's original prompt.
+      const sent = spawnTaskPrompt(offer)
+
+      recordChip(key, {
+        state: 'launched',
+        storedSessionId: launched.storedSessionId,
+        ...(sent === offer.prompt ? {} : { prompt: sent })
+      })
 
       if (choice.pin) {
         pinSession(launched.storedSessionId)

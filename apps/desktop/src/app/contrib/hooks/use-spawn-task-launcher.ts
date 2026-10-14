@@ -17,7 +17,8 @@ import {
   setSpawnTaskLauncher,
   type SpawnTaskChoice,
   type SpawnTaskLauncher,
-  type SpawnTaskOffer
+  type SpawnTaskOffer,
+  spawnTaskPrompt
 } from '@/store/spawn-task'
 import { spawnTaskOwner } from '@/store/spawn-task-owner'
 import { canHostSessionTiles } from '@/store/windows'
@@ -89,7 +90,7 @@ export function createOverrides(
     ...(offer.notify && offer.ownerStoredSessionId && ownerFor(offer)
       ? { spawnReportTo: offer.ownerStoredSessionId }
       : {}),
-    onComposerScopeAssigned: stored => onKickoff(queueTileKickoff(stored, offer.prompt)),
+    onComposerScopeAssigned: stored => onKickoff(queueTileKickoff(stored, spawnTaskPrompt(offer))),
     ownSelection: true,
     title: offer.title,
     titleDedupe: true

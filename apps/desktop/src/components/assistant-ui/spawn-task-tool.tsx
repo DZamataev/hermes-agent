@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Codicon } from '@/components/ui/codicon'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
 import { displayModelName } from '@/lib/model-status-label'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
@@ -129,6 +130,10 @@ function SpawnTaskChip({ notify, prompt, title, tldr, toolCallId }: SpawnTaskChi
   const choice = draft ?? remembered
   const [menuOpen, setMenuOpen] = useState(false)
   const [expanded, setExpanded] = useState(false)
+  // The chip's own prompt edit, kept per chip and in memory until launch (no
+  // drafts persisted). Reset — or typing the offered prompt back — drops it.
+  const [edit, setEdit] = useState<null | string>(null)
+  const editedPrompt = edit !== null && edit !== prompt ? edit : undefined
   const controller = useMemo(() => chipController(choice, setDraft), [choice])
 
   if (outcome?.state === 'dismissed') {
@@ -141,7 +146,15 @@ function SpawnTaskChip({ notify, prompt, title, tldr, toolCallId }: SpawnTaskChi
 
   const launch = (mode: SpawnTaskMode) =>
     void launchSpawnTask(
-      { cwd, ...(notifyHere ? { notify: true } : {}), ownerStoredSessionId, prompt, title, toolCallId },
+      {
+        cwd,
+        ...(editedPrompt === undefined ? {} : { editedPrompt }),
+        ...(notifyHere ? { notify: true } : {}),
+        ownerStoredSessionId,
+        prompt,
+        title,
+        toolCallId
+      },
       { ...choice, mode },
       owner.choiceScope
     )
@@ -164,7 +177,34 @@ function SpawnTaskChip({ notify, prompt, title, tldr, toolCallId }: SpawnTaskChi
             {expanded ? copy.hidePrompt : copy.showPrompt}
           </button>
           {expanded ? (
-            <p className={cn(CAPTION, 'whitespace-pre-wrap text-(--ui-text-secondary) wrap-anywhere')}>{prompt}</p>
+            outcome?.state === 'launched' ? (
+              // Read-only: the task is already running — show what was sent.
+              <p className={cn(CAPTION, 'whitespace-pre-wrap text-(--ui-text-secondary) wrap-anywhere')}>
+                {outcome.prompt ?? prompt}
+              </p>
+            ) : (
+              <div className="grid gap-1">
+                <Textarea
+                  aria-label={copy.promptLabel}
+                  className={cn(CAPTION, 'field-sizing-content max-h-56 min-h-0 resize-none')}
+                  disabled={launching}
+                  onChange={event => setEdit(event.target.value)}
+                  rows={2}
+                  value={edit ?? prompt}
+                />
+                {editedPrompt === undefined ? null : (
+                  <Button
+                    className="w-fit"
+                    disabled={launching}
+                    onClick={() => setEdit(null)}
+                    size="xs"
+                    variant="text"
+                  >
+                    {copy.reset}
+                  </Button>
+                )}
+              </div>
+            )
           ) : null}
           {notifyHere ? <span className={cn(CAPTION, 'text-(--ui-text-tertiary)')}>{copy.notifyHere}</span> : null}
         </div>
