@@ -7,9 +7,9 @@ import type { HermesGateway } from '@/hermes'
 /**
  * Ghost-text reply suggestion for the empty composer.
  *
- * When an agent turn completes (busy true → false) and the composer is empty,
- * ask the gateway's deterministic `complete.suggest` for a likely reply and
- * surface the first candidate as ghost text in the placeholder slot. Tab or
+ * The gateway computes a likely reply when a turn completes (on the session's
+ * warm prompt cache) and `complete.suggest` reads it back; the first candidate
+ * is shown as ghost text in the placeholder slot of an empty composer. Tab or
  * Right arrow accepts it into real text. It is the turn's suggestion, not the
  * empty composer's: typing (or accepting it) only hides it, and it comes back
  * whenever the composer is empty again, until Esc dismisses it or the next turn
@@ -113,18 +113,24 @@ export function useComposerGhost(opts: {
   const { dismissed, ghost } = entry
   const prevRef = useRef({ busy, sessionId })
 
-  // Fire exactly once per completed turn: on the busy → idle transition OF THE SAME session.
-  // Switching from a busy conversation to an idle one is not a turn ending.
+  // The gateway computes a session's suggestion when its turn completes, whether or not any
+  // composer shows it; reading it back is free (no model request). So read it when a turn ends
+  // here, and when a composer comes to show a session it has nothing stored for.
   // eslint-disable-next-line no-restricted-syntax -- this records a prop edge, not an atom mirror
   useEffect(() => {
     const prev = prevRef.current
     prevRef.current = { busy, sessionId }
 
-    if (prev.sessionId !== sessionId || !prev.busy || busy) {
+    if (!gateway || !sessionId || busy) {
       return
     }
 
-    if (!gateway || !sessionId || !empty) {
+    // Busy → idle of the SAME session is a finished turn; switching from a busy conversation to
+    // an idle one is not.
+    const turnEnded = prev.sessionId === sessionId && prev.busy
+    const unknown = $sessionGhosts.get()[sessionId] === undefined
+
+    if (!turnEnded && !unknown) {
       return
     }
 
@@ -143,7 +149,7 @@ export function useComposerGhost(opts: {
       .catch(() => {
         // Decorative: a failed suggestion must never reach the composer.
       })
-  }, [busy, empty, gateway, sessionId])
+  }, [busy, gateway, sessionId])
 
   const visible = ghostVisible({ busy, dismissed, empty, ghost })
 

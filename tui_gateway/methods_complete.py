@@ -277,60 +277,16 @@ def _(rid, params: dict) -> dict:
 
 @method("complete.suggest")
 def _(rid, params: dict) -> dict:
-    """Ghost-text replies for an empty composer. ``display.composer_predictions`` (default on): one model
-    prediction of the user's next message (on the session's own warm prompt cache), with the free
-    deterministic extractor as the fallback when the model abstains. Otherwise the extractor alone."""
-    empty = {"candidates": [], "history_version": 0}
+    """Ghost-text replies for an empty composer: the suggestion the gateway computed when the
+    session's last turn completed (``tui_gateway/suggest_cache.py``), never a model request on
+    demand. ``display.composer_suggestions: false`` turns it off."""
     session = _sessions.get(params.get("session_id") or "")
     display = _load_cfg().get("display") or {}
     if session is None or not bool(display.get("composer_suggestions", True)):
-        return _ok(rid, empty)
+        return _ok(rid, {"candidates": [], "history_version": 0})
+    from tui_gateway.suggest_cache import suggestions_for
 
-    def snapshot() -> tuple:
-        """History, its version and the in-flight turn, read together: turn admission holds
-        ``history_lock`` too, so a turn starting right after is always seen as new."""
-        def read() -> tuple:
-            return (list(session.get("history", [])), int(session.get("history_version", 0)),
-                    session.get("inflight_turn"))
-
-        lock = session.get("history_lock")
-        if lock is None:
-            return read()
-        with lock:
-            return read()
-
-    history, version, turn_at_start = snapshot()
-    had_turn = isinstance(turn_at_start, dict)
-    started_at = turn_at_start.get("started_at") if had_turn else None
-
-    def superseded() -> bool:
-        """A new turn makes any guess stale. Admission marks it at once (a fresh in-flight turn);
-        ``history_version`` only moves when that turn's result is committed. The turn that was
-        still being cleared when the client asked is not a new one."""
-        turn = session.get("inflight_turn")
-        started = isinstance(turn, dict) and (not had_turn or turn.get("started_at") != started_at)
-        return started or int(session.get("history_version", 0)) != version
-
-    candidates: list[dict] = []
-    if bool(display.get("composer_predictions", True)):
-        from tui_gateway.suggest_predict import predict_next_message
-
-        agent = session.get("agent")
-        prediction = predict_next_message(
-            history, _coerce_message_text, main_runtime=_main_runtime_from_agent(agent), agent=agent,
-            stale=superseded)
-        # A turn that started while the model was predicting makes every guess stale.
-        if superseded():
-            return _ok(rid, {"candidates": [], "history_version": version})
-        if prediction:
-            candidates = [{"text": prediction, "kind": "prediction"}]
-    if not candidates:
-        from tui_gateway.suggest import extract_suggestions
-
-        assistant_text = next(
-            (_coerce_message_text(m.get("content")) or "" for m in reversed(history) if m.get("role") == "assistant"), "")
-        candidates = [{"text": c.text, "kind": c.kind} for c in extract_suggestions(assistant_text)]
-    return _ok(rid, {"candidates": candidates, "history_version": version})
+    return _ok(rid, suggestions_for(session))
 
 
 @method("complete.slash")
