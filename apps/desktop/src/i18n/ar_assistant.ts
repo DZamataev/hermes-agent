@@ -146,6 +146,8 @@ export const arAssistant = {
       openSession: 'فتح',
       showPrompt: 'إظهار الموجّه',
       hidePrompt: 'إخفاء الموجّه',
+      promptLabel: 'الموجّه للجلسة الجديدة',
+      reset: 'إعادة التعيين',
       launchFailed: 'تعذّر بدء المهمة الجانبية',
       kickoffFailed: 'لم تصل المهمة الجانبية إلى جلستها الجديدة؛ تبقى البطاقة متاحة',
       kickoffUnknown: 'انقطع الاتصال أثناء إرسال المهمة الجانبية؛ ربما تعمل الآن في تبويبها الجديد',

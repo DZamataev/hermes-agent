@@ -4616,6 +4616,8 @@ export const zhOverrides = {
       openSession: '打开',
       showPrompt: '显示提示词',
       hidePrompt: '隐藏提示词',
+      promptLabel: '新会话的提示词',
+      reset: '重置',
       launchFailed: '无法启动附带任务',
       kickoffFailed: '附带任务未能送达新会话；该卡片仍可使用',
       kickoffUnknown: '发送附带任务时连接中断；它可能已在新标签页中运行',

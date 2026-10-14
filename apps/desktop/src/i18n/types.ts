@@ -4180,6 +4180,10 @@ export interface Translations extends NoticeTranslations {
       openSession: string
       showPrompt: string
       hidePrompt: string
+      /** The prompt field's aria-label on the chip, when expanded. */
+      promptLabel: string
+      /** Restore the offered prompt after the user edited it. */
+      reset: string
       launchFailed: string
       kickoffFailed: string
       kickoffUnknown: string

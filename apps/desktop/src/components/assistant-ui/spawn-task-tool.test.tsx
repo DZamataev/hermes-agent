@@ -379,4 +379,105 @@ describe('the spawn-task chip', () => {
     expect(screen.queryByRole('button', { name: 'Start in new tab' })).toBeNull()
     expect(launcher).not.toHaveBeenCalled()
   })
+
+  // The user expands "Show prompt" to edit the task before launching it: the
+  // text they typed is what the new session receives, while the chip keeps the
+  // identity of the offer it was made from (so it reads back as launched).
+  it('launches the prompt the user edited, and shows the sent text read-only', async () => {
+    renderChip()
+    fireEvent.click(screen.getByRole('button', { name: 'Show prompt' }))
+
+    const textarea = screen.getByRole('textbox', { name: 'Prompt for the new session' }) as HTMLTextAreaElement
+    const edited = 'Fix tests/test_login.py flake: retry on 429, and log the attempt.'
+    fireEvent.change(textarea, { target: { value: edited } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start in new tab' }))
+
+    await waitFor(() => expect(launcher).toHaveBeenCalledTimes(1))
+    expect(launcher).toHaveBeenCalledWith(
+      expect.objectContaining({ editedPrompt: edited, prompt: ARGS.prompt, toolCallId: 'spawn-call-1' }),
+      expect.anything()
+    )
+
+    // Keyed by the ORIGINAL text: the launched chip is found again (never re-armed).
+    expect(
+      $spawnTaskChips.get()[spawnTaskChipKey({ prompt: ARGS.prompt, title: ARGS.title, toolCallId: 'spawn-call-1' })]
+    ).toEqual({ prompt: edited, state: 'launched', storedSessionId: 'stored-child' })
+
+    await screen.findByText('Started in a new session')
+    // What was actually sent, read-only — no field to edit a task already running.
+    expect(screen.queryByRole('textbox', { name: 'Prompt for the new session' })).toBeNull()
+    expect(screen.getByText(edited)).toBeTruthy()
+  })
+
+  it('offers Reset only once the text is edited, and restores the offered prompt', () => {
+    renderChip()
+    fireEvent.click(screen.getByRole('button', { name: 'Show prompt' }))
+
+    const textarea = screen.getByRole('textbox', { name: 'Prompt for the new session' }) as HTMLTextAreaElement
+    expect(textarea.value).toBe(ARGS.prompt)
+    expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull()
+
+    fireEvent.change(textarea, { target: { value: 'Something else entirely' } })
+    expect(screen.getByRole('button', { name: 'Reset' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
+    expect((screen.getByRole('textbox', { name: 'Prompt for the new session' }) as HTMLTextAreaElement).value).toBe(
+      ARGS.prompt
+    )
+    expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull()
+  })
+
+  it('keeps the edit when the prompt is collapsed and reopened', () => {
+    renderChip()
+    fireEvent.click(screen.getByRole('button', { name: 'Show prompt' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Prompt for the new session' }), {
+      target: { value: 'Edited while expanded' }
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide prompt' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show prompt' }))
+
+    expect((screen.getByRole('textbox', { name: 'Prompt for the new session' }) as HTMLTextAreaElement).value).toBe(
+      'Edited while expanded'
+    )
+  })
+
+  it('sends the original prompt when the edit is blank', async () => {
+    renderChip()
+    fireEvent.click(screen.getByRole('button', { name: 'Show prompt' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Prompt for the new session' }), {
+      target: { value: '   ' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Start in new tab' }))
+
+    await waitFor(() => expect(launcher).toHaveBeenCalledTimes(1))
+    expect(launcher.mock.calls[0]![0]).toMatchObject({ editedPrompt: '   ' })
+    expect(
+      $spawnTaskChips.get()[spawnTaskChipKey({ prompt: ARGS.prompt, title: ARGS.title, toolCallId: 'spawn-call-1' })]
+    ).toEqual({ state: 'launched', storedSessionId: 'stored-child' })
+
+    await screen.findByText('Started in a new session')
+    expect(screen.getByText(ARGS.prompt)).toBeTruthy()
+  })
+
+  // A launched chip stored before the edit existed carries no sent text: it
+  // falls back to the prompt it was offered with.
+  it('shows the offered prompt on a chip launched before the sent text was stored', () => {
+    window.localStorage.setItem(
+      'hermes.desktop.spawn-task.chips',
+      JSON.stringify({
+        [spawnTaskChipKey({ prompt: ARGS.prompt, title: ARGS.title, toolCallId: 'spawn-call-1' })]: {
+          state: 'launched',
+          storedSessionId: 'stored-old'
+        }
+      })
+    )
+    resetSpawnTaskStoreForTests()
+    renderChip()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show prompt' }))
+
+    expect(screen.getByText(ARGS.prompt)).toBeTruthy()
+    expect(screen.queryByRole('textbox', { name: 'Prompt for the new session' })).toBeNull()
+  })
 })

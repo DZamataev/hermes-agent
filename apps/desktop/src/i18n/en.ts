@@ -4902,6 +4902,8 @@ export const en: Translations = {
       openSession: 'Open',
       showPrompt: 'Show prompt',
       hidePrompt: 'Hide prompt',
+      promptLabel: 'Prompt for the new session',
+      reset: 'Reset',
       launchFailed: 'Could not start the side task',
       kickoffFailed: 'The side task did not reach its new session; the chip stays available',
       kickoffUnknown: 'The connection dropped while the side task was being sent; it may be running in its new tab',

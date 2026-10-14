@@ -201,6 +201,8 @@ export const zhHantAssistant = {
       openSession: '開啟',
       showPrompt: '顯示提示詞',
       hidePrompt: '隱藏提示詞',
+      promptLabel: '新工作階段的提示詞',
+      reset: '重設',
       launchFailed: '無法啟動附帶任務',
       kickoffFailed: '附帶任務未能送達新工作階段；此卡片仍可使用',
       kickoffUnknown: '傳送附帶任務時連線中斷；它可能已在新分頁中執行',

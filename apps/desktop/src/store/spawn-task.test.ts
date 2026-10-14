@@ -15,7 +15,8 @@ import {
   spawnTaskChipKey,
   type SpawnTaskChoice,
   spawnTaskChoiceFor,
-  spawnTaskChoiceScope
+  spawnTaskChoiceScope,
+  spawnTaskPrompt
 } from './spawn-task'
 
 const SCOPE = spawnTaskChoiceScope('local', 'default')
@@ -115,6 +116,38 @@ describe('spawn-task store', () => {
 
     resetSpawnTaskStoreForTests()
     expect($spawnTaskChips.get()[KEY]?.state).toBe('launched')
+  })
+
+  it('edits the kickoff text per chip, keying the chip by the text it was offered with', async () => {
+    const launcher = vi.fn(async () => ({ storedSessionId: 'stored-9' }))
+    setSpawnTaskLauncher(launcher)
+    const edited = { ...OFFER, editedPrompt: 'Fix the flaky login test, but only the 429 retry' }
+
+    await launchSpawnTask(edited, CHOICE, SCOPE)
+
+    expect(launcher).toHaveBeenCalledWith(edited, CHOICE)
+    // The KEY came from the ORIGINAL prompt: the launched chip is found again,
+    // its state never keyed to the edit the user made.
+    expect($spawnTaskChips.get()[KEY]).toEqual({
+      prompt: 'Fix the flaky login test, but only the 429 retry',
+      state: 'launched',
+      storedSessionId: 'stored-9'
+    })
+  })
+
+  it('sends the original prompt, and records no edit, when the edit is blank', async () => {
+    const launcher = vi.fn(async () => ({ storedSessionId: 'stored-9' }))
+    setSpawnTaskLauncher(launcher)
+
+    await launchSpawnTask({ ...OFFER, editedPrompt: '   ' }, CHOICE, SCOPE)
+
+    expect($spawnTaskChips.get()[KEY]).toEqual({ state: 'launched', storedSessionId: 'stored-9' })
+  })
+
+  it('resolves the kickoff text from the edit, falling back to the offered prompt', () => {
+    expect(spawnTaskPrompt({ editedPrompt: '  edited  ', prompt: 'offered' })).toBe('edited')
+    expect(spawnTaskPrompt({ editedPrompt: '   ', prompt: 'offered' })).toBe('offered')
+    expect(spawnTaskPrompt({ prompt: 'offered' })).toBe('offered')
   })
 
   it('leaves the chip launchable when the launch fails', async () => {

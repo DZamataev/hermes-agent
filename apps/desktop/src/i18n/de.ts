@@ -5373,6 +5373,8 @@ export const deOverrides = {
       openSession: 'Öffnen',
       showPrompt: 'Prompt anzeigen',
       hidePrompt: 'Prompt ausblenden',
+      promptLabel: 'Prompt für die neue Sitzung',
+      reset: 'Zurücksetzen',
       launchFailed: 'Die Nebenaufgabe konnte nicht gestartet werden',
       kickoffFailed: 'Die Nebenaufgabe hat ihre neue Sitzung nicht erreicht; der Chip bleibt verfügbar',
       kickoffUnknown: 'Die Verbindung brach beim Senden ab; die Aufgabe läuft eventuell schon im neuen Tab',

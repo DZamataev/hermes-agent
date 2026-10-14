@@ -5382,6 +5382,8 @@ export const frOverrides = {
       openSession: 'Ouvrir',
       showPrompt: 'Afficher le prompt',
       hidePrompt: 'Masquer le prompt',
+      promptLabel: 'Prompt pour la nouvelle session',
+      reset: 'Réinitialiser',
       launchFailed: 'Impossible de lancer la tâche annexe',
       kickoffFailed: 'La tâche annexe n’a pas atteint sa nouvelle session ; la puce reste disponible',
       kickoffUnknown: 'La connexion a été coupée pendant l’envoi ; la tâche tourne peut-être dans son nouvel onglet',

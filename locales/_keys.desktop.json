@@ -208,6 +208,8 @@
     "assistant.spawnTask.notifyHere",
     "assistant.spawnTask.openSession",
     "assistant.spawnTask.pin",
+    "assistant.spawnTask.promptLabel",
+    "assistant.spawnTask.reset",
     "assistant.spawnTask.showPrompt",
     "assistant.spawnTask.status.draft",
     "assistant.spawnTask.status.needs-input",
