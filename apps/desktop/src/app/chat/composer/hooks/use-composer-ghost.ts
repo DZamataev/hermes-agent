@@ -1,8 +1,10 @@
 import { useStore } from '@nanostores/react'
-import { atom } from 'nanostores'
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect } from 'react'
 
 import type { HermesGateway } from '@/hermes'
+import { $sessionGhosts, NO_GHOST, patchSessionGhost } from '@/store/composer-ghost'
+
+export { resetSessionGhosts } from '@/store/composer-ghost'
 
 /**
  * Ghost-text reply suggestion for the empty composer.
@@ -49,32 +51,8 @@ export function ghostVisible(o: { busy: boolean; dismissed: boolean; empty: bool
 export const isGhostAcceptKey = (e: Pick<KeyboardEvent, 'altKey' | 'ctrlKey' | 'key' | 'metaKey' | 'shiftKey'>) =>
   (e.key === 'Tab' || e.key === 'ArrowRight') && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey
 
-interface SessionGhost {
-  dismissed: boolean
-  ghost: string
-  /** Token of the session's latest request: a reply to an older one is dropped. */
-  seq: number
-}
-
-const NO_GHOST: SessionGhost = { dismissed: false, ghost: '', seq: 0 }
-
-/**
- * Each session's suggestion for its last turn. Module-level, not component state: a session
- * switch re-targets the composer (or remounts it in another pane), and the suggestion must
- * survive both.
- */
-const $sessionGhosts = atom<Readonly<Record<string, SessionGhost>>>({})
-
-function patchSessionGhost(sessionId: string, patch: Partial<SessionGhost>): void {
-  const all = $sessionGhosts.get()
-
-  $sessionGhosts.set({ ...all, [sessionId]: { ...(all[sessionId] ?? NO_GHOST), ...patch } })
-}
-
-/** Test seam: forget every session's suggestion. */
-export function resetSessionGhosts(): void {
-  $sessionGhosts.set({})
-}
+let readSeq = 0
+const nextReadSeq = () => ++readSeq
 
 export function useComposerGhost(opts: {
   busy: boolean
@@ -109,32 +87,20 @@ export function useComposerGhost(opts: {
 } {
   const { busy, gateway, hasText, isEditorEmpty, placeholder, sessionId, trigger, writeDraft } = opts
   const empty = !hasText
-  const entry = useStore($sessionGhosts)[sessionId ?? ''] ?? NO_GHOST
-  const { dismissed, ghost } = entry
-  const prevRef = useRef({ busy, sessionId })
+  const stored = useStore($sessionGhosts)[sessionId ?? '']
+  const { dismissed, ghost } = stored ?? NO_GHOST
+  // No entry: a turn of this session ended since the last read (the event stream drops the entry
+  // for every session, shown or not), or this composer never read it.
+  const unread = stored === undefined
 
   // The gateway computes a session's suggestion when its turn completes, whether or not any
-  // composer shows it; reading it back is free (no model request). So read it when a turn ends
-  // here, and when a composer comes to show a session it has nothing stored for.
-  // eslint-disable-next-line no-restricted-syntax -- this records a prop edge, not an atom mirror
+  // composer shows it; reading it back is free (no model request), so read whenever it is unread.
   useEffect(() => {
-    const prev = prevRef.current
-    prevRef.current = { busy, sessionId }
-
-    if (!gateway || !sessionId || busy) {
+    if (!gateway || !sessionId || busy || !unread) {
       return
     }
 
-    // Busy → idle of the SAME session is a finished turn; switching from a busy conversation to
-    // an idle one is not.
-    const turnEnded = prev.sessionId === sessionId && prev.busy
-    const unknown = $sessionGhosts.get()[sessionId] === undefined
-
-    if (!turnEnded && !unknown) {
-      return
-    }
-
-    const seq = ($sessionGhosts.get()[sessionId]?.seq ?? 0) + 1
+    const seq = nextReadSeq()
 
     patchSessionGhost(sessionId, { dismissed: false, ghost: '', seq })
 
@@ -149,7 +115,7 @@ export function useComposerGhost(opts: {
       .catch(() => {
         // Decorative: a failed suggestion must never reach the composer.
       })
-  }, [busy, gateway, sessionId])
+  }, [busy, gateway, sessionId, unread])
 
   const visible = ghostVisible({ busy, dismissed, empty, ghost })
 
