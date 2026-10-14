@@ -206,7 +206,14 @@ export const zhHantAssistant = {
       kickoffUnknown: '傳送附帶任務時連線中斷；它可能已在新分頁中執行',
       worktreeNeedsRepo: '工作樹需要 git 儲存庫。請改為在新分頁中啟動。',
       worktreeNoBase: '無法讀取此簽出的目前提交，因此未建立工作樹',
-      worktreeOtherBackend: '只能為此視窗後端上的對話建立工作樹；請改為在新分頁中啟動'
+      worktreeOtherBackend: '只能為此視窗後端上的對話建立工作樹；請改為在新分頁中啟動',
+      notifyHere: '結果會回到此對話',
+      status: {
+        draft: '正在啟動',
+        working: '進行中',
+        'needs-input': '等待你的輸入',
+        unread: '已完成 — 未讀'
+      }
     },
     startChat: {
       starting: title => `正在啟動「${title}」…`,

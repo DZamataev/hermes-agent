@@ -152,22 +152,52 @@ def test_the_compact_history_projection_keeps_the_receipt():
 
 def test_compression_keeps_the_receipt_a_chip_renders_from():
     """`/compress` demotes tool results over the prune floor to one-line text
-    summaries. A spawn_task receipt with a realistic title crosses that floor;
-    demoted to text, the chip would vanish from the compacted transcript."""
-    from agent.context_compressor import _summarize_tool_result
+    summaries. A spawn_task receipt at the store's full title length crosses that
+    floor; demoted to text, the chip would vanish from the compacted transcript."""
+    from agent.context_compressor import _PRUNE_MIN_CHARS, _summarize_tool_result
+    from hermes_state import SessionDB
 
-    title = "Investigate the flaky login test in the auth integration suite"
-    receipt = st.spawn_task_tool(title=title, prompt="p")
-    assert len(receipt) > 200  # over the prune floor: this receipt WOULD be demoted
-
+    title = "x" * SessionDB.MAX_TITLE_LENGTH
     args = json.dumps({"title": title, "prompt": "p"})
+    receipt = st.spawn_task_tool(title=title, prompt="p", notify_on_done=True)
+    assert len(receipt) > _PRUNE_MIN_CHARS  # over the floor: this receipt WOULD be demoted
+
     summary = _summarize_tool_result("spawn_task", args, receipt)
 
     kept = json.loads(summary)
     assert kept["success"] is True and kept["title"] == title
+    # The chip's "the result comes back here" line reads this off the receipt.
+    assert kept["notify_on_done"] is True
     # Short enough that later prune passes leave it alone.
-    assert len(summary) <= 200
+    assert len(summary) < _PRUNE_MIN_CHARS
+
+    # A receipt that did NOT ask for the result must not claim it after pruning.
+    plain = _summarize_tool_result("spawn_task", args, st.spawn_task_tool(title=title, prompt="p"))
+    assert json.loads(plain)["notify_on_done"] is False
 
     # A refusal is not a receipt: it must not turn into a launchable one.
     refusal = json.dumps({"error": "spawn_task needs a self-contained prompt " + "x" * 200})
     assert "success" not in _summarize_tool_result("spawn_task", args, refusal)
+
+
+def test_notify_on_done_is_an_opt_in_carried_on_the_receipt():
+    """The offering session decides whether it wants the result back; the chip
+    reads the decision from the receipt, never from the raw model argument."""
+    plain = json.loads(st.spawn_task_tool(title="T", prompt="p"))
+    asked = json.loads(st.spawn_task_tool(title="T", prompt="p", notify_on_done=True))
+    junk = json.loads(st.spawn_task_tool(title="T", prompt="p", notify_on_done="yes"))
+
+    assert plain["notify_on_done"] is False
+    assert asked["notify_on_done"] is True
+    assert junk["notify_on_done"] is False
+
+
+def test_the_schema_tells_the_model_how_a_result_arrives():
+    from tools.spawn_task_reports import SPAWN_TASK_RESULT_PREFIX
+
+    prop = st.SPAWN_TASK_SCHEMA["parameters"]["properties"]["notify_on_done"]
+    assert prop["type"] == "boolean"
+    assert SPAWN_TASK_RESULT_PREFIX in prop["description"]
+    # The notification names the session and carries no result: the model is told to read it.
+    assert "session_search(session_id=" in prop["description"]
+    assert "notify_on_done" not in st.SPAWN_TASK_SCHEMA["parameters"]["required"]

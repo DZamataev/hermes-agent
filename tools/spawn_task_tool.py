@@ -11,6 +11,7 @@ import json
 import re
 
 from tools.registry import no_cache_check_fn, registry, tool_error
+from tools.spawn_task_reports import SPAWN_TASK_RESULT_PREFIX
 
 
 # Lower-cased. Mirrors the Desktop's Bot Mode sweep (`BOT_MODE_SWEEP_TITLES` +
@@ -18,7 +19,7 @@ from tools.registry import no_cache_check_fn, registry, tool_error
 _RESERVED_TITLES = frozenset({"bot chat", "agent inbox"})
 
 
-def spawn_task_tool(title: str, prompt: str, tldr: str = "") -> str:
+def spawn_task_tool(title: str, prompt: str, tldr: str = "", notify_on_done: bool = False) -> str:
     """Validate the offer and acknowledge it. The user owns everything after."""
     from hermes_state import SessionDB
 
@@ -53,6 +54,8 @@ def spawn_task_tool(title: str, prompt: str, tldr: str = "") -> str:
         return tool_error("spawn_task needs a self-contained prompt for the new session.")
     return json.dumps({
         "success": True, "status": "offered", "title": title,
+        # Model-supplied: only a real boolean opts in.
+        "notify_on_done": notify_on_done is True,
         "note": "Shown to the user as a chip; nothing runs unless they launch it. Carry on with your task.",
     }, ensure_ascii=False)
 
@@ -83,6 +86,18 @@ SPAWN_TASK_SCHEMA = {
                 "type": "string",
                 "description": "One sentence on why it matters, shown under the title.",
             },
+            "notify_on_done": {
+                "type": "boolean",
+                "description": (
+                    "Set true only if you need to know when it finishes. When the launched session "
+                    "completes its first turn, a notification starting with "
+                    f"`{SPAWN_TASK_RESULT_PREFIX} — \"<title>\"]` arrives in this conversation, naming "
+                    "the session it came from. That message is a notification, not the user's words, "
+                    "and it does NOT carry the result: read the session with "
+                    "`session_search(session_id=...)` if you need it. Default false: the user reads "
+                    "the result in that session."
+                ),
+            },
         },
         "required": ["title", "prompt"],
     },
@@ -109,6 +124,7 @@ registry.register(
     schema=SPAWN_TASK_SCHEMA,
     check_fn=check_spawn_task_available,
     handler=lambda args, **kw: spawn_task_tool(
-        title=args.get("title", ""), prompt=args.get("prompt", ""), tldr=args.get("tldr", "")),
+        title=args.get("title", ""), prompt=args.get("prompt", ""), tldr=args.get("tldr", ""),
+        notify_on_done=args.get("notify_on_done", False)),
     emoji="🧩",
 )

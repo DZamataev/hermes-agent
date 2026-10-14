@@ -130,6 +130,9 @@ class SessionCreateParams(ProfileParams):
     # ``<title> (N)`` instead of being dropped for an auto-title (never the
     # lineage ``#N`` form, which name lookups treat as a continuation).
     title_dedupe: bool = False
+    # A spawn-task chip whose offer asked for the result back: the offering session's stored id.
+    # The first completed turn leaves a notification for it (tools/spawn_task_reports.py).
+    spawn_report_to: str | None = None
     model: str | None = None
     provider: str | None = None
     reasoning_effort: str | None = None

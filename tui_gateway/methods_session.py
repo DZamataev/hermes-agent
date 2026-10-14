@@ -315,6 +315,8 @@ def _seed_row(record: dict) -> None:
     the fallback, and it re-copies the WHOLE seed, so a partial copy is rolled back here (the compensation
     ``_persist_branch`` applies to branch children) rather than left to be duplicated."""
     key = record.get("session_key")
+    # The row write consumes the title; a rolled-back row must hand it back to the first prompt.
+    title = record.get("pending_title")
     try:
         if _ensure_session_db_row(record) is False:
             return
@@ -322,6 +324,7 @@ def _seed_row(record: dict) -> None:
     except Exception:
         logger.warning("seeded-session persistence failed for %s; falling back to lazy row creation", key, exc_info=True)
     if not record.get("_branch_seed_persisted"):
+        record["pending_title"] = title
         with contextlib.suppress(Exception), _session_db(record) as db:
             if db is not None:
                 db.delete_session(key)
@@ -443,6 +446,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             **({"delegation_override": pick} if (pick := _create_delegation_override(params)) else {}),
             "parent_session_id": parent_session_id, "pending_title": _str_param(params, "title") or None,
             "pending_title_dedupe": _flag(params, "title_dedupe"),
+            "spawn_report_to": _str_param(params, "spawn_report_to") or None,
             "pending_hidden": _flag(params, "hidden"), "room_plumbing": _flag(params, "room_plumbing"),
             "follow_profile_config": _flag(params, "follow_profile_config"),
             "profile_home": str(profile_home) if profile_home is not None else None,

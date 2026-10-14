@@ -39,6 +39,15 @@ describe('useChipOwner', () => {
     expect(main).toBe(tile)
   })
 
+  // The chip promises the result iff the offering owner resolves (Д5) — the same
+  // ladder the launcher sends `spawn_report_to` through.
+  it('reports whether the offering owner resolves', () => {
+    $sessionTiles.set([{ ownerRoute: ROUTE, storedSessionId: 'tile-session' } as never])
+
+    expect(renderHook(() => useChipOwner('tile-session')).result.current.ownerResolved).toBe(true)
+    expect(renderHook(() => useChipOwner('ghost-session')).result.current.ownerResolved).toBe(false)
+  })
+
   // A legacy direct remote (no registry id) is a different machine: its pick
   // must never be offered to (or overwritten by) this machine's profile.
   it('keeps a legacy direct remote window apart from local', () => {

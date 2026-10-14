@@ -3,10 +3,11 @@ import { useMemo } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $connection, $sessions, knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
-import { isSessionOwnerRoute, requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
-import { $sessionTiles, sessionTileOwnerRoute, tileConnectionScopeId } from '@/store/session-states'
+import { $connection, $sessions } from '@/store/session'
+import { isSessionOwnerRoute, requestForSessionProfile } from '@/store/session-request-router'
+import { $sessionTiles, tileConnectionScopeId } from '@/store/session-states'
 import { spawnTaskChoiceScope } from '@/store/spawn-task'
+import { spawnTaskOwner } from '@/store/spawn-task-owner'
 
 type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 
@@ -21,6 +22,10 @@ export interface ChipOwner {
    *  connection), so the catalog is that backend's; undefined = the window's
    *  own gateway, exactly as the primary chat reads it. */
   request?: RequestGateway
+  /** Whether the offering owner resolves. The chip promises the result back
+   *  (`notifyHere`) iff this is true — the very same ladder the launcher's
+   *  `spawnReportTo` send uses, so the promise and the delivery never disagree. */
+  ownerResolved: boolean
 }
 
 /** Where the offering conversation lives — the same owner ladder the launcher
@@ -36,11 +41,7 @@ export function useChipOwner(storedId: null | string): ChipOwner {
   const activeProfile = useStore($activeGatewayProfile)
 
   return useMemo(() => {
-    const rows = ownerLookupSessionRows()
-
-    const owner: SessionOwnerScope = storedId
-      ? (sessionTileOwnerRoute(storedId) ?? knownSessionOwner(rows, storedId))
-      : undefined
+    const owner = spawnTaskOwner(storedId)
 
     const route = isSessionOwnerRoute(owner) ? owner : undefined
     const ownerProfile = route ? route.targetProfile || route.profile : typeof owner === 'string' ? owner : ''
@@ -53,6 +54,7 @@ export function useChipOwner(storedId: null | string): ChipOwner {
       // direct remote is `url:<base>` — never merged with local.
       choiceScope: spawnTaskChoiceScope(connectionId || tileConnectionScopeId(windowConnection), profile),
       connectionId,
+      ownerResolved: Boolean(owner),
       profile,
       request: owner
         ? <T,>(method: string, params?: Record<string, unknown>) =>

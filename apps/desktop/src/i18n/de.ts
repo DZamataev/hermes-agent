@@ -5378,7 +5378,14 @@ export const deOverrides = {
       kickoffUnknown: 'Die Verbindung brach beim Senden ab; die Aufgabe läuft eventuell schon im neuen Tab',
       worktreeNeedsRepo: 'Ein Worktree braucht ein Git-Repository. Starte sie stattdessen in einem neuen Tab.',
       worktreeNoBase: 'Der aktuelle Commit dieses Checkouts war nicht lesbar, kein Worktree erstellt',
-      worktreeOtherBackend: 'Ein Worktree geht nur für einen Chat auf dem Backend dieses Fensters; starte sie in einem neuen Tab'
+      worktreeOtherBackend: 'Ein Worktree geht nur für einen Chat auf dem Backend dieses Fensters; starte sie in einem neuen Tab',
+      notifyHere: 'Das Ergebnis kommt in diesen Chat zurück',
+      status: {
+        draft: 'Startet',
+        working: 'Arbeitet',
+        'needs-input': 'Wartet auf dich',
+        unread: 'Abgeschlossen – ungelesen'
+      }
     },
     mcpSetup: {
       installTitle: 'MCP-Server hinzufügen',

@@ -72,6 +72,12 @@ def _compute_host_turn_frame(
         # cleared only after a successful isolated turn (_on_compute_host_turn_done),
         # so the fail-open in-process path can still apply it if the host dispatch fails.
         "pending_model_switch": session.get("pending_model_switch"),
+        # A spawn-task child's one-shot arm and the client title it must claim both belong to
+        # the turn that BUILDS the child session (see compute_host._ensure_server_session);
+        # without them an isolated first turn writes no report and the row keeps its auto title.
+        "spawn_report_to": session.get("spawn_report_to"),
+        "pending_title": session.get("pending_title"),
+        "pending_title_dedupe": session.get("pending_title_dedupe"),
         "reasoning_config_override": session.get("create_reasoning_override"),
         # The composer Subagents pick: the isolated turn's agent runs delegate_task, so it needs the pick too.
         "delegation_override": session.get("delegation_override"),
@@ -255,6 +261,10 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
     # (kept on error so the fail-open in-process path can still apply it).
     if frame.get("type") != "turn.error":
         session.pop("pending_model_switch", None)
+        # Same one-shot create-time intent: the spawn-report arm crossed to the host only
+        # on the turn that BUILT the child. Clear the parent's copy here, or a respawned
+        # host rebuilds the child from a stale frame and reports the task a second time.
+        session.pop("spawn_report_to", None)
     if frame.get("type") == "turn.error":
         message = str(frame.get("message") or "compute host turn failed")
         _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})

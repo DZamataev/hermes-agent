@@ -4621,7 +4621,14 @@ export const zhOverrides = {
       kickoffUnknown: '发送附带任务时连接中断；它可能已在新标签页中运行',
       worktreeNeedsRepo: '工作树需要 git 仓库。请改为在新标签页中启动。',
       worktreeNoBase: '无法读取此检出的当前提交，因此未创建工作树',
-      worktreeOtherBackend: '只能为此窗口后端上的对话创建工作树；请改为在新标签页中启动'
+      worktreeOtherBackend: '只能为此窗口后端上的对话创建工作树；请改为在新标签页中启动',
+      notifyHere: '结果会回到此对话',
+      status: {
+        draft: '正在启动',
+        working: '进行中',
+        'needs-input': '等待你的输入',
+        unread: '已完成 — 未读'
+      }
     },
     startChat: {
       starting: title => `正在启动“${title}”…`,

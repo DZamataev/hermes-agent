@@ -323,6 +323,15 @@ class ComputeHost:
                     session[key] = str(frame[key])
         else:
             session = self._build_server_session(server, frame, sid)
+            # One-shot create-time intent, adopted only by the turn that builds this session:
+            # the child clears the spawn-report arm after its first report and consumes the
+            # pending title once, so re-adopting them from a parent whose own copies never
+            # clear would re-arm a child that already reported.
+            for key in ("spawn_report_to", "pending_title"):
+                if value := str(frame.get(key) or "").strip():
+                    session[key] = value
+            if frame.get("pending_title_dedupe"):
+                session["pending_title_dedupe"] = True
         if isinstance(frame.get("attached_images"), list):
             session["attached_images"] = list(frame.get("attached_images") or [])
         # The parent's Subagents pick rides every frame (it can change between turns); a missing key means

@@ -3648,7 +3648,14 @@ export const jaOverrides = {
       kickoffUnknown: 'サイドタスクの送信中に接続が切れました。新しいタブで実行中の可能性があります',
       worktreeNeedsRepo: 'ワークツリーには git リポジトリが必要です。新しいタブで開始してください。',
       worktreeNoBase: 'このチェックアウトの現在のコミットを読み取れなかったため、ワークツリーは作成されませんでした',
-      worktreeOtherBackend: 'ワークツリーはこのウィンドウのバックエンド上のチャットでのみ作成できます。新しいタブで開始してください'
+      worktreeOtherBackend: 'ワークツリーはこのウィンドウのバックエンド上のチャットでのみ作成できます。新しいタブで開始してください',
+      notifyHere: '結果はこのチャットに戻ってきます',
+      status: {
+        draft: '開始中',
+        working: '実行中',
+        'needs-input': '入力待ち',
+        unread: '完了 — 未読'
+      }
     },
     startChat: {
       starting: title => `「${title}」を開始中…`,

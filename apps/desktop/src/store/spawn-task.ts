@@ -40,6 +40,8 @@ export interface SpawnTaskChoice {
 export interface SpawnTaskOffer {
   /** Workspace the offering session runs in; a worktree branches off it. */
   cwd: string
+  /** The offer asked for the result back (`notify_on_done` on the receipt). */
+  notify?: boolean
   /** The offering session: the spawned one runs on the same backend + profile. */
   ownerStoredSessionId?: null | string
   prompt: string

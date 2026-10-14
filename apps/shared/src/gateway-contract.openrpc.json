@@ -30488,6 +30488,18 @@
             "title": "Title Dedupe",
             "type": "boolean"
           },
+          "spawn_report_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Spawn Report To"
+          },
           "model": {
             "anyOf": [
               {
