@@ -10,6 +10,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
+import { noteSessionTurnEnded } from '@/store/composer-ghost'
 import { noteFreeTierTurnComplete } from '@/store/free-tier-sign-in'
 import { notify } from '@/store/notifications'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
@@ -368,6 +369,9 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     // last item stuck pending/in_progress. Finished lists keep their linger.
     clearActiveSessionTodos(sessionId)
     setSessionCompacting(sessionId, false)
+    // The gateway is computing this turn's composer suggestion, shown here or not: the stored one
+    // is stale, and whichever composer next shows the session reads the new one.
+    noteSessionTurnEnded(sessionId)
 
     flushQueuedDeltas(sessionId)
 

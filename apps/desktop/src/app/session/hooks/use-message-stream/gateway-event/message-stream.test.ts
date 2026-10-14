@@ -8,6 +8,8 @@ vi.mock('@/store/session-control', () => ({ refreshSupportedSessionControlAfterT
 
 import type { GatewayEventName } from '@hermes/shared'
 
+import { $sessionGhosts, patchSessionGhost, resetSessionGhosts } from '@/store/composer-ghost'
+
 import { handleMessageStreamEvent } from './message-stream'
 import type { GatewayEventContext } from './types'
 
@@ -54,5 +56,20 @@ describe('handleMessageStreamEvent session-control integration', () => {
     expect(handleMessageStreamEvent(context('message.complete'))).toBe(true)
     expect(refreshSupportedSessionControlAfterTurn).toHaveBeenCalledTimes(1)
     expect(refreshSupportedSessionControlAfterTurn).toHaveBeenCalledWith('s1')
+  })
+})
+
+describe('handleMessageStreamEvent composer ghost', () => {
+  it('a background session that completes a turn drops its stored suggestion, so it is read again', () => {
+    resetSessionGhosts()
+    patchSessionGhost('s1', { ghost: 'old reply', seq: 1 })
+    patchSessionGhost('s2', { ghost: 'other reply', seq: 1 })
+
+    handleMessageStreamEvent(context('message.delta'))
+    expect($sessionGhosts.get().s1?.ghost).toBe('old reply')
+
+    handleMessageStreamEvent(context('message.complete')) // s1, not the active event
+    expect($sessionGhosts.get().s1).toBeUndefined()
+    expect($sessionGhosts.get().s2?.ghost).toBe('other reply')
   })
 })

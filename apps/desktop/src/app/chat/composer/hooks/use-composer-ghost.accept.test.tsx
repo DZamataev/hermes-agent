@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
 import { clearSessionDraft, mainComposerScope } from '@/store/composer'
+import { noteSessionTurnEnded } from '@/store/composer-ghost'
 
 import type { QueueEditState } from '../composer-utils'
 import { caretOffsetInEditor } from '../rich-editor'
@@ -212,20 +213,40 @@ describe('accepting the ghost reply in a focused composer', () => {
     expect(editor.getAttribute('data-placeholder')).toBe(GHOST)
   })
 
-  it('a session is read once when it comes into view, and again only when its turn ends', async () => {
+  it('a session is read once when it comes into view, and again only after its turn ends', async () => {
     const view = render(<Harness busy writer="loadIntoComposer" />)
     const editor = view.getByTestId('editor')
 
-    view.rerender(<Harness busy={false} writer="loadIntoComposer" />) // A's turn ends: read A
+    const reads = () =>
+      vi.mocked(gateway.request).mock.calls.map(([, params]) => (params as { session_id: string }).session_id)
+
+    view.rerender(<Harness busy={false} writer="loadIntoComposer" />) // A comes into view idle: read A
     await waitFor(() => expect(editor.getAttribute('data-placeholder')).toBe(GHOST))
     view.rerender(<Harness busy={false} sessionId="session-B" writer="loadIntoComposer" />) // B first shown: read B
-    view.rerender(<Harness busy={false} writer="loadIntoComposer" />) // back to A: already known
-    view.rerender(<Harness busy={false} sessionId="session-B" writer="loadIntoComposer" />) // B again: known
+    view.rerender(<Harness busy={false} writer="loadIntoComposer" />) // back to A: already read
+    expect(reads()).toEqual(['session-A', 'session-B'])
 
-    expect(vi.mocked(gateway.request).mock.calls.map(([, params]) => (params as { session_id: string }).session_id)).toEqual([
-      'session-A',
-      'session-B'
-    ])
+    // A turn of A ends while A is on screen: its new suggestion is read at once.
+    act(() => noteSessionTurnEnded('session-A'))
+    await waitFor(() => expect(reads()).toEqual(['session-A', 'session-B', 'session-A']))
+    await waitFor(() => expect(editor.getAttribute('data-placeholder')).toBe(GHOST))
+  })
+
+  it('a turn that ends in a session no composer shows is read when the session is opened', async () => {
+    const view = render(<Harness busy={false} writer="loadIntoComposer" />)
+    const editor = view.getByTestId('editor')
+    await waitFor(() => expect(editor.getAttribute('data-placeholder')).toBe(GHOST))
+
+    // The user switched to B while A's turn was running; A's turn ends in the background.
+    view.rerender(<Harness busy={false} sessionId="session-B" writer="loadIntoComposer" />)
+    const NEXT = 'now commit it'
+    vi.mocked(gateway.request).mockImplementationOnce(
+      async () => ({ candidates: [{ kind: 'prediction', text: NEXT }], history_version: 2 }) as never
+    )
+    act(() => noteSessionTurnEnded('session-A'))
+
+    view.rerender(<Harness busy={false} writer="loadIntoComposer" />)
+    await waitFor(() => expect(editor.getAttribute('data-placeholder')).toBe(NEXT))
   })
 
   it('Escape dismisses the ghost without writing anything', async () => {
