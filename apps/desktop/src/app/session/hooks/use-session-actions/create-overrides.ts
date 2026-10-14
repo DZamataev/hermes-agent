@@ -71,8 +71,10 @@ export function sessionCreateOverrideParams(
     params.provider = overrides?.model?.provider.trim() ?? ''
   }
 
-  if (overrides?.spawnReportTo) {
-    params.spawn_report_to = overrides.spawnReportTo
+  const spawnReportTo = overrides?.spawnReportTo?.trim()
+
+  if (spawnReportTo) {
+    params.spawn_report_to = spawnReportTo
   }
 
   if (overrides?.reasoningEffort) {

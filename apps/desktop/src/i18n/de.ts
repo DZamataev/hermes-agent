@@ -5351,9 +5351,10 @@ export const deOverrides = {
       worktreeOtherBackend: 'Ein Worktree geht nur für einen Chat auf dem Backend dieses Fensters; starte sie in einem neuen Tab',
       notifyHere: 'Das Ergebnis kommt in diesen Chat zurück',
       status: {
+        draft: 'Startet',
         working: 'Arbeitet',
         'needs-input': 'Wartet auf dich',
-        unread: 'Fertig — neue Antwort',
+        unread: 'Abgeschlossen – ungelesen',
         idle: 'Untätig'
       }
     },

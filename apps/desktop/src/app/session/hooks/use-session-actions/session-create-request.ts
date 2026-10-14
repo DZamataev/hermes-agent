@@ -27,10 +27,13 @@ type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => P
  *  updates from main (#128971). Each field below is safe to drop for them:
  *  - `cwd_explicit` (#122899): those backends always honoured the client `cwd`.
  *  - `service_tier` (Ultrafast): `fast` still rides, so they get Priority.
+ *  - `spawn_report_to` / `title_dedupe` (spawn-task chip): the side task still
+ *    launches; it just does not report back, and its title is dropped like any
+ *    other taken one.
  *  Matched on the stable prefix, not `isOutOfSyncRpcParams`: v0.21.3 already
  *  rejects but predates the "out of sync" suffix.
  *  Delete a field once no supported backend predates it. */
-const DROPPABLE_CREATE_FIELDS = ['cwd_explicit', 'service_tier'] as const
+const DROPPABLE_CREATE_FIELDS = ['cwd_explicit', 'service_tier', 'spawn_report_to', 'title_dedupe'] as const
 
 function rejectedField(params: Record<string, unknown>, error: unknown): string | undefined {
   const message = error instanceof Error ? error.message : String(error)

@@ -3634,10 +3634,11 @@ export const jaOverrides = {
       worktreeOtherBackend: 'ワークツリーはこのウィンドウのバックエンド上のチャットでのみ作成できます。新しいタブで開始してください',
       notifyHere: '結果はこのチャットに戻ってきます',
       status: {
+        draft: '開始中',
         working: '実行中',
         'needs-input': '入力待ち',
-        unread: '完了 — 新しい返信',
-        idle: '待機中'
+        unread: '完了 — 未読',
+        idle: 'アイドル'
       }
     },
     startChat: {

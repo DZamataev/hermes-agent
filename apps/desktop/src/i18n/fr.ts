@@ -5360,9 +5360,10 @@ export const frOverrides = {
       worktreeOtherBackend: 'Un worktree ne peut être créé que pour un chat sur le backend de cette fenêtre ; lancez-la dans un nouvel onglet',
       notifyHere: 'Le résultat reviendra dans ce chat',
       status: {
+        draft: 'Démarrage',
         working: 'En cours',
         'needs-input': 'Attend votre réponse',
-        unread: 'Terminée — nouvelle réponse',
+        unread: 'Terminée — non lue',
         idle: 'Inactive'
       }
     },

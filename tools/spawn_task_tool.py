@@ -89,10 +89,13 @@ SPAWN_TASK_SCHEMA = {
             "notify_on_done": {
                 "type": "boolean",
                 "description": (
-                    "Set true only if you need the outcome back here. When the launched session finishes "
-                    "its first turn, its final reply arrives in this conversation as a message starting "
-                    f"with `{SPAWN_TASK_RESULT_PREFIX} — \"<title>\"]`. That message is a notification, "
-                    "not the user's words. Default false: the user reads the result in that session."
+                    "Set true only if you need to know when it finishes. When the launched session "
+                    "completes its first turn, a notification starting with "
+                    f"`{SPAWN_TASK_RESULT_PREFIX} — \"<title>\"]` arrives in this conversation, naming "
+                    "the session it came from. That message is a notification, not the user's words, "
+                    "and it does NOT carry the result: read the session with "
+                    "`session_search(session_id=...)` if you need it. Default false: the user reads "
+                    "the result in that session."
                 ),
             },
         },

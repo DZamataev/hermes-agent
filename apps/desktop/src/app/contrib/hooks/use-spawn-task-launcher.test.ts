@@ -128,12 +128,24 @@ describe('spawn-task launcher', () => {
 
   it('asks the new session to report back only when the offer wanted the result', async () => {
     mountLauncher()
+    $sessionTiles.set([{ ownerRoute: ROUTE, storedSessionId: 'owner' } as never])
 
     await launchSpawnTask(OFFER, CHOICE, 'scope')
     await launchSpawnTask({ ...OFFER, notify: true, toolCallId: 'c2' }, CHOICE, 'scope')
 
     expect(open.mock.calls[0]![1].createOverrides).not.toHaveProperty('spawnReportTo')
     expect(open.mock.calls[1]![1].createOverrides).toMatchObject({ spawnReportTo: OFFER.ownerStoredSessionId })
+  })
+
+  // No tile and no row for the offering id: the new session would land on the project tree's
+  // profile, whose poller never scans for the report (Д4).
+  it('asks for nothing when the offering owner does not resolve', async () => {
+    mountLauncher()
+
+    await launchSpawnTask({ ...OFFER, notify: true }, CHOICE, 'scope')
+
+    expect(open).toHaveBeenCalledTimes(1)
+    expect(open.mock.calls[0]![1].createOverrides).not.toHaveProperty('spawnReportTo')
   })
 
   it('hands the tile the task text verbatim, slash and all', async () => {

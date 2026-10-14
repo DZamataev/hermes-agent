@@ -84,7 +84,10 @@ export function createOverrides(
   return {
     ...(choice.model ? { fast: choice.fast, model: { model: choice.model, provider: choice.provider } } : {}),
     ...(choice.effort ? { reasoningEffort: choice.effort } : {}),
-    ...(offer.notify && offer.ownerStoredSessionId ? { spawnReportTo: offer.ownerStoredSessionId } : {}),
+    // Only with a resolved owner: an unresolvable one would land the new session on the
+    // project tree's profile, and the report would be written into a profile whose poller
+    // never scans for it (Д4).
+    ...(offer.notify && offer.ownerStoredSessionId && ownerFor(offer) ? { spawnReportTo: offer.ownerStoredSessionId } : {}),
     onComposerScopeAssigned: stored => onKickoff(queueTileKickoff(stored, offer.prompt)),
     ownSelection: true,
     title: offer.title,

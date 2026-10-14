@@ -501,6 +501,11 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
             model_config[flag] = True
     if isinstance(composer_profile := session.get("composer_override_profile"), dict):
         model_config["composer_override_profile"] = composer_profile
+    # A spawn-task child's address for its result. The live dict is the fast copy, but a
+    # resume/auto-continue (or an isolated first turn) rebuilds the dict without it — and the
+    # report must still go out. Cleared on the row when the report is written.
+    if spawn_report_to := str(session.get("spawn_report_to") or "").strip():
+        model_config["spawn_report_to"] = spawn_report_to
     from tools.approval_yolo import with_session_yolo  # a /yolo toggled before the row existed
     return row_model, with_session_yolo(model_config, session.get("session_key") or "")
 

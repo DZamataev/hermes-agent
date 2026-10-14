@@ -72,6 +72,12 @@ def _compute_host_turn_frame(
         # cleared only after a successful isolated turn (_on_compute_host_turn_done),
         # so the fail-open in-process path can still apply it if the host dispatch fails.
         "pending_model_switch": session.get("pending_model_switch"),
+        # A spawn-task child's one-shot arm and the client title it must claim both belong to
+        # the turn that BUILDS the child session (see compute_host._ensure_server_session);
+        # without them an isolated first turn writes no report and the row keeps its auto title.
+        "spawn_report_to": session.get("spawn_report_to"),
+        "pending_title": session.get("pending_title"),
+        "pending_title_dedupe": session.get("pending_title_dedupe"),
         "reasoning_config_override": session.get("create_reasoning_override"),
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session), "attached_images": attached_images,

@@ -4888,9 +4888,10 @@ export const en: Translations = {
       worktreeOtherBackend: 'A worktree can only be made for a chat on this window’s backend; start it in a new tab instead',
       notifyHere: 'The result will come back to this chat',
       status: {
+        draft: 'Starting',
         working: 'Working',
         'needs-input': 'Needs your input',
-        unread: 'Finished — new reply',
+        unread: 'Finished — unread',
         idle: 'Idle'
       }
     },

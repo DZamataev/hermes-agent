@@ -4607,9 +4607,10 @@ export const zhOverrides = {
       worktreeOtherBackend: '只能为此窗口后端上的对话创建工作树；请改为在新标签页中启动',
       notifyHere: '结果会回到此对话',
       status: {
+        draft: '正在启动',
         working: '进行中',
         'needs-input': '等待你的输入',
-        unread: '已完成 — 有新回复',
+        unread: '已完成 — 未读',
         idle: '空闲'
       }
     },

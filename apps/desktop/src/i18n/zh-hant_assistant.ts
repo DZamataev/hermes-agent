@@ -209,9 +209,10 @@ export const zhHantAssistant = {
       worktreeOtherBackend: '只能為此視窗後端上的對話建立工作樹；請改為在新分頁中啟動',
       notifyHere: '結果會回到此對話',
       status: {
+        draft: '正在啟動',
         working: '進行中',
         'needs-input': '等待你的輸入',
-        unread: '已完成 — 有新回覆',
+        unread: '已完成 — 未讀',
         idle: '閒置'
       }
     },

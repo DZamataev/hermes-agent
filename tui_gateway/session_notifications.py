@@ -614,7 +614,10 @@ def _notif_poll_spawn_reports(sid: str, session: dict) -> None:
         started = _notif_submit(
             f"__notif__{int(time.time() * 1000)}", sid, session, format_report(record),
             "spawn-task report dispatch failed", display_kind="async_delegation_complete",
-            display_metadata={"display_text": display_text(record), "task_count": 1})
+            display_metadata={"display_text": display_text(record), "task_count": 1,
+                              # The same field the async_delegation chip groups by; without it a
+                              # consumer reads this as a legacy backend event (Б8).
+                              "delegation_id": str(record.get("from") or "")})
     except Exception:
         started = False
     if not started:

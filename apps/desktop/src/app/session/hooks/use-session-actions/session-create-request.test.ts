@@ -63,6 +63,23 @@ describe('createGatewaySession', () => {
     expect(requestGateway.mock.calls.map(call => call[1])).toEqual([tiered, { ...legacy, cwd_explicit: true }, legacy])
   })
 
+  it('drops spawn_report_to (then title_dedupe) for a backend that predates the chip', async () => {
+    // Without this, a chip launched with `notify_on_done` on an older backend fails the whole
+    // `session.create` (extra="forbid" + 4000): no session, no side task (Д1).
+    const chipped = { ...params, spawn_report_to: 'parent-stored', title: 'Fix flaky login', title_dedupe: true }
+    const { spawn_report_to: _to, ...withoutTo } = chipped
+    const { title_dedupe: _dedupe, ...legacy } = withoutTo
+
+    const requestGateway = vi
+      .fn()
+      .mockRejectedValueOnce(rejection('spawn_report_to', OUT_OF_SYNC))
+      .mockRejectedValueOnce(rejection('title_dedupe', OUT_OF_SYNC))
+      .mockResolvedValueOnce({ session_id: 's4' })
+
+    await expect(createGatewaySession(null, chipped, requestGateway)).resolves.toEqual({ session_id: 's4' })
+    expect(requestGateway.mock.calls.map(call => call[1])).toEqual([chipped, withoutTo, legacy])
+  })
+
   it('never resends on any other failure, even one that mentions the field', async () => {
     const cases: Array<[Error, Record<string, unknown>]> = [
       [new Error('request timed out'), params],

@@ -1943,13 +1943,13 @@ def _sum_template(template: str, **defaults):
 
 
 def _sum_spawn_task(name, args, content, content_len, line_count):
-    # The Desktop renders a spawn_task call as a launchable chip only from its
-    # success receipt (and keys the chip by the validated title in it). Keep the
-    # receipt itself — compact JSON, well under the prune floor for any title —
-    # instead of a text line that would turn the chip into a plain tool row.
+    # The Desktop renders a spawn_task call as a launchable chip only from its success receipt
+    # (keyed by the validated title); text would turn the chip into a plain tool row. Its
+    # `notify_on_done` line is what says the result comes back here, so it rides along.
     receipt = _json_dict(content)
     if receipt.get("success") is True and isinstance(receipt.get("title"), str):
-        return json.dumps({"success": True, "status": "offered", "title": receipt["title"]}, ensure_ascii=False)
+        return json.dumps({"success": True, "status": "offered", "title": receipt["title"],
+                           "notify_on_done": receipt.get("notify_on_done") is True}, ensure_ascii=False)
     return f"[spawn_task] title={_str_arg(args, 'title')[:40]}{_skill_result_failure_suffix(content)} ({content_len:,} chars result)"
 
 

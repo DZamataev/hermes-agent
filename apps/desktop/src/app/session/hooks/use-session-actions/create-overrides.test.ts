@@ -9,4 +9,14 @@ describe('session.create override params', () => {
     })
     expect(sessionCreateOverrideParams({ title: 'T' })).not.toHaveProperty('spawn_report_to')
   })
+
+  // A blank id is not an address: the backend's `_str_param(...) or None` keeps `'  '` as a
+  // truthy address, and no poller would ever resolve it.
+  it('trims the address, and ships nothing for a blank one', () => {
+    expect(sessionCreateOverrideParams({ spawnReportTo: ' parent-stored ' })).toMatchObject({
+      spawn_report_to: 'parent-stored'
+    })
+    expect(sessionCreateOverrideParams({ spawnReportTo: '' })).not.toHaveProperty('spawn_report_to')
+    expect(sessionCreateOverrideParams({ spawnReportTo: '   ' })).not.toHaveProperty('spawn_report_to')
+  })
 })

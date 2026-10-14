@@ -380,23 +380,44 @@ def _goal_followup_after_turn(
     return goal_followup
 
 
-def _report_spawn_task_result(session: dict, raw: Any) -> None:
-    """A spawn-task session's first finished turn: leave its reply for the offering session. Once
-    only — later turns are the user working in this session. A failed write keeps it armed, so the
-    next finished turn retries."""
+def _spawn_report_target(session: dict) -> str:
+    """The offering session this child reports to: the live session dict, or — after a
+    resume/auto-continue rebuilt the dict from scratch — the child's own row, where the
+    address was persisted when the row was created (Б4). One read per live session: a
+    session with neither copy is done asking, and asking again every turn would put a
+    SELECT in front of every completed turn in the product."""
+    target = str(session.get("spawn_report_to") or "").strip()
+    if target or session.get("_spawn_report_addr_read"):
+        return target
+    session["_spawn_report_addr_read"] = True
+    key = str(session.get("session_key") or "")
+    if not key:
+        return ""
+    with contextlib.suppress(Exception), _session_db(session) as db:
+        stored = db.get_session_model_config_value(key, "spawn_report_to") if db is not None else None
+    return str(stored or "").strip()
+
+
+def _report_spawn_task_result(session: dict, target: str) -> None:
+    """A spawn-task session's first finished turn: leave a note for the offering session.
+    Once only — later turns are the user working in this session. A failed write keeps it
+    armed, so the next finished turn retries."""
     from tools.spawn_task_reports import write_report
     key = str(session.get("session_key") or "")
     title = ""
     with contextlib.suppress(Exception), _session_db(session) as db:
         title = (db.get_session_title(key) if db is not None else "") or ""
     try:
-        write_report(_session_home(session), to_session=session["spawn_report_to"], from_session=key,
-                     title=title or str(session.get("pending_title") or ""),
-                     reply=raw if isinstance(raw, str) else "")
+        write_report(_session_home(session), to_session=target, from_session=key,
+                     title=title or str(session.get("pending_title") or ""))
     except Exception:
         logger.warning("spawn-task report for %s not written; retried after the next turn", key, exc_info=True)
         return
     session["spawn_report_to"] = None
+    # Both copies, or a resume would find a stale arm on the row and report a second time.
+    with contextlib.suppress(Exception), _session_db(session) as db:
+        if db is not None:
+            db.patch_session_model_config(key, {"spawn_report_to": None})
 
 
 def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> None:
@@ -413,8 +434,8 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
                     _emit("status.update", sid, {"kind": "loop", "text": loop_msg})
     except Exception as _loop_exc:
         _hook_failure("loop completion hook", _loop_exc)
-    if session.get("spawn_report_to"):
-        _report_spawn_task_result(session, raw)
+    if spawn_target := _spawn_report_target(session):
+        _report_spawn_task_result(session, spawn_target)
     # Normally applied when prompt.submit created the row; this retries a transient DB failure there.
     if session.get("pending_title"):
         with contextlib.suppress(Exception), _session_db(session) as _pdb:

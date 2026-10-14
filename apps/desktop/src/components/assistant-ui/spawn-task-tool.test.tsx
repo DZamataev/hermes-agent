@@ -11,6 +11,7 @@ import { queryClient } from '@/lib/query-client'
 import { $pinnedSessionIds } from '@/store/layout'
 import { setModelPreset } from '@/store/model-presets'
 import { $visibleModels } from '@/store/model-visibility'
+import { $sessionDotStateById } from '@/store/session-dot-state'
 import {
   $spawnTaskChips,
   resetSpawnTaskStoreForTests,
@@ -67,7 +68,7 @@ const PROPS: ToolCallMessagePartProps = {
   type: 'tool-call'
 }
 
-function view(): SessionView {
+function view(storedId: null | string = 'stored-parent'): SessionView {
   return {
     $awaitingResponse: atom(false),
     $busy: atom(false),
@@ -82,17 +83,17 @@ function view(): SessionView {
     $reasoningEffortPending: atom(false),
     $reasoningEffortWire: atom(''),
     $runtimeId: atom('runtime-1'),
-    $storedId: atom('stored-parent'),
+    $storedId: atom(storedId),
     $turnStartedAt: atom(null),
     kind: 'primary'
   }
 }
 
-function renderChip(props: ToolCallMessagePartProps = PROPS) {
+function renderChip(props: ToolCallMessagePartProps = PROPS, storedId: null | string = 'stored-parent') {
   return render(
     <QueryClientProvider client={queryClient}>
       <I18nProvider configClient={null} initialLocale="en">
-        <SessionViewProvider value={view()}>
+        <SessionViewProvider value={view(storedId)}>
           <SpawnTaskTool {...props} />
         </SessionViewProvider>
       </I18nProvider>
@@ -100,11 +101,18 @@ function renderChip(props: ToolCallMessagePartProps = PROPS) {
   )
 }
 
+/** The mocked atom is a plain one, whose `set` writes it directly; `dotStates.value` is only
+ *  its seed value, so the atom itself is what has to be cleared between tests. */
+function setDotStates(states: Record<string, string>) {
+  act(() => ($sessionDotStateById as unknown as { set: (v: unknown) => void }).set(states))
+}
+
 const launcher = vi.fn()
 
 beforeEach(() => {
   window.localStorage.clear()
   resetSpawnTaskStoreForTests()
+  setDotStates({})
   $pinnedSessionIds.set([])
   queryClient.clear()
   queryClient.setDefaultOptions({ queries: { ...queryClient.getDefaultOptions().queries, retry: false } })
@@ -285,24 +293,51 @@ describe('the spawn-task chip', () => {
     expect(launcher.mock.calls[0]![0]).not.toMatchObject({ notify: true })
   })
 
+  // A chat with no stored id yet has no session to report to: the launch would drop
+  // `spawn_report_to`, so the promise must not be made (Д4).
+  it('an offer that wants the result promises nothing without a stored owner id', async () => {
+    renderChip({ ...PROPS, result: { notify_on_done: true, success: true, title: ARGS.title } }, null)
+
+    expect(screen.queryByText('The result will come back to this chat')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Start in new tab' }))
+
+    await waitFor(() => expect(launcher).toHaveBeenCalled())
+    expect(launcher.mock.calls[0]![0]).not.toMatchObject({ notify: true })
+  })
+
   it('a launched chip shows what its session is doing', async () => {
-    const { $sessionDotStateById } = await import('@/store/session-dot-state')
     renderChip()
     fireEvent.click(screen.getByRole('button', { name: 'Start in new tab' }))
     await waitFor(() => expect(screen.getByText('Started in a new session')).toBeTruthy())
 
+    // `draft` is its own answer — the session exists but no turn has run — and it is
+    // not the same thing as idle.
     const cases: [string, string][] = [
+      ['draft', 'Starting'],
       ['working', 'Working'],
       ['stalled', 'Working'],
       ['needs-input', 'Needs your input'],
-      ['unread', 'Finished — new reply'],
+      ['unread', 'Finished — unread'],
       ['idle', 'Idle']
     ]
 
     for (const [state, label] of cases) {
-      act(() => ($sessionDotStateById as unknown as { set: (v: unknown) => void }).set({ 'stored-child': state }))
+      setDotStates({ 'stored-child': state })
       expect(screen.getByTestId('spawn-task-status').textContent).toBe(label)
     }
+  })
+
+  // Nothing has arrived for the child in THIS window — its tab was closed, the parent chat
+  // lives in another window, the app was just reloaded. Inventing a state there is how the
+  // chip came to say "Idle" while the session was working.
+  it('says nothing about a child whose state this window does not know', async () => {
+    renderChip()
+    fireEvent.click(screen.getByRole('button', { name: 'Start in new tab' }))
+    await waitFor(() => expect(screen.getByText('Started in a new session')).toBeTruthy())
+
+    setDotStates({ 'some-other-session': 'working' })
+
+    expect(screen.queryByTestId('spawn-task-status')).toBeNull()
   })
 
   it('a dismissed chip stays dismissed and never launches', () => {

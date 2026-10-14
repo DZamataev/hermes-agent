@@ -114,6 +114,9 @@ function SpawnTaskChip({ notify, prompt, title, tldr, toolCallId }: SpawnTaskChi
   const cwd = useStore(view.$cwd)
   const ownerStoredSessionId = useStore(view.$storedId)
   const owner = useChipOwner(ownerStoredSessionId)
+  // No stored id = no offering session to report to, so the launch would drop
+  // `spawn_report_to` while the chip still promised the result (Д4).
+  const notifyHere = notify && Boolean(ownerStoredSessionId?.trim())
   const chipKey = spawnTaskChipKey({ prompt, title, toolCallId })
   const outcome = useStore($spawnTaskChips)[chipKey]
   const launching = useStore($spawnTaskLaunching).has(chipKey)
@@ -137,7 +140,7 @@ function SpawnTaskChip({ notify, prompt, title, tldr, toolCallId }: SpawnTaskChi
 
   const launch = (mode: SpawnTaskMode) =>
     void launchSpawnTask(
-      { cwd, ...(notify ? { notify: true } : {}), ownerStoredSessionId, prompt, title, toolCallId },
+      { cwd, ...(notifyHere ? { notify: true } : {}), ownerStoredSessionId, prompt, title, toolCallId },
       { ...choice, mode },
       owner.choiceScope
     )
@@ -162,7 +165,7 @@ function SpawnTaskChip({ notify, prompt, title, tldr, toolCallId }: SpawnTaskChi
           {expanded ? (
             <p className={cn(CAPTION, 'whitespace-pre-wrap text-(--ui-text-secondary) wrap-anywhere')}>{prompt}</p>
           ) : null}
-          {notify ? <span className={cn(CAPTION, 'text-(--ui-text-tertiary)')}>{copy.notifyHere}</span> : null}
+          {notifyHere ? <span className={cn(CAPTION, 'text-(--ui-text-tertiary)')}>{copy.notifyHere}</span> : null}
         </div>
       </div>
 
@@ -242,16 +245,25 @@ function SpawnTaskChip({ notify, prompt, title, tldr, toolCallId }: SpawnTaskChi
 }
 
 /** What the spawned session is doing, from the same state the sidebar dot
- *  paints (lineage-aware, so a compressed child still answers). */
+ *  paints (lineage-aware, so a compressed child still answers). No entry means
+ *  this window has heard nothing about the child — its tab was closed, the chat
+ *  lives in another window, or the app was just reloaded — and a status invented
+ *  from that silence read as "Idle" while the session was working. */
 function SpawnedSessionStatus({ storedSessionId }: { storedSessionId: string }) {
   const { t } = useI18n()
-  const bucket = useStoreSelector($sessionDotStateById, states => sessionStatusBucket(states[storedSessionId]))
-  const label = t.assistant.spawnTask.status[bucket === 'draft' ? 'idle' : bucket]
+
+  const bucket = useStoreSelector($sessionDotStateById, states =>
+    states[storedSessionId] ? sessionStatusBucket(states[storedSessionId]) : null
+  )
+
+  if (!bucket) {
+    return null
+  }
 
   return (
     <span className={cn(CAPTION, 'flex items-center gap-1.5 text-(--ui-text-secondary)')}>
       <SessionStatusDot storedSessionId={storedSessionId} />
-      <span data-testid="spawn-task-status">{label}</span>
+      <span data-testid="spawn-task-status">{t.assistant.spawnTask.status[bucket]}</span>
     </span>
   )
 }

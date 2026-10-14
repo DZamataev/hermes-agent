@@ -4171,7 +4171,7 @@ export interface Translations extends NoticeTranslations {
       worktreeOtherBackend: string
       notifyHere: string
       /** The launched session's state, by sidebar status bucket. */
-      status: { working: string; 'needs-input': string; unread: string; idle: string }
+      status: { draft: string; working: string; 'needs-input': string; unread: string; idle: string }
     }
     mcpSetup: {
       installTitle: string
