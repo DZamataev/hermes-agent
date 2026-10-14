@@ -315,6 +315,8 @@ def _seed_row(record: dict) -> None:
     the fallback, and it re-copies the WHOLE seed, so a partial copy is rolled back here (the compensation
     ``_persist_branch`` applies to branch children) rather than left to be duplicated."""
     key = record.get("session_key")
+    # The row write consumes the title; a rolled-back row must hand it back to the first prompt.
+    title = record.get("pending_title")
     try:
         if _ensure_session_db_row(record) is False:
             return
@@ -322,6 +324,7 @@ def _seed_row(record: dict) -> None:
     except Exception:
         logger.warning("seeded-session persistence failed for %s; falling back to lazy row creation", key, exc_info=True)
     if not record.get("_branch_seed_persisted"):
+        record["pending_title"] = title
         with contextlib.suppress(Exception), _session_db(record) as db:
             if db is not None:
                 db.delete_session(key)

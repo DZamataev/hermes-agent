@@ -110,7 +110,9 @@ def test_partial_seed_copy_is_rolled_back_not_duplicated(monkeypatch, tmp_path):
 
         assert server._persist_session_row_for_submit("rid", server._sessions[sid]) is None
         assert [r["content"] for r in db.get_messages_as_conversation(key)] == ["hi", "hello"]
-        assert server._sessions[sid]["pending_title"] == "Welcome"  # still queued: the turn applies it, as for any lazy row
+        # The rollback handed the title back; the first prompt's row write lands it.
+        assert db.get_session_title(key) == "Welcome"
+        assert server._sessions[sid]["pending_title"] is None
     finally:
         if sid:
             server._sessions.pop(sid, None)

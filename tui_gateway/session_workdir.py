@@ -555,6 +555,10 @@ def _ensure_session_db_row(session: dict) -> bool:
                         session.pop("pending_hidden", None)
                 except Exception:
                     logger.debug("failed to apply pending hidden flag", exc_info=True)
+            # Before the turn runs: auto-title writes at turn start and is refused only by a
+            # client title already on the row.
+            if session.get("pending_title"):
+                _apply_pending_title(session, db, key)
             # Same deferral for session.archive before the row existed (mirrors pending_hidden).
             if session.get("pending_archived"):
                 try:
@@ -568,6 +572,42 @@ def _ensure_session_db_row(session: dict) -> bool:
             # message vanishes silently.
             _workdir_reraise_disk_full(exc, "failed to persist desktop session row")
     return True
+
+
+def _apply_pending_title(session: dict, db, key: str) -> None:
+    """Write the client's ``session.create`` title onto the existing row at ``user`` authority.
+
+    A taken or invalid title is dropped (auto-title takes over) unless the client asked for
+    ``title_dedupe`` (a model-proposed title, e.g. a spawn-task chip): then it lands as
+    ``<title> (N)``. Never the lineage ``#N`` form — ``resolve_session_by_title`` prefers it, so
+    ``-c "<title>"`` / ``/resume`` would open the side task instead of the user's own session.
+    A transient DB failure keeps it pending for the post-turn retry. Never raises."""
+    pending = session.get("pending_title")
+    if not pending:
+        return
+    try:
+        if db.set_session_title(key, pending):
+            session["pending_title"] = None
+        return
+    except ValueError as exc:
+        reason = exc
+    except Exception:
+        logger.debug("pending title write failed for %s; kept for retry", key, exc_info=True)
+        return
+    deduped = None
+    if session.get("pending_title_dedupe"):
+        with contextlib.suppress(Exception):
+            limit = getattr(db, "MAX_TITLE_LENGTH", 100)
+            for n in range(2, 100):
+                suffix = f" ({n})"
+                candidate = f"{pending[: limit - len(suffix)].rstrip()}{suffix}"
+                if db.get_session_by_title(candidate) is None:
+                    if db.set_session_title(key, candidate):
+                        deduped = candidate
+                    break
+    session["pending_title"] = None
+    if not deduped:
+        logger.info("Dropping pending title for session %s: %s", key, reason)
 
 
 def _schedule_row_git_meta(session: dict, key: str, db) -> None:

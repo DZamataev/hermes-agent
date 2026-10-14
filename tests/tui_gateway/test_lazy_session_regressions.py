@@ -374,6 +374,51 @@ class TestPendingTitleDedupe:
         assert db.get_session_title("new-session") == "Fix flaky test #4512 (2)"
         assert db.resolve_session_by_title("Fix flaky test #4512") == "older"
 
+    def test_client_title_holds_the_row_before_the_turn_runs(self, monkeypatch, tmp_path):
+        """Auto-title fires at turn START (derived, then the model's upgrade in a thread), so a
+        client title applied only after the turn left the sidebar on the auto-title for the
+        whole first run. The client title must already hold the row when the agent starts."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        seen = {}
+
+        class _Agent:
+            session_id = "new-session"
+            _cached_system_prompt = ""
+
+            def run_conversation(self, prompt, **kw):
+                seen["title"] = db.get_session_title("new-session")
+                seen["auto_written"] = db.set_auto_title("new-session", "Smart auto title", source="llm")
+                return {"final_response": "ok", "messages": [{"role": "assistant", "content": "ok"}]}
+
+        session = _tui_session(agent=_Agent(), session_key="new-session",
+                               pending_title="Chip title", pending_title_dedupe=True)
+
+        self._run_first_turn(monkeypatch, db, session)
+
+        assert seen == {"title": "Chip title", "auto_written": False}
+        assert db.get_session_title("new-session") == "Chip title"
+
+    def test_dedupe_applies_before_the_turn_runs(self, monkeypatch, tmp_path):
+        db = self._db(tmp_path)
+        seen = {}
+
+        class _Agent:
+            session_id = "new-session"
+            _cached_system_prompt = ""
+
+            def run_conversation(self, prompt, **kw):
+                seen["title"] = db.get_session_title("new-session")
+                return {"final_response": "ok", "messages": [{"role": "assistant", "content": "ok"}]}
+
+        session = _tui_session(agent=_Agent(), session_key="new-session",
+                               pending_title="Flaky login", pending_title_dedupe=True)
+
+        self._run_first_turn(monkeypatch, db, session)
+
+        assert seen["title"] == "Flaky login (2)"
+
     def test_without_dedupe_a_taken_title_is_still_dropped(self, monkeypatch, tmp_path):
         db = self._db(tmp_path)
         session = _tui_session(agent=self._agent(), session_key="new-session", pending_title="Flaky login")

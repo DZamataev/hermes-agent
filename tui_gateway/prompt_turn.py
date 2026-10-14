@@ -394,39 +394,11 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
                     _emit("status.update", sid, {"kind": "loop", "text": loop_msg})
     except Exception as _loop_exc:
         _hook_failure("loop completion hook", _loop_exc)
-    # Apply pending_title now that the DB row exists — in the session-owned profile store.
-    if _pending := session.get("pending_title"):
-        _session_key = session.get("session_key") or sid
-        try:
-            with _session_db(session) as _pdb:
-                if _pdb and _pdb.set_session_title(_session_key, _pending):
-                    session["pending_title"] = None
-        except ValueError as exc:
-            # Invalid/duplicate title — non-retryable, drop it; auto-title takes over. A client that
-            # asked for ``title_dedupe`` (a model-proposed title, e.g. a spawn-task chip) keeps its
-            # name with a `` (N)`` suffix instead of losing it to an unrelated session holding it.
-            # Deliberately NOT the lineage ``#N`` form: ``#N`` means "continuation of that
-            # session", and ``resolve_session_by_title`` prefers it — ``-c "<title>"`` / ``/resume``
-            # would then open the side task instead of the user's own session.
-            deduped = None
-            if session.get("pending_title_dedupe"):
-                try:
-                    with _session_db(session) as _pdb:
-                        limit = getattr(_pdb, "MAX_TITLE_LENGTH", 100)
-                        for n in range(2, 100) if _pdb else ():
-                            suffix = f" ({n})"
-                            candidate = f"{_pending[: limit - len(suffix)].rstrip()}{suffix}"
-                            if _pdb.get_session_by_title(candidate) is None:
-                                if _pdb.set_session_title(_session_key, candidate):
-                                    deduped = candidate
-                                break
-                except Exception:
-                    deduped = None
-            session["pending_title"] = None
-            if not deduped:
-                logger.info("Dropping pending title for session %s: %s", _session_key, exc)
-        except Exception:
-            pass  # transient DB failure — keep pending_title for retry
+    # Normally applied when prompt.submit created the row; this retries a transient DB failure there.
+    if session.get("pending_title"):
+        with contextlib.suppress(Exception), _session_db(session) as _pdb:
+            if _pdb is not None:
+                _apply_pending_title(session, _pdb, session.get("session_key") or sid)
     # Voice fallback when the streaming pipeline couldn't start (tts_queue already spoke
     # everything otherwise); barge-aware.
     if st.tts_queue is None and isinstance(raw, str) and raw.strip() and _voice_tts_enabled():
