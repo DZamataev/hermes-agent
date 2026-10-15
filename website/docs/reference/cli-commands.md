@@ -283,6 +283,18 @@ Use this when you want to:
 - configure a custom/self-hosted endpoint
 - save the new default into config
 
+### `hermes model list`
+
+Non-interactive: prints every configured provider with its model ids, as the picker offers them (disk-cached catalogs, so it never waits on a slow provider). Works anywhere, including from an agent's terminal.
+
+```bash
+hermes model list            # every provider: "<provider id> (<name>): model, model, ..."
+hermes model list glm        # a provider id/name match keeps all its models; otherwise only matching model ids
+hermes model list glm --json # [{"provider", "name", "models"}]
+```
+
+Exits 1 when nothing matches. The provider and model ids are the ones `delegate_task`'s per-task `provider`/`model` take.
+
 :::warning hermes model vs /model — know the difference
 **`hermes model`** (run from your terminal, outside any Hermes session) is the **full provider setup wizard**. It can add new providers, run OAuth flows, prompt for API keys, and configure endpoints.
 
