@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Optional
 
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
 from agent.secret_scope import get_secret_str
@@ -220,7 +220,7 @@ def _get_named_custom_provider(
     return _match_legacy_custom_provider(requested_norm, custom_providers) if custom_providers else None
 
 
-def named_custom_provider_entry(requested_provider: str) -> Optional[Tuple[Dict[str, Any], str]]:
+def named_custom_provider_entry(requested_provider: str) -> Optional[tuple[dict[str, Any], str]]:
     """``(raw entry, endpoint)`` of the entry *requested_provider* names, or None. READ-ONLY.
 
     Same identity rules as :func:`_get_named_custom_provider` (built-in shadowing, ``enabled:
@@ -580,7 +580,7 @@ def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optio
     return None
 
 
-def _scope_capabilities_to_own_endpoint(custom_provider: Dict[str, Any], result: Dict[str, Any]) -> None:
+def _scope_capabilities_to_own_endpoint(custom_provider: dict[str, Any], result: dict[str, Any]) -> None:
     """Drop the entry's capabilities when *result* calls another endpoint than the entry's own.
 
     Capabilities are endpoint trust (``anthropic_oauth_proxy`` sends the Claude Code identity and

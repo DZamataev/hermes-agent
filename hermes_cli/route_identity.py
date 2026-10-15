@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunparse, urlunsplit
 
 
@@ -47,7 +47,7 @@ def normalize_route_base_url(base_url: Any) -> str:
 def _route_path(base_url: str) -> str:
     """The path of *base_url* with the trailing ``/`` and one ``/v1`` suffix removed."""
     path = (urlsplit(base_url).path or "").rstrip("/")
-    return path[: -len("/v1")] if path.endswith("/v1") else path
+    return path.removesuffix("/v1")
 
 
 def _same_query(own_url: str, target_url: str) -> bool:
@@ -61,18 +61,18 @@ def _same_query(own_url: str, target_url: str) -> bool:
     return _query_params(own_url) == _query_params(target_url)
 
 
-def _query_params(url: str) -> Dict[str, List[str]]:
+def _query_params(url: str) -> dict[str, list[str]]:
     return _query_lists(urlsplit(url).query)
 
 
-def _query_lists(query: str) -> Dict[str, List[str]]:
-    params: Dict[str, List[str]] = {}
+def _query_lists(query: str) -> dict[str, list[str]]:
+    params: dict[str, list[str]] = {}
     for key, value in parse_qsl(query, keep_blank_values=True):
         params.setdefault(key, []).append(value)
     return params
 
 
-def split_url_query(url: str) -> Tuple[str, Optional[Dict[str, Union[str, List[str]]]]]:
+def split_url_query(url: str) -> tuple[str, Optional[dict[str, str | list[str]]]]:
     """``(url without its query, SDK default_query or None)`` — the inverse of ``url_with_query``.
 
     The SDKs join the request path onto ``base_url`` as text, so a query-bearing endpoint is handed

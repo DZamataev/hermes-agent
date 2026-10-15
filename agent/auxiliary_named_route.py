@@ -9,7 +9,7 @@ facade's ``_LOCAL_SERVER_ALIASES`` at call time, so the alias set stays owned th
 from __future__ import annotations
 
 import contextlib
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 
 def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
@@ -79,7 +79,7 @@ def _named_custom_provider_present(name: str) -> bool:
         return False
 
 
-def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_base: str) -> Any:
+def _named_custom_api_key(custom_entry: dict[str, Any], provider: str, custom_base: str) -> Any:
     """Credential for a named custom provider: inline api_key → key_env → key_cmd → credential pool → placeholder.
     Aux resolves named custom providers here, not via _resolve_named_custom_runtime, so key_cmd must be
     honoured at the same precedence or every aux call 401s."""

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from typing import Any, Dict
+from typing import Any
 
 from openai import OpenAI
 
@@ -42,7 +42,7 @@ def configured_default_headers(sync_client: Any) -> dict[str, str]:
     return dict(configured) if isinstance(configured, Mapping) else {}
 
 
-def async_twin(async_cls: Any, sync_client: Any, kwargs: Dict[str, Any]) -> Any:
+def async_twin(async_cls: Any, sync_client: Any, kwargs: dict[str, Any]) -> Any:
     """``async_cls(**kwargs)`` aimed at the sync client's whole endpoint: the ``default_query`` its
     query-bearing base URL was split into, sent as declared (``agent.sdk_query``)."""
     from agent.sdk_query import declared_query_class
