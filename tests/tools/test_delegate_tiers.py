@@ -80,6 +80,14 @@ class TestMergeTierConfig:
         assert (merged["provider"], merged["base_url"], merged["model"]) == (
             "openrouter", self.BASE["base_url"], "cheap")
 
+    def test_null_values_are_absent_overrides(self):
+        """YAML `provider:` with no value loads as None: an unset key, not a switch to another route."""
+        base = {"base_url": "http://relay/v1", "api_key": "relay-key", "request_overrides": {"x": 1}, "model": "m"}
+        merged = _merge_tier_config(base, {"provider": None, "base_url": None, "model": "cheap"})
+        assert (merged["base_url"], merged["api_key"], merged["request_overrides"], merged["model"]) == (
+            "http://relay/v1", "relay-key", {"x": 1}, "cheap")
+        assert _merge_tier_config(self.BASE, {"provider": None})["provider"] == "openrouter"
+
     def test_tier_effort_overlays_base_effort(self):
         assert _merge_tier_config(self.BASE, {"reasoning_effort": "low"})["reasoning_effort"] == "low"
 

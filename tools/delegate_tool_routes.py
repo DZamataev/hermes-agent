@@ -39,8 +39,7 @@ def _parse_task_effort(raw: Any, index: int) -> Any:
 
 
 def _named_task_route(task: dict[str, Any], index: int) -> dict[str, str] | None:
-    """The task's own ``provider``/``model`` pick, or None. A provider alone is refused: which of its models?
-    A non-string value is refused too — the schema says string, and coercing ``123``/``true`` silently invents an id."""
+    """The task's own ``provider``/``model`` pick, or None. A provider alone is refused: which of its models?"""
     for key in ("provider", "model"):
         raw = task.get(key)
         if raw is not None and not isinstance(raw, str):
@@ -70,9 +69,7 @@ def _plan_task_routes(
         except ValueError as exc:
             raise ValueError(f"Task {i}: {exc}") from None
         effort = _parse_task_effort(task.get("reasoning_effort"), i)
-        # The task's own route is consulted only when it would actually apply: under an internal route owner
-        # (credentials_cfg) or a forced session route the fields are ignored, so an incomplete or mistyped
-        # pick must not refuse the whole call.
+        # Ignored fields must not refuse the call: validate the named route only where it would apply.
         named = _named_task_route(task, i) if credentials_cfg is None and forced is None else None
         if credentials_cfg is not None:
             plans.append(("internal", credentials_cfg, None))
