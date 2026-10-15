@@ -777,7 +777,8 @@ DELEGATE_TASK_SCHEMA = {
                         "provider": _p(
                             "string",
                             "ONLY when the user or a loaded skill explicitly named it: the configured provider id "
-                            "for THIS task's model (e.g. 'openrouter', 'custom:<name>'). Needs `model`.",
+                            "for THIS task's model (e.g. 'openrouter', 'custom:<name>'). Needs `model`. When the "
+                            "request is loose ('a GLM model'), get exact ids from `hermes model list <text>`.",
                         ),
                         "model": _p(
                             "string",

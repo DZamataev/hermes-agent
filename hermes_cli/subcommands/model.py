@@ -34,3 +34,19 @@ def build_model_parser(subparsers, *, cmd_model: Callable) -> None:
         "--insecure", action="store_true",
         help="Disable TLS verification for Nous login (testing only)")
     model_parser.set_defaults(func=cmd_model)
+    actions = model_parser.add_subparsers(dest="model_action", metavar="{list}")
+    list_parser = actions.add_parser(
+        "list", help="Print the configured providers and their model ids (non-interactive)",
+        description="Print every configured provider with its model ids, as the model picker offers them. "
+                    "The provider id and model id are what delegate_task's provider/model take.")
+    list_parser.add_argument(
+        "query", nargs="?", default="",
+        help="Case-insensitive text: a provider id/name keeps all its models, otherwise only matching model ids")
+    list_parser.add_argument("--json", action="store_true", help="Print [{provider, name, models}] as JSON")
+    list_parser.set_defaults(func=_cmd_model_list)
+
+
+def _cmd_model_list(args) -> int:
+    from hermes_cli.model_list_cmd import model_list_command
+
+    return model_list_command(args)
