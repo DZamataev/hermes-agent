@@ -1,21 +1,22 @@
 """Per-task route planning for ``delegate_task``: which provider/model/effort each child runs on.
 
-Precedence for model-facing calls: the session's forced subagent route (Desktop composer) → the task's
-difficulty ``tier`` → ``normal`` (the base ``delegation.*`` block) → the parent's own route. Effort: under a
+Precedence for model-facing calls: the session's forced subagent route (Desktop composer) → the task's own
+``provider``/``model`` (only when the user or a skill named that exact model) → the task's difficulty ``tier`` → ``normal`` (the base ``delegation.*`` block) → the parent's own route. Effort: under a
 forced route, its own effort → ``delegation.reasoning_effort`` → parent (the task's ``reasoning_effort`` is
-ignored — the operator forced the whole route); otherwise the task's ``reasoning_effort`` → the tier's →
+ignored — the operator forced the whole route); otherwise the task's ``reasoning_effort`` → the tier's (a named
+route has none: it takes the base block's) →
 ``delegation.reasoning_effort`` → parent. Internal callers that pass their own route (``credentials_cfg``, e.g.
 /review → auxiliary.review) keep it: tiers and the session route re-route only what the model spawns.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 _ROUTE_FIELDS = ("provider", "model", "reasoning_effort")
 
 
-def _session_route(parent_agent: Any) -> Optional[Dict[str, str]]:
+def _session_route(parent_agent: Any) -> Optional[dict[str, str]]:
     """The parent session's forced subagent route, or None when the session is on Auto."""
     raw = getattr(parent_agent, "_delegation_override", None)
     if not isinstance(raw, dict):
@@ -37,9 +38,19 @@ def _parse_task_effort(raw: Any, index: int) -> Any:
     return raw
 
 
+def _named_task_route(task: dict[str, Any], index: int) -> dict[str, str] | None:
+    """The task's own ``provider``/``model`` pick, or None. A provider alone is refused: which of its models?"""
+    route = {k: str(task.get(k) or "").strip() for k in ("provider", "model")}
+    if not route["model"]:
+        if route["provider"]:
+            raise ValueError(f"Task {index}: provider {route['provider']!r} needs a model as well.")
+        return None
+    return {k: v for k, v in route.items() if v}
+
+
 def _plan_task_routes(
-    task_list: List[Dict[str, Any]], cfg: dict, credentials_cfg: Optional[dict], parent_agent: Any,
-) -> List[Dict[str, Any]]:
+    task_list: list[dict[str, Any]], cfg: dict, credentials_cfg: Optional[dict], parent_agent: Any,
+) -> list[dict[str, Any]]:
     """One ``{"creds", "routing_cfg", "effort"}`` per task, all resolved up front (ValueError = refuse the call).
 
     ``effort`` is None when the child should take the routing block's / config's own level (existing behaviour)."""
@@ -47,24 +58,29 @@ def _plan_task_routes(
     from tools.delegate_tool_config import _merge_tier_config, _normalize_tier, _routing_cfg_for_tier
 
     forced = _session_route(parent_agent) if credentials_cfg is None else None
-    plans: List[tuple] = []
+    plans: list[tuple] = []
     for i, task in enumerate(task_list):
         try:
             tier = _normalize_tier(task.get("tier"))
         except ValueError as exc:
             raise ValueError(f"Task {i}: {exc}") from None
         effort = _parse_task_effort(task.get("reasoning_effort"), i)
+        named = _named_task_route(task, i)
         if credentials_cfg is not None:
             plans.append(("internal", credentials_cfg, None))
         elif forced is not None:
             # A forced route is the whole answer: tier and the model's own effort pick are ignored.
             route = {k: v for k, v in forced.items() if v}
             plans.append(("forced", _merge_tier_config(cfg, route), forced["reasoning_effort"] or None))
+        elif named is not None:
+            routing_cfg = _merge_tier_config(cfg, named)
+            label = ("named", named.get("provider", ""), named["model"])
+            plans.append((label, routing_cfg, effort if effort is not None else routing_cfg.get("reasoning_effort")))
         else:
             routing_cfg = _routing_cfg_for_tier(cfg, tier)
             plans.append((tier, routing_cfg, effort if effort is not None else routing_cfg.get("reasoning_effort")))
 
-    resolved: Dict[str, Dict[str, Any]] = {}  # one credential resolution per distinct route (tier / forced / internal)
+    resolved: dict[Any, dict[str, Any]] = {}  # one credential resolution per distinct route (tier / forced / named / internal)
     routes = []
     for label, routing_cfg, effort in plans:
         if label not in resolved:
@@ -73,7 +89,7 @@ def _plan_task_routes(
     return routes
 
 
-def _batch_creds_summary(routes: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _batch_creds_summary(routes: list[dict[str, Any]]) -> dict[str, Any]:
     """Call-level route metadata (live-transcript manifest, async registry): the shared route, or the distinct
     models joined when tasks run on different ones."""
     first = dict(routes[0]["creds"])

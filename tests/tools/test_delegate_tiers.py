@@ -282,6 +282,79 @@ class TestSessionForcedRoute:
         assert child["model"] == "review-model"
 
 
+class TestExplicitTaskRoute:
+    """A task that names its own provider/model (the user or a skill asked for that exact model)."""
+
+    def _seen_routes(self, tasks, cfg=CFG, parent=None):
+        seen = []
+
+        def _creds(routing_cfg, parent_agent):
+            seen.append(dict(routing_cfg))
+            return {"model": routing_cfg.get("model"), "provider": routing_cfg.get("provider"),
+                    "base_url": routing_cfg.get("base_url"), "api_key": routing_cfg.get("api_key"), "api_mode": None}
+
+        with patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=_creds):
+            result, built = _spawn(tasks, cfg=cfg, parent=parent)
+        return result, built, seen
+
+    def test_each_task_runs_on_its_own_named_route(self):
+        result, built, seen = self._seen_routes([
+            {"goal": GOAL_A, "provider": "deepseek", "model": "deepseek-v4"},
+            {"goal": GOAL_B, "provider": "anthropic", "model": "claude-x"},
+            {"goal": GOAL_B, "tier": "easy"},
+        ])
+        assert "error" not in result
+        assert [c["model"] for c in built] == ["deepseek-v4", "claude-x", "easy-model"]
+        assert [(r.get("provider"), r.get("model")) for r in seen[:2]] == [
+            ("deepseek", "deepseek-v4"), ("anthropic", "claude-x")]
+
+    def test_named_provider_does_not_inherit_base_endpoint_or_key(self):
+        cfg = {**CFG, "base_url": "http://normal/v1", "api_key": "normal-key",
+               "request_overrides": {"extra_headers": {"X-Token": "normal-only"}}}
+        _, _, (route,) = self._seen_routes([{"goal": GOAL_A, "provider": "deepseek", "model": "deepseek-v4"}], cfg=cfg)
+        for key in ("base_url", "api_key", "request_overrides"):
+            assert key not in route, key
+
+    def test_named_model_beats_tier_and_rides_the_base_endpoint(self):
+        cfg = {**CFG, "base_url": "http://normal/v1", "api_key": "normal-key"}
+        _, (child,) = _spawn([{"goal": GOAL_A, "tier": "hard", "model": "named-model"}], cfg=cfg)
+        assert (child["model"], child["base_url"]) == ("named-model", "http://normal/v1")
+        assert child["reasoning_config"] == {"enabled": True, "effort": "medium"}  # base effort, not hard tier's
+
+    def test_task_effort_applies_to_a_named_route(self):
+        _, (child,) = _spawn([{"goal": GOAL_A, "model": "named-model", "reasoning_effort": "xhigh"}])
+        assert child["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+
+    def test_provider_without_model_fails_before_any_child_is_built(self):
+        result, built = _spawn([{"goal": GOAL_A, "model": "named-model"}, {"goal": GOAL_B, "provider": "deepseek"}])
+        assert "Task 1" in result["error"] and "model" in result["error"]
+        assert built == []
+
+    def test_session_forced_route_beats_a_named_route(self):
+        parent = _parent()
+        parent._delegation_override = {"model": "forced-model", "reasoning_effort": "minimal"}
+        _, (child,) = _spawn([{"goal": GOAL_A, "provider": "deepseek", "model": "deepseek-v4",
+                               "reasoning_effort": "xhigh"}], parent=parent)
+        assert child["model"] == "forced-model"
+        assert child["reasoning_config"] == {"enabled": True, "effort": "minimal"}
+
+    def test_internal_route_owner_ignores_a_named_route(self):
+        _, (child,) = _spawn([{"goal": GOAL_A, "model": "named-model"}], credentials_cfg={"model": "review-model"})
+        assert child["model"] == "review-model"
+
+    def test_registry_handler_passes_the_named_route_through(self):
+        from tools.registry import registry
+        parent = _parent()
+        with patch("tools.delegate_tool._load_config", return_value=CFG), \
+                patch("tools.delegate_tool._run_single_child", side_effect=lambda task_index, **_: _done(task_index)), \
+                patch("tools.delegate_tool._model_background_value", return_value=False), \
+                patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.side_effect = lambda **_: MagicMock()
+            registry.get_entry("delegate_task").handler(
+                {"tasks": [{"goal": GOAL_A, "model": "named-model"}]}, parent_agent=parent)
+        assert MockAgent.call_args.kwargs["model"] == "named-model"
+
+
 class TestSchemaContract:
     def test_tier_enum_is_the_declared_set(self):
         item = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
@@ -293,9 +366,10 @@ class TestSchemaContract:
         assert item["reasoning_effort"]["enum"]
         assert all(parse_reasoning_effort(v) is not None for v in item["reasoning_effort"]["enum"])
 
-    def test_no_free_form_route_fields_for_the_model(self):
+    def test_no_endpoint_or_secret_fields_for_the_model(self):
+        """The model may name a configured provider and a model, never an endpoint or a key."""
         item = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
-        assert not {"model", "provider", "base_url", "api_key"} & set(item)
+        assert not {"base_url", "api_key", "api_mode", "request_overrides"} & set(item)
 
     def test_dynamic_overrides_keep_tier_fields(self):
         from tools.delegate_tool import _build_dynamic_schema_overrides
