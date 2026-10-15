@@ -9,8 +9,10 @@ from typing import Any
 def _rows(query: str) -> list[dict[str, Any]]:
     from hermes_cli.inventory import build_models_payload, load_picker_context
 
-    # Disk-cached catalogs only: a degraded provider must not stall a one-line lookup.
-    payload = build_models_payload(load_picker_context(), non_blocking_catalogs=True, for_picker=True)
+    # Disk-cached catalogs only: a degraded provider must not stall a one-line lookup. explicit_only hides
+    # ambient credentials (a stale portal login) that a subagent route could not actually use.
+    payload = build_models_payload(
+        load_picker_context(), explicit_only=True, non_blocking_catalogs=True, for_picker=True)
     needle = query.strip().lower()
     out = []
     for row in payload.get("providers") or []:

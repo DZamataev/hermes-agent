@@ -37,6 +37,15 @@ def _run(argv, capsys, rows=ROWS):
     return rc, capsys.readouterr().out
 
 
+def test_lists_only_providers_the_user_configured(capsys):
+    """Ambient credentials (a stale Nous login, an auto-seeded Copilot token) are hidden, as in the chat picker."""
+    args = _parse(["model", "list"])
+    with patch("hermes_cli.inventory.load_picker_context", return_value=object()), \
+            patch("hermes_cli.inventory.build_models_payload", return_value={"providers": ROWS}) as build:
+        args.func(args)
+    assert build.call_args.kwargs.get("explicit_only") is True
+
+
 def test_bare_model_stays_interactive():
     assert _parse(["model"]).func is _cmd_model
     assert _parse(["model", "--refresh"]).func is _cmd_model
