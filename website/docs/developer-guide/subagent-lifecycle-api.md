@@ -80,5 +80,7 @@ The request's `model` overrides the configured model. Its optional `provider`
 names a configured provider for this launch, with precedence request >
 delegation config > parent; the selected provider supplies its own credential
 bundle. An unresolvable provider raises `SubagentLifecycleError` before launch.
-Core does not expose `provider` to the model: the plugin chooses it, for example
-from operator config.
+Core does not expose `provider` to a model on this lifecycle path: the plugin chooses it, for example
+from operator config. (The `delegate_task` tool is the other route — there a model may name a provider and
+model within a task, but only when the user or a loaded skill asks for it; the fields never carry an endpoint
+or key.)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from utils import base_url_hostname, is_truthy_value
 from hermes_cli.fallback_config import scoped_fallback_chain
 
@@ -182,7 +182,7 @@ def _normalized_runtime_url(value: Any) -> str:
 def _child_route_capabilities(
     parent_agent, override_provider, override_base_url, declared,
     *, effective_provider=None, effective_model=None, effective_base_url=None,
-) -> Dict[str, bool]:
+) -> dict[str, bool]:
     """Endpoint-trust capability map for the route the child actually calls.
 
     ``agent.capabilities`` is a trust decision scoped to one provider+endpoint AND one model
@@ -386,7 +386,7 @@ def _credential_bundle(model, provider, base_url, api_key, api_mode, request_ove
         "request_overrides": request_overrides, **extra,
     }
 
-def _filter_runtime_capabilities(value: Any) -> Dict[str, bool]:
+def _filter_runtime_capabilities(value: Any) -> dict[str, bool]:
     """A runtime route's declared capability map, sanitized by its canonical owner."""
     from hermes_cli.runtime_provider_custom import _filter_capabilities
     return _filter_capabilities(value)
@@ -416,7 +416,7 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
 
     # Preserve the configured provider's request personality on an explicit endpoint.
     request_overrides = None
-    capabilities: Dict[str, bool] = {}
+    capabilities: dict[str, bool] = {}
     if v["provider"]:
         try:
             from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -535,7 +535,8 @@ def _load_config() -> dict:
         return {}
 
 # Difficulty tiers the model may name per task. Fixed and few on purpose: the schema enum never depends on config
-# (prompt cache), the model cannot invent a provider/model id, and the operator remaps tiers without re-teaching it.
+# (prompt cache) and the operator remaps tiers without re-teaching it. A task's explicit provider/model is the
+# exception path, for when the user or a skill names an exact model (tools/delegate_tool_routes.py).
 # ``normal`` IS the base ``delegation.*`` block; ``easy``/``hard`` live under ``delegation.tiers``.
 DELEGATION_TIERS = ("easy", "normal", "hard")
 _DEFAULT_TIER = "normal"
@@ -554,13 +555,22 @@ def _normalize_tier(value: Any) -> str:
     return tier
 
 
+def _same_route_identity(key: str, base_value: Any, new_value: Any) -> bool:
+    """Provider ids are case-insensitive in the runtime resolver: ``OpenRouter`` must keep an ``openrouter`` base's bundle."""
+    if base_value is None:
+        return False
+    if key == "provider":
+        return str(new_value).strip().casefold() == str(base_value).strip().casefold()
+    return str(new_value).strip() == str(base_value).strip()
+
+
 def _merge_tier_config(base: dict, tier_cfg: dict) -> dict:
-    """A tier block layered over the base delegation block (base untouched). Blank strings are absent overrides
-    (config writers persist "unset" as ""); a tier that changes ``provider`` or ``base_url`` drops the inherited
+    """A tier block layered over the base delegation block (base untouched). None and blank strings are absent
+    overrides (config writers persist "unset" as "", an empty YAML key loads as None); a tier that changes ``provider`` or ``base_url`` drops the inherited
     route bundle first, so the base route's key/endpoint/transport never leaks onto another provider."""
-    overrides = {k: v for k, v in tier_cfg.items() if not (isinstance(v, str) and not v.strip())}
+    overrides = {k: v for k, v in tier_cfg.items() if v is not None and not (isinstance(v, str) and not v.strip())}
     merged = dict(base)
-    if any(k in overrides and overrides[k] != base.get(k) for k in ("provider", "base_url")):
+    if any(k in overrides and not _same_route_identity(k, base.get(k), overrides[k]) for k in ("provider", "base_url")):
         for key in _ROUTE_BUNDLE_KEYS:
             merged.pop(key, None)
     merged.update(overrides)
