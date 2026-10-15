@@ -128,12 +128,17 @@ Spawns a subagent with isolated context + terminal session; the parent waits for
 `background=true`, which returns a delegation id and re-enters the result via the async-delegation
 completion queue. **Routing per task** (`tools/delegate_tool_routes.py::_plan_task_routes`, every task
 resolved before any child is built): the session's forced route (`parent_agent._delegation_override`, set by
-the Desktop composer through `config.set key=delegation`, `tui_gateway/session_delegation.py`) → the task's
+the Desktop composer through `config.set key=delegation`, `tui_gateway/session_delegation.py`) → the task's own
+`provider`/`model` (only when the user or a loaded skill named that exact model; a provider alone is refused,
+non-string values too — both checks are skipped when a forced route or `credentials_cfg` already wins, since the
+fields are then ignored) → the task's
 difficulty `tier` (`easy|normal|hard`; `normal` = the base `delegation.*` block, others
-`delegation.tiers.<tier>` merged over it by `_merge_tier_config`) → parent. Effort: forced route's own →
-`delegation.reasoning_effort` → parent (task effort ignored under a forced route); otherwise task
-`reasoning_effort` → tier → `delegation.reasoning_effort` → parent. Internal route owners (`credentials_cfg`, e.g. /review) bypass both. The
-schema exposes only the two enums — never a free-form model/provider (the model would invent ids). Shapes: single (`goal` + optional `context`, `toolsets`) or batch (`tasks: [...]`,
+`delegation.tiers.<tier>` merged over it by `_merge_tier_config`) → parent. Effort: under a forced route, its own →
+`delegation.reasoning_effort` → parent (task effort ignored); for a named `provider`/`model` the task's
+`reasoning_effort` → `delegation.reasoning_effort` → parent (its tier does not participate); otherwise task
+`reasoning_effort` → tier → `delegation.reasoning_effort` → parent. Internal route owners (`credentials_cfg`, e.g. /review) bypass all of it. The
+schema exposes the two enums plus free-form `provider`/`model`: the model may name a provider and a model only
+when the user or a loaded skill asks for it — never an endpoint, key, `api_mode` or `request_overrides`. Shapes: single (`goal` + optional `context`, `toolsets`) or batch (`tasks: [...]`,
 concurrency capped by `delegation.max_concurrent_children`, default 3). A background batch returns as ONE
 completion by default; with `delegation.independent_completions` it is split into completion **units**
 (`delegate_tool_dispatch._units_of`): tasks sharing a `group` join and report together; each ungrouped

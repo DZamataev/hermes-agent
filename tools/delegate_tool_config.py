@@ -555,13 +555,24 @@ def _normalize_tier(value: Any) -> str:
     return tier
 
 
+def _same_route_identity(key: str, base_value: Any, new_value: Any) -> bool:
+    """Whether ``new_value`` names the same route identity the base block already has, so the merge must NOT
+    drop the inherited bundle. ``provider`` is matched case-insensitively (the runtime resolver is;
+    ``OpenRouter`` and ``openrouter`` are one provider), ``base_url`` after surrounding whitespace only."""
+    if base_value is None:
+        return False
+    if key == "provider":
+        return str(new_value).strip().casefold() == str(base_value).strip().casefold()
+    return str(new_value).strip() == str(base_value).strip()
+
+
 def _merge_tier_config(base: dict, tier_cfg: dict) -> dict:
     """A tier block layered over the base delegation block (base untouched). Blank strings are absent overrides
     (config writers persist "unset" as ""); a tier that changes ``provider`` or ``base_url`` drops the inherited
     route bundle first, so the base route's key/endpoint/transport never leaks onto another provider."""
     overrides = {k: v for k, v in tier_cfg.items() if not (isinstance(v, str) and not v.strip())}
     merged = dict(base)
-    if any(k in overrides and overrides[k] != base.get(k) for k in ("provider", "base_url")):
+    if any(k in overrides and not _same_route_identity(k, base.get(k), overrides[k]) for k in ("provider", "base_url")):
         for key in _ROUTE_BUNDLE_KEYS:
             merged.pop(key, None)
     merged.update(overrides)

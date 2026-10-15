@@ -88,6 +88,23 @@ class TestMergeTierConfig:
         _merge_tier_config(self.BASE, {"provider": "deepseek"})
         assert self.BASE == before
 
+    @pytest.mark.parametrize("provider", ["openrouter", "OpenRouter", " OpenRouter ", "OPENROUTER"])
+    def test_same_provider_spelled_differently_keeps_the_route_bundle(self, provider):
+        """The resolver matches provider names case-insensitively; the merge must not drop the base bundle for
+        the same route, or the task lands on the provider's default endpoint with an environment key."""
+        base = {**self.BASE, "request_overrides": {"extra_headers": {"X-Base": "1"}}}
+        merged = _merge_tier_config(base, {"provider": provider, "model": "cheap"})
+        assert merged["provider"] == provider  # kept as passed; the resolver normalizes
+        assert (merged["base_url"], merged["api_key"], merged["api_mode"]) == (
+            base["base_url"], base["api_key"], base["api_mode"])
+        assert merged["request_overrides"] == base["request_overrides"]
+
+    def test_a_different_provider_still_drops_the_route_bundle(self):
+        base = {**self.BASE, "request_overrides": {"extra_headers": {"X-Base": "1"}}}
+        merged = _merge_tier_config(base, {"provider": "Deepseek", "model": "deepseek-chat"})
+        for key in ("base_url", "api_key", "api_mode", "request_overrides"):
+            assert key not in merged, key
+
 
 class TestRoutingCfgForTier:
     CFG = {
@@ -330,6 +347,46 @@ class TestExplicitTaskRoute:
         assert "Task 1" in result["error"] and "model" in result["error"]
         assert built == []
 
+    def test_provider_without_model_is_ignored_under_a_forced_route(self):
+        """The forced route wins, so the task's own fields are never consulted — an incomplete pick must not
+        refuse the whole call."""
+        parent = _parent()
+        parent._delegation_override = {"model": "forced-model"}
+        result, (child,) = _spawn([{"goal": GOAL_A, "provider": "deepseek"}], parent=parent)
+        assert "error" not in result
+        assert child["model"] == "forced-model"
+
+    def test_provider_without_model_is_ignored_under_an_internal_route(self):
+        result, (child,) = _spawn([{"goal": GOAL_A, "provider": "deepseek"}],
+                                  credentials_cfg={"model": "review-model"})
+        assert "error" not in result
+        assert child["model"] == "review-model"
+
+    @pytest.mark.parametrize("field", ["provider", "model"])
+    def test_non_string_route_fields_fail_before_any_child_is_built(self, field):
+        result, built = _spawn([{"goal": GOAL_A, "model": "named-model"}, {"goal": GOAL_B, field: 123}])
+        assert "Task 1" in result["error"] and "must be strings" in result["error"]
+        assert built == []
+
+    def test_named_provider_matching_the_base_only_by_case_keeps_the_base_bundle(self):
+        cfg = {**CFG, "provider": "openrouter", "base_url": "http://relay.internal/v1", "api_key": "relay-key",
+               "request_overrides": {"extra_headers": {"X-Relay": "1"}}}
+        _, _, (route,) = self._seen_routes(
+            [{"goal": GOAL_A, "provider": "OpenRouter", "model": "named-model"}], cfg=cfg)
+        assert route.get("provider") == "OpenRouter"
+        assert (route.get("base_url"), route.get("api_key")) == ("http://relay.internal/v1", "relay-key")
+        assert route.get("request_overrides") == {"extra_headers": {"X-Relay": "1"}}
+
+    def test_tasks_sharing_a_named_route_resolve_credentials_once(self):
+        _, _, seen = self._seen_routes([
+            {"goal": GOAL_A, "provider": "deepseek", "model": "deepseek-v4"},
+            {"goal": GOAL_B, "provider": "deepseek", "model": "deepseek-v4"},
+            {"goal": GOAL_B, "provider": "anthropic", "model": "claude-x"},
+        ])
+        assert len(seen) == 2
+        assert {(r.get("provider"), r.get("model")) for r in seen} == {
+            ("deepseek", "deepseek-v4"), ("anthropic", "claude-x")}
+
     def test_session_forced_route_beats_a_named_route(self):
         parent = _parent()
         parent._delegation_override = {"model": "forced-model", "reasoning_effort": "minimal"}
@@ -374,4 +431,4 @@ class TestSchemaContract:
     def test_dynamic_overrides_keep_tier_fields(self):
         from tools.delegate_tool import _build_dynamic_schema_overrides
         props = _build_dynamic_schema_overrides()["parameters"]["properties"]["tasks"]["items"]["properties"]
-        assert {"tier", "reasoning_effort"} <= set(props)
+        assert {"tier", "reasoning_effort", "provider", "model"} <= set(props)
