@@ -18,7 +18,7 @@ from hermes_cli.model_switch_providers import _entry_api_mode
 @pytest.fixture
 def probed_api_mode(monkeypatch):
     """Run the picker over one ``providers:`` entry; return the api_mode the probe received."""
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
     monkeypatch.setenv("RELAY_TOKEN", "relay-key")
 
