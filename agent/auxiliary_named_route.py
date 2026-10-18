@@ -9,7 +9,7 @@ facade's ``_LOCAL_SERVER_ALIASES`` at call time, so the alias set stays owned th
 from __future__ import annotations
 
 import contextlib
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 
 def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
@@ -79,11 +79,12 @@ def _named_custom_provider_present(name: str) -> bool:
         return False
 
 
-def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_base: str) -> Any:
+def _named_custom_api_key(custom_entry: dict[str, Any], provider: str, custom_base: str) -> Any:
     """Credential for a named custom provider: inline api_key → key_env → key_cmd → credential pool → placeholder.
     Aux resolves named custom providers here, not via _resolve_named_custom_runtime, so key_cmd must be
     honoured at the same precedence or every aux call 401s."""
     from agent.auxiliary_client import _scoped_key_env, load_pool
+    from agent.custom_entry_pool import entry_scoped_pool
 
     custom_key: Any = (custom_entry.get("api_key") or "").strip()
     custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
@@ -102,10 +103,9 @@ def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_ba
                     pool = load_pool(pool_key)
                 except Exception:
                     continue
-                if not pool.has_credentials():
+                if (pool := entry_scoped_pool(pool, pool_key, custom_entry)) is None or not pool.has_credentials():
                     continue
-                pool_entry = pool.select()
-                if pool_entry is None:
+                if (pool_entry := pool.select()) is None:
                     continue
                 pool_api_key = getattr(pool_entry, "runtime_api_key", None) or getattr(pool_entry, "access_token", "") or ""
                 if str(pool_api_key).strip():

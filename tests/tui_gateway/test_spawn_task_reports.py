@@ -360,7 +360,7 @@ class TestTheSessionPollerRunsTheMailbox:
             stop.set()
 
         monkeypatch.setattr(server, "_notif_poll_spawn_reports", fake_poll)
-        for idle in ("_notif_poll_kanban", "_poll_bot_live_delivery_guarded",
+        for idle in ("_notif_poll_kanban",
                      "_maybe_fire_tui_loop_tick", "_maybe_fire_tui_heartbeat_tick"):
             monkeypatch.setattr(server, idle, lambda *a, **kw: None)
         monkeypatch.setattr(async_delegation, "maybe_sweep_orphaned_completions", lambda *a, **kw: None)
