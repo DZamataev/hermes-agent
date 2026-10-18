@@ -291,6 +291,13 @@ calls (compression, titles, vision), a `/model` switch, fallback and resume, and
 a subagent pinned with `delegation.model` — so a model never borrows another
 model's wire policy on a shared endpoint.
 
+Metadata lookups (context window, pricing, the model picker) treat the endpoint
+as an Anthropic relay as soon as the provider or any of its models declares the
+capability: they read `<api>/v1/models` with the route's key and skip the
+OpenAI `/models`, Ollama `/api/show` and local-server probes, which such a relay
+can only answer with an error. Without the key nothing is requested and the
+window falls back to the built-in catalog.
+
 For a gateway that resolves a bare model alias only after receiving the
 request, opt the alias into prompt-cache markers with the per-model
 `prompt_caching` capability:
