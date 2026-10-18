@@ -256,6 +256,7 @@ export const zhHantChrome = {
       updateFailed: '子代理模型更新失敗'
     },
     modelMenu: {
+      pickDeferred: (model: string) => `${model} 將從你的下一則訊息開始生效`,
       search: '搜尋模型',
       noModels: '找不到模型',
       editModels: '編輯模型…',

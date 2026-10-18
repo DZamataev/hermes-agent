@@ -2,12 +2,10 @@
  * Per-create overrides, translated to `session.create` params and folded over
  * the ones `desktopSessionCreateParams` derived from the visible selection.
  *
- * Reasoning effort may ride alone: the guided onboarding chat wants `minimal`
- * on whatever model the backend already resolved for the profile. A model pin
- * travels only as a `{model, provider}` PAIR — the composer's model and
- * provider belong together, and overriding one without the other mints a
- * session pointing a provider at a model it does not serve. The spawn-task
- * chip is the caller that pins one, from its own picker.
+ * A model pin travels only as a `{model, provider}` PAIR — the composer's model
+ * and provider belong together, and overriding one without the other mints a
+ * session pointing a provider at a model it does not serve. The spawn-task chip
+ * is the caller that pins one, from its own picker.
  */
 export interface SessionCreateOverrides {
   fast?: boolean
@@ -29,7 +27,6 @@ export interface SessionCreateOverrides {
 
 export type CreateBackendSessionForSend = (
   preview?: string | null,
-  seedMessages?: SessionSeedMessage[],
   createOverrides?: SessionCreateOverrides
 ) => Promise<string | null>
 
