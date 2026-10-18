@@ -227,6 +227,10 @@ def _persist_live_session_runtime(session: dict | None) -> None:
         if (tier_override := session.get("create_service_tier_override")) is not None:
             # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
             model_config["service_tier"] = tier_override or "normal"
+        if isinstance(delegation_pick := session.get("delegation_override"), dict):
+            model_config["delegation_override"] = delegation_pick
+        else:
+            model_config.pop("delegation_override", None)
         model = str(model_config.get("model") or "").strip()
         if hasattr(db, "update_session_meta"):
             db.update_session_meta(session_key, json.dumps(model_config), model or None)

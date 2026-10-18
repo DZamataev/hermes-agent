@@ -171,6 +171,8 @@ def _attach_built_agent(sid: str, current: dict, agent) -> bool:
         if _sessions.get(sid) is not current:
             return False
         current["agent"] = agent
+    from tui_gateway.session_delegation import apply_delegation_override
+    apply_delegation_override(current, agent)  # a composer pick made before the deferred build ran
     # A workspace move can land while construction is still in flight.
     _register_session_cwd(current)
     _session_todo_state(current)
@@ -457,10 +459,10 @@ def _deferred_session_record(
     close_on_disconnect: bool = False, display_history_prefix: list | None = None,
     profile_home: Path | None = None, lazy: bool = False, model_override=None,
     resume_runtime_overrides: dict | None = None, todo_state: dict | None = None,
-    explicit_cwd: bool = False) -> dict:
+    explicit_cwd: bool = False, delegation_override: dict | None = None) -> dict:
     """A live-session record whose AIAgent is built later (lazy watch / cold resume) — _init_session's shape minus the agent."""
     now = time.time()
-    return {
+    record = {
         "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
         "close_on_disconnect": close_on_disconnect, "active_session_lease": lease, "cols": cols,
         "created_at": now, "cwd": cwd, "display_history_prefix": display_history_prefix or [],
@@ -476,6 +478,9 @@ def _deferred_session_record(
         "transport": current_transport() or _stdio_transport,
         "auth_user_id": _transport_auth_user_id(current_transport()),
     }
+    if delegation_override:
+        record["delegation_override"] = dict(delegation_override)
+    return record
 
 
 _ANY_PROFILE = object()  # default: match a live session regardless of profile
@@ -717,6 +722,7 @@ def _fallback_session_info(session: dict) -> dict:
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
         **_lazy_info_route(session, {}), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        "delegation_override": dict(session.get("delegation_override") or {}),
     }
 
 
