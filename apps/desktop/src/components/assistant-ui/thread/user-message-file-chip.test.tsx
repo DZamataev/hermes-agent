@@ -1,7 +1,9 @@
 import { AssistantRuntimeProvider, ExportedMessageRepository, type ThreadMessage } from '@assistant-ui/react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { PRIMARY_SESSION_VIEW, SessionViewProvider } from '@/app/chat/session-view'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { $previewTabs } from '@/store/preview'
 import { $activeSessionId, $currentCwd } from '@/store/session'
@@ -92,5 +94,17 @@ describe('a sent @file: chip opens its file', () => {
     fireEvent.click(screen.getByRole('button', { name: 'src/a.ts' }))
 
     await waitFor(() => expect(openedPaths()).toEqual(['/repo/src/a.ts']))
+  })
+
+  it('resolves against the tile chat cwd, not the primary one', async () => {
+    render(
+      <SessionViewProvider value={{ ...PRIMARY_SESSION_VIEW, kind: 'tile', $cwd: atom('/tile') }}>
+        <UserMessageText text="before @file:src/a.ts after" />
+      </SessionViewProvider>
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'src/a.ts' }))
+
+    await waitFor(() => expect(openedPaths()).toEqual(['/tile/src/a.ts']))
   })
 })
