@@ -4162,7 +4162,7 @@ export const en: Translations = {
     appControls: 'App controls',
     modelMenu: enModelMenu,
     delegation: {
-      pillPrefix: 'Subagents:',
+      pillPrefix: 'Sub:',
       auto: 'Auto',
       autoTitle: "Subagents pick a model by each task's difficulty (Settings → Subagent models)",
       forcedTitle: (model: string) => `Every subagent in this chat runs on ${model}`,
