@@ -1,6 +1,8 @@
+import { useStore } from '@nanostores/react'
 import type { FC } from 'react'
 import { Fragment, useMemo } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { referenceRe } from '@/components/assistant-ui/reference-kinds'
 import { cn } from '@/lib/utils'
@@ -121,6 +123,7 @@ interface UserMessageTextProps {
 
 export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) => {
   const top = useMemo(() => splitFences(text), [text])
+  const cwd = useStore(useSessionView().$cwd)
 
   return (
     <span className={cn('block', className)} data-slot="aui_user-message-text">
@@ -139,7 +142,7 @@ export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) =
 
         return (
           <Fragment key={`inline-${segmentIndex}`}>
-            <InlineSegmentView text={segment.text} />
+            <InlineSegmentView cwd={cwd} text={segment.text} />
           </Fragment>
         )
       })}
@@ -147,7 +150,7 @@ export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) =
   )
 }
 
-const InlineSegmentView: FC<{ text: string }> = ({ text }) => {
+const InlineSegmentView: FC<{ cwd: string; text: string }> = ({ cwd, text }) => {
   const nodes = useMemo(() => splitInlineCode(text), [text])
   const textDirection = useForcedTextDirection()
 
@@ -169,7 +172,7 @@ const InlineSegmentView: FC<{ text: string }> = ({ text }) => {
           // Pass plain-text bits through DirectiveContent so @file:/@url: chips
           // still render. DirectiveContent already preserves whitespace.
           <Fragment key={`text-${nodeIndex}`}>
-            <DirectiveContent text={node.text} />
+            <DirectiveContent cwd={cwd} text={node.text} />
           </Fragment>
         )
       )}

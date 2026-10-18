@@ -347,8 +347,12 @@ function safeDirectiveSegments(text: string): Unstable_DirectiveSegment[] {
 /**
  * Renders text containing Hermes directives (`@file:...`, `@image:...`) as
  * inline chips. Embedded MEDIA images render below as a thumbnail row.
+ *
+ * `cwd` resolves a relative `@file:` and comes from the caller: this module is
+ * in the stores' import graph (chat-messages/hydration), so importing
+ * session-view here breaks their initialization order.
  */
-export function DirectiveContent({ text }: { text: string }) {
+export function DirectiveContent({ cwd = '', text }: { cwd?: string; text: string }) {
   const { cleanedText, images } = useMemo(() => safeEmbeddedImages(text ?? ''), [text])
   const segments = useMemo(() => safeDirectiveSegments(cleanedText), [cleanedText])
 
@@ -373,6 +377,8 @@ export function DirectiveContent({ text }: { text: string }) {
           <SessionRefChip key={`m-${index}-${segment.id}`} label={segment.label} value={segment.id} />
         ) : segment.type === 'skill' ? (
           <SlashChip key={`m-${index}-${segment.id}`} kind="skill" label={segment.label} value={segment.id} />
+        ) : segment.type === 'file' ? (
+          <FileRefChip cwd={cwd} key={`m-${index}-${segment.id}`} label={segment.label} value={segment.id} />
         ) : (
           <DirectiveChip id={segment.id} key={`m-${index}-${segment.id}`} label={segment.label} type={segment.type} />
         )
@@ -501,10 +507,34 @@ export function openSessionRef(value: string) {
   void import('@/app/open-session').then(({ openSession }) => openSession(sessionId, () => undefined, 'tab'))
 }
 
+/** Opens a `@file:` reference in the preview rail, like the composer's
+ *  attachment chip. A relative path resolves against the chat's cwd. */
+export async function openFileRef(value: string, cwd: string, t: I18nContextValue['t']) {
+  const [{ normalizeOrLocalPreviewTarget }, { openPreview }, { notifyError }] = await Promise.all([
+    import('@/lib/local-preview'),
+    import('@/store/preview'),
+    import('@/store/notifications')
+  ])
+
+  try {
+    const preview = await normalizeOrLocalPreviewTarget(value, cwd || undefined)
+
+    if (!preview) {
+      throw new Error(t.composer.couldNotPreview(refChipLabel('file', value)))
+    }
+
+    triggerHaptic('selection')
+    openPreview(preview)
+  } catch (error) {
+    notifyError(error, t.composer.previewUnavailable)
+  }
+}
+
 /** What activating a directive of a given kind does. The single source of truth
  *  for "you can act on this reference," shared by every surface that renders a
  *  chip: the composer's hover pill (`ComposerDirectiveActions`) and the sent
- *  message's clickable chip below. A kind with no entry is inert everywhere.
+ *  message's clickable chip below. A kind with no entry is inert in the
+ *  composer; in a sent message only a bespoke chip (`FileRefChip`) acts on it.
  *
  *  Add a kind here and both surfaces light up — that's the whole point of one
  *  table. `icon`/`label` are for the pill; the transcript chip carries its own
@@ -545,6 +575,15 @@ export const SessionRefChip: FC<{
   const resolved = useSessionLinkTitle(value, label)
 
   return <DirectiveChip id={value} label={resolved} onClick={() => openSessionRef(value)} type="session" />
+}
+
+/** A `@file:` reference in a sent message. Not a `DIRECTIVE_ACTIONS` entry:
+ *  a relative path needs the cwd of the chat it was sent in, which the table's
+ *  `run(value)` does not carry. */
+const FileRefChip: FC<{ cwd: string; label: string; value: string }> = ({ cwd, label, value }) => {
+  const { t } = useI18n()
+
+  return <DirectiveChip id={value} label={label} onClick={() => void openFileRef(value, cwd, t)} type="file" />
 }
 
 /** A `@session:` reference in assistant markdown (`#session/` links rewritten
@@ -624,8 +663,18 @@ const DirectiveChip: FC<{
     )
   }
 
+  // The chip can sit inside the user bubble, whose press and click open the
+  // edit composer; activating the chip must do only its own action.
   return activate ? (
-    <button {...props} onClick={activate} type="button">
+    <button
+      {...props}
+      onClick={event => {
+        event.stopPropagation()
+        activate()
+      }}
+      onPointerDown={event => event.stopPropagation()}
+      type="button"
+    >
       {body}
     </button>
   ) : (
