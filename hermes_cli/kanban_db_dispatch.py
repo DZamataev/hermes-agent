@@ -2857,7 +2857,7 @@ def _open_worker_log(task: Task, board: Optional[str]):
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
     log_f = open(log_path, "ab")
-    log_f.write(f"\n{_RUN_START_MARKER}{task.current_run_id}\n".encode("utf-8"))
+    log_f.write(f"\n{_RUN_START_MARKER}{task.current_run_id}\n".encode())
     log_f.flush()
     return log_f
 

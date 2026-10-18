@@ -110,8 +110,8 @@ class TestHandleUpdateCommand:
 
         assert "/tmp/attacker/hermes" not in result
         env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}
-        r = subprocess.run([*result, "--version"], capture_output=True, text=True, timeout=60,
-                           cwd=tmp_path, env=env)
+        r = subprocess.run([*result, "--version"], capture_output=True, text=True, timeout=60,  # noqa: ASYNC221 -- a one-shot child in a test, nothing else on the loop
+                           cwd=tmp_path, env=env, check=False)
         assert r.returncode == 0, r.stderr[-300:]
         assert f"Install directory: {Path(gateway_run.__file__).resolve().parents[1]}" in r.stdout
 
