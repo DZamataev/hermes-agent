@@ -3271,7 +3271,7 @@ export const ruOverrides = {
     appControls: 'Управление приложением',
     modelMenu: ruModelMenu,
     delegation: {
-      pillPrefix: 'Субагенты:',
+      pillPrefix: 'Суб:',
       auto: 'Авто',
       autoTitle: 'Субагенты выбирают модель по сложности задачи (Настройки → Модели субагентов)',
       forcedTitle: (model: string) => `Все субагенты этого чата работают на ${model}`,
