@@ -1,6 +1,8 @@
 import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { isAttachmentRef } from '@/components/assistant-ui/reference-kinds'
 import {
@@ -342,6 +344,8 @@ export const UserMessage: FC<{
     return messageAttachmentRefs(custom.attachmentRefs)
   })
 
+  const cwd = useStore(useSessionView().$cwd)
+
   const [pickerOpen, setPickerOpen] = useState(false)
   const { enabled: reactionsEnabled, react, reactions: shownReactions } = useMessageReactions(messageId, 'user')
 
@@ -467,7 +471,7 @@ export const UserMessage: FC<{
     // empty above a detached row. Images keep their thumbnail row below.
     chipOnlyTurn && (
       <div className="flex min-h-[1.25rem] flex-wrap gap-1">
-        <DirectiveContent text={attachmentRefs.join(' ')} />
+        <DirectiveContent cwd={cwd} text={attachmentRefs.join(' ')} />
       </div>
     )
   )
@@ -483,7 +487,7 @@ export const UserMessage: FC<{
           // render as thumbnails, file refs as chips; no border.
           attachmentRefs.length > 0 && !chipOnlyTurn ? (
             <div className="mb-2 flex flex-wrap gap-1">
-              <DirectiveContent text={attachmentRefs.join(' ')} />
+              <DirectiveContent cwd={cwd} text={attachmentRefs.join(' ')} />
             </div>
           ) : null
         }
