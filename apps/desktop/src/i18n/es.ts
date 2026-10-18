@@ -1537,6 +1537,12 @@ export const esOverrides = {
     },
     about: { updates: 'Actualizaciones', channel: esUpdateChannel },
     config: {
+      fileOpenAppTitle: 'Destino predeterminado para abrir archivos',
+      fileOpenAppDesc:
+        'Dónde se abren los archivos que envías fuera de Hermes. La opción del sistema sigue la asociación de archivos de tu sistema operativo, que algunos instaladores y actualizaciones de herramientas reescriben sin avisar; elige aquí una aplicación para fijarla. Solo se muestran las aplicaciones encontradas en este equipo.',
+      fileOpenAppSystem: 'Predeterminado del sistema',
+      fileOpenAppLabel: 'Aplicación predeterminada para abrir archivos',
+      fileOpenAppEmpty: 'No se encontraron editores compatibles en este equipo.',
       minimizeToTrayTitle: 'Minimizar a la bandeja',
       minimizeToTrayDesc:
         'Al minimizar las ventanas o cerrar la ventana principal, se ocultan en la bandeja del sistema (barra de menús en macOS) y Hermes sigue ejecutándose. Usa Salir de Hermes en el menú de la bandeja o Cmd+Q para salir. Desactivado por defecto; se aplica solo a este dispositivo.',
@@ -4945,6 +4951,12 @@ export const esOverrides = {
     tabCount: count => `${count} pestañas`
   },
   contextMenu: {
+    file: {
+      openInHermes: 'Abrir en la vista previa de Hermes',
+      openInEditor: 'Abrir en el editor',
+      openWith: 'Abrir con…',
+      copyPath: 'Copiar ruta del archivo'
+    },
     link: {
       openInApp: 'Abrir en el navegador integrado',
       openExternal: 'Abrir en navegador externo',

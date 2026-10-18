@@ -154,7 +154,7 @@ export async function resolveFilePath(
 
     // Report the entry's OWN path rather than the candidate we asked about:
     // that is what turns a `~/…` candidate into the absolute path every
-    // consumer needs — the menu, the `file://` opener and the preview rail
+    // consumer needs — the menu, the editor opener and the preview rail
     // all act on it, and none of them can expand a tilde themselves.
     const entry = (await listing)?.find(row => row.name === name)
 

@@ -1534,6 +1534,12 @@ export const deOverrides = {
     },
     about: { updates: 'Updates', channel: deUpdateChannel },
     config: {
+      fileOpenAppTitle: 'Standardziel zum Öffnen von Dateien',
+      fileOpenAppDesc:
+        'Wo Dateien geöffnet werden, die Sie aus Hermes heraus öffnen. Der Systemstandard folgt der Dateizuordnung Ihres Betriebssystems, die manche Installer und Toolchain-Updates stillschweigend überschreiben – wählen Sie hier eine App, um sie festzulegen. Es werden nur Apps aufgelistet, die auf diesem Computer gefunden wurden.',
+      fileOpenAppSystem: 'Systemstandard',
+      fileOpenAppLabel: 'Standard-App zum Öffnen von Dateien',
+      fileOpenAppEmpty: 'Auf diesem Computer wurden keine unterstützten Editoren gefunden.',
       minimizeToTrayTitle: 'In den Infobereich minimieren',
       minimizeToTrayDesc:
         'Beim Minimieren von Fenstern oder Schließen des Hauptfensters werden diese im Infobereich (Menüleiste unter macOS) ausgeblendet und Hermes läuft weiter. Beenden Sie über „Hermes beenden“ im Infobereich-Menü oder mit Cmd+Q. Standardmäßig aus; gilt nur für dieses Gerät.',
@@ -4946,6 +4952,12 @@ export const deOverrides = {
     tabCount: count => `${count} Tabs`
   },
   contextMenu: {
+    file: {
+      openInHermes: 'In Hermes-Vorschau öffnen',
+      openInEditor: 'Im Editor öffnen',
+      openWith: 'Öffnen mit…',
+      copyPath: 'Dateipfad kopieren'
+    },
     link: {
       openInApp: 'Im In-App-Browser öffnen',
       openExternal: 'Im externen Browser öffnen',
