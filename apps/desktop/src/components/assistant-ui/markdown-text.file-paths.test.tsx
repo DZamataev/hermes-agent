@@ -8,10 +8,11 @@ import { $currentCwd } from '@/store/session'
 import { MarkdownTextContent } from './markdown-text'
 
 const TREE: Record<string, string[]> = {
-  '/work/looky/docs': [{ name: 'plan.md' }].map(entry => entry.name)
+  '/work/looky/docs': [{ name: 'plan.md' }, { name: 'quick.md' }].map(entry => entry.name)
 }
 
 vi.mock('@/lib/desktop-fs', () => ({
+  desktopFsCacheKey: () => 'local:',
   // Only paths inside the repo have this root; /elsewhere is outside it.
   desktopGitRoot: (path: string) => Promise.resolve(path.startsWith('/work/looky') ? '/work/looky' : null),
   isDesktopFsRemoteMode: () => false,
@@ -68,6 +69,21 @@ it('offers and opens a path that exists once the modifier is held', async () => 
   fireEvent.click(token)
   await waitFor(() =>
     expect($previewTabs.get().some(tab => tab.target.url === 'file:///work/looky/docs/plan.md')).toBe(true)
+  )
+})
+
+it('opens on a click that beats the probe, instead of dropping it', async () => {
+  // No hover rest at all: the modifier is down and the click lands at once.
+  // The click waits for the filesystem's answer and then acts on it.
+  const { container } = render(<MarkdownTextContent isRunning={false} text="Быстро — docs/quick.md." />)
+  const token = container.querySelector('[data-file-path="docs/quick.md"]') as Element
+
+  hold()
+  expect(token.className).not.toContain('underline')
+  fireEvent.click(token, { metaKey: true })
+
+  await waitFor(() =>
+    expect($previewTabs.get().some(tab => tab.target.url === 'file:///work/looky/docs/quick.md')).toBe(true)
   )
 })
 

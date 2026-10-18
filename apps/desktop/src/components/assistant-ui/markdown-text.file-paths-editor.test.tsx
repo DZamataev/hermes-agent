@@ -14,10 +14,12 @@ const TREE: Record<string, string[]> = {
 }
 
 const opened: string[] = []
+const { fsMode } = vi.hoisted(() => ({ fsMode: { remote: false } }))
 
 vi.mock('@/lib/desktop-fs', () => ({
+  desktopFsCacheKey: () => 'local:',
   desktopGitRoot: (path: string) => Promise.resolve(path.startsWith('/work/looky') ? '/work/looky' : null),
-  isDesktopFsRemoteMode: () => false,
+  isDesktopFsRemoteMode: () => fsMode.remote,
   readDesktopDir: (dir: string) =>
     Promise.resolve(
       TREE[dir]
@@ -49,6 +51,7 @@ afterEach(() => {
   closeRightRail()
   $currentCwd.set('')
   $pathModifierHeld.set(false)
+  fsMode.remote = false
 })
 
 function hold() {
@@ -75,8 +78,23 @@ it('sends the file to the OS when alt joins the modifier, instead of the preview
   // covered per-platform in lib/open-in-editor.test.ts.
   fireEvent.click(token, { altKey: true, ctrlKey: true, metaKey: true })
 
-  await waitFor(() => expect(opened).toEqual(['file:///work/looky/docs/plan.md']))
+  await waitFor(() => expect(opened).toEqual(['/work/looky/docs/plan.md']))
   expect($previewTabs.get()).toHaveLength(0)
+})
+
+it('keeps a remote path in the preview rail even when alt asks for the editor', async () => {
+  // The path lives on the gateway; the editor would be launched HERE, against
+  // a path that names nothing on this machine — or the wrong file.
+  fsMode.remote = true
+
+  const token = await renderResolved()
+
+  hold()
+  await waitFor(() => expect(token.className).toContain('underline'))
+  fireEvent.click(token, { altKey: true, ctrlKey: true, metaKey: true })
+
+  await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
+  expect(opened).toEqual([])
 })
 
 it('keeps the plain modifier click on the preview rail', async () => {
