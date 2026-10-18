@@ -182,7 +182,7 @@ def _normalized_runtime_url(value: Any) -> str:
 def _child_route_capabilities(
     parent_agent, override_provider, override_base_url, declared,
     *, effective_provider=None, effective_model=None, effective_base_url=None,
-) -> Dict[str, bool]:
+) -> dict[str, bool]:
     """Endpoint-trust capability map for the route the child actually calls.
 
     ``agent.capabilities`` is a trust decision scoped to one provider+endpoint AND one model
@@ -323,7 +323,11 @@ def _resolve_child_credential_pool(
             )
             if parent_pool is not None and parent_provider == "custom" and parent_key is not None and parent_key == child_key:
                 return parent_pool
-            return _loaded_pool(child_key)
+            # The entry's slug may also be a same-named built-in's pool: lease only the rows the entry
+            # owns, or a fixed entry credential becomes the built-in's account on a shared endpoint.
+            from agent.custom_entry_pool import custom_entry_for_endpoint, entry_scoped_pool
+            owner = custom_entry_for_endpoint(effective_base_url, effective_requested_provider)
+            return entry_scoped_pool(_loaded_pool(child_key), child_key, owner[1] if owner else None)
         if effective_provider == parent_provider:
             # A same-provider parent with no pool is using a fixed credential.
             # Loading a separate provider pool here can replace the inherited
@@ -386,7 +390,7 @@ def _credential_bundle(model, provider, base_url, api_key, api_mode, request_ove
         "request_overrides": request_overrides, **extra,
     }
 
-def _filter_runtime_capabilities(value: Any) -> Dict[str, bool]:
+def _filter_runtime_capabilities(value: Any) -> dict[str, bool]:
     """A runtime route's declared capability map, sanitized by its canonical owner."""
     from hermes_cli.runtime_provider_custom import _filter_capabilities
     return _filter_capabilities(value)
@@ -416,7 +420,7 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
 
     # Preserve the configured provider's request personality on an explicit endpoint.
     request_overrides = None
-    capabilities: Dict[str, bool] = {}
+    capabilities: dict[str, bool] = {}
     if v["provider"]:
         try:
             from hermes_cli.runtime_provider import resolve_runtime_provider

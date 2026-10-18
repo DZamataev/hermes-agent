@@ -16,8 +16,8 @@ pair per list item, in order, blanks kept. Request-level params keep the SDK's o
 
 from __future__ import annotations
 
-from functools import lru_cache
-from typing import Any, List, Mapping, Tuple
+from functools import cache
+from typing import Any, Mapping
 from urllib.parse import urlencode
 
 
@@ -28,7 +28,7 @@ class _DeclaredQuerystring:
         self._sdk_qs, self._declared = sdk_qs, declared
 
     def stringify(self, params: Mapping[str, Any], **options: Any) -> str:
-        pairs: List[Tuple[str, str]] = []
+        pairs: list[tuple[str, str]] = []
         for key, value in params.items():
             # Identity, not equality: a request param that overrides the key is the SDK's to encode.
             if key in self._declared and value is self._declared[key]:
@@ -41,7 +41,7 @@ class _DeclaredQuerystring:
         return getattr(self._sdk_qs, name)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _declared_query_subclass(sdk_cls: type) -> type:
     def qs(self: Any) -> Any:
         return _DeclaredQuerystring(super(subclass, self).qs, self._custom_query)
