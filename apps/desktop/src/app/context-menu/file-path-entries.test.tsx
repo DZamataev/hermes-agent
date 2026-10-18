@@ -2,12 +2,13 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
-import { RESOLVED_DIR_ATTR, RESOLVED_PATH_ATTR } from '@/components/chat/file-path-candidate'
+import { FilePathCandidate, RESOLVED_DIR_ATTR, RESOLVED_PATH_ATTR } from '@/components/chat/file-path-candidate'
 import { en } from '@/i18n/en'
 import type * as ExternalLink from '@/lib/external-link'
 import type * as FileManager from '@/lib/file-manager'
 import { pickRevealLabel } from '@/lib/file-manager'
 import { $previewTabs, closeRightRail } from '@/store/preview'
+import { $currentCwd } from '@/store/session'
 
 import { AppContextMenu } from './app-context-menu'
 import { $contextMenu } from './store'
@@ -32,6 +33,14 @@ vi.mock('@/lib/external-link', async importOriginal => ({
 
 vi.mock('@/lib/desktop-fs', () => ({
   copyTextToClipboard: () => Promise.resolve(),
+  desktopFsCacheKey: () => 'local:',
+  desktopGitRoot: () => Promise.resolve(null),
+  // One real file on the "disk"; every other listing is empty.
+  readDesktopDir: (dir: string) =>
+    Promise.resolve({
+      entries:
+        dir === '/work/looky/docs' ? [{ isDirectory: false, name: 'plan.md', path: '/work/looky/docs/plan.md' }] : []
+    }),
   isDesktopFsRemoteMode: () => state.remote,
   openWithDesktopPath: (path: string) => {
     openedWith.push(path)
@@ -65,6 +74,7 @@ afterEach(() => {
   revealed.length = 0
   state.remote = false
   state.win = false
+  $currentCwd.set('')
   $contextMenu.set(null)
   closeRightRail()
   cleanup()
@@ -106,8 +116,82 @@ it('offers both destinations for a resolved file, and the editor one opens the O
   expect(await screen.findByText('Open in Hermes preview')).toBeTruthy()
   fireEvent.click(await screen.findByText('Open in editor'))
 
-  expect(opened).toEqual(['file:///work/looky/docs/plan.md'])
+  expect(opened).toEqual(['/work/looky/docs/plan.md'])
   expect($previewTabs.get()).toHaveLength(0)
+})
+
+it('keeps the file menu for a path inside a pane body, which has a fallback menu of its own', async () => {
+  // Every pane body is a context-menu trigger (`data-zone-body`), and the app
+  // menu yields to it for anything it does not own. A resolved path is owned.
+  desktopWindow.hermesDesktop = {
+    openExternal: vi.fn().mockResolvedValue(undefined),
+    writeClipboard: vi.fn().mockResolvedValue(undefined)
+  } as unknown as Window['hermesDesktop']
+
+  render(
+    <MemoryRouter>
+      <AppContextMenu />
+    </MemoryRouter>
+  )
+
+  const host = attach(
+    `<div data-zone-body data-slot="context-menu-trigger">` +
+      `<p>prose <span ${RESOLVED_PATH_ATTR}="/work/looky/docs/plan.md">docs/plan.md</span></p>` +
+      `</div>`
+  )
+
+  // Bare prose in the pane still belongs to the pane's own menu.
+  fireEvent.contextMenu(host.querySelector('p')!)
+  expect($contextMenu.get()).toBeNull()
+
+  fireEvent.contextMenu(host.querySelector('span')!)
+
+  expect(await screen.findByText('Open in Hermes preview')).toBeTruthy()
+  expect(screen.getByText('Copy file path')).toBeTruthy()
+})
+
+it.each([
+  ['a file that exists', 'docs/plan.md', true],
+  ['a path with nothing behind it', 'docs/ghost.md', false]
+])('answers a right-click that beat the hover probe on %s', async (_label, path, exists) => {
+  // Nothing has rested on the token, so the DOM carries no verdict. The menu
+  // asks the filesystem itself, then either paints the file entries or hands
+  // the click back so the pane's own menu takes it, as for any bare prose.
+  desktopWindow.hermesDesktop = {
+    openExternal: vi.fn().mockResolvedValue(undefined),
+    writeClipboard: vi.fn().mockResolvedValue(undefined)
+  } as unknown as Window['hermesDesktop']
+  $currentCwd.set('/work/looky')
+
+  const { container } = render(
+    <MemoryRouter>
+      <AppContextMenu />
+      <div data-slot="context-menu-trigger" data-zone-body>
+        <FilePathCandidate path={path}>{path}</FilePathCandidate>
+      </div>
+    </MemoryRouter>
+  )
+
+  const token = container.querySelector('[data-file-path]') as HTMLElement
+  const reachedPane = vi.fn()
+
+  container.querySelector('[data-zone-body]')!.addEventListener('contextmenu', reachedPane)
+  expect(token.hasAttribute(RESOLVED_PATH_ATTR)).toBe(false)
+  fireEvent.contextMenu(token, { clientX: 40, clientY: 50 })
+
+  // Held while the answer is on its way: neither menu has it yet.
+  expect(reachedPane).not.toHaveBeenCalled()
+  expect($contextMenu.get()).toBeNull()
+
+  if (exists) {
+    expect(await screen.findByText('Open in editor')).toBeTruthy()
+    expect($contextMenu.get()).toMatchObject({ target: { filePath: '/work/looky/docs/plan.md' }, x: 40, y: 50 })
+    expect(reachedPane).not.toHaveBeenCalled()
+  } else {
+    await waitFor(() => expect(reachedPane).toHaveBeenCalledTimes(1))
+    expect(reachedPane.mock.calls[0][0]).toMatchObject({ clientX: 40, clientY: 50 })
+    expect($contextMenu.get()).toBeNull()
+  }
 })
 
 it('reveals a resolved file in the OS file manager', async () => {
@@ -136,7 +220,7 @@ it('reveals a resolved file in the OS file manager', async () => {
   expect(opened).toEqual([])
 })
 
-it('does not offer to reveal a path that lives on a remote gateway', async () => {
+it('does not offer to reveal or edit a path that lives on a remote gateway', async () => {
   // `showItemInFolder` acts on THIS machine; a remote path would select
   // nothing at all, so the entry must be absent rather than a silent no-op.
   state.remote = true
@@ -158,6 +242,9 @@ it('does not offer to reveal a path that lives on a remote gateway', async () =>
   // The rest of the file section still paints — this is a narrowing, not a
   // removal of the whole section.
   expect(await screen.findByText('Copy file path')).toBeTruthy()
+  expect(screen.getByText('Open in Hermes preview')).toBeTruthy()
+  // Same machine boundary for the editor: it would be handed a gateway path.
+  expect(screen.queryByText('Open in editor')).toBeNull()
   expect(
     screen.queryByText(
       pickRevealLabel(en.fileMenu.revealFinder, en.fileMenu.revealExplorer, en.fileMenu.revealFileManager)

@@ -182,7 +182,17 @@ export const arSettings = {
         toolsConnected: n => `تم توصيل ${n} من الأدوات`,
         skillsReady: names => (names.length === 1 ? `المهارة ${names[0]} جاهزة` : `${names.length} من المهارات جاهزة`),
         nextChat: 'أدوات أخرى متاحة في دردشتك التالية',
-        serverNotConnected: (server, reason) => `خادم MCP ${server} غير متصل${reason ? `: ${reason}` : '.'}`
+        serverNotConnected: (server, reason) => `خادم MCP ${server} غير متصل${reason ? `: ${reason}` : '.'}`,
+        verified: 'موثّق',
+        unverified: 'غير موثّق',
+        reviewedByNous: 'راجعته Nous.',
+        installsAndEnables: profile => `يُثبَّت لملف ${profile} ويعمل فورًا.`,
+        installsOnly: profile => `يُثبَّت لملف ${profile}.`,
+        advanced: 'متقدم',
+        versionLabel: 'الإصدار',
+        reviewedPin: sha => (sha ? `الإصدار المثبّت المراجَع ${sha}` : 'الإصدار المثبّت المراجَع'),
+        latestCommit: 'أحدث إيداع',
+        nothingToInstall: 'لا تحتوي هذه الحزمة على ما يُثبَّت هنا.'
       }
     },
     notifications: {
@@ -527,12 +537,6 @@ export const arSettings = {
       clear: 'مسح'
     },
     config: {
-      developerTitle: 'المطوّر',
-      resetOnboardingTitle: 'إعادة تعيين الإعداد الأولي',
-      resetOnboardingDesc:
-        'حذف محادثات الإعداد، وإعادة بناء ملف الإعداد الشخصي، وتشغيل الإعداد الأولي مرة أخرى. تبقى ملفاتك الشخصية ومحادثاتك وإضافاتك كما هي.',
-      resetOnboardingAction: 'إعادة تعيين',
-      resetOnboardingFailed: 'تعذّر إعادة تعيين الإعداد الأولي',
       fileOpenAppTitle: "مكان فتح الملفات الافتراضي",
       fileOpenAppDesc: "حيث تُفتح الملفات عند إرسالها خارج Hermes. الإعداد الافتراضي للنظام يتبع ارتباط الملفات في نظام التشغيل، وبعض المثبِّتات وتحديثات أدوات التطوير تعيد كتابته بصمت — اختر تطبيقًا هنا لتثبيته. تظهر فقط التطبيقات الموجودة على هذا الحاسوب.",
       fileOpenAppSystem: "الإعداد الافتراضي للنظام",

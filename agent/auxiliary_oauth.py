@@ -14,7 +14,7 @@ same provider, same endpoint, same effective model. Anything else consumes what 
 model-qualified configuration declares, and a route declaring nothing gets nothing.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from hermes_cli.route_identity import normalize_route_base_url
 
@@ -39,7 +39,7 @@ def _same_model_spelling(key: Any, model: Any) -> bool:
     return a.rsplit("/", 1)[-1] == b.rsplit("/", 1)[-1]
 
 
-def declared_route_capabilities(provider: Any, model: Any, base_url: Any = None) -> Dict[str, bool]:
+def declared_route_capabilities(provider: Any, model: Any, base_url: Any = None) -> dict[str, bool]:
     """The capability map *provider*'s config entry declares for *model* (``{}`` when none).
 
     Resolved by the canonical owner, so the provider-level map and its per-model override merge
@@ -61,7 +61,7 @@ def declared_route_capabilities(provider: Any, model: Any, base_url: Any = None)
         entry, own_url = found
         if base_url and not same_provider_endpoint(own_url, base_url):
             return {}
-        result: Dict[str, Any] = {}
+        result: dict[str, Any] = {}
         _lift_model_capabilities(entry, _entry_model_key(entry, model), result)
         capabilities = result.get("capabilities")
         return capabilities if isinstance(capabilities, dict) else {}
@@ -84,7 +84,7 @@ def client_route_url(client: Any, base_url: Any = None) -> str:
     return base
 
 
-def routed_client_capabilities(client: Any, provider: Any, model: Any) -> Dict[str, bool]:
+def routed_client_capabilities(client: Any, provider: Any, model: Any) -> dict[str, bool]:
     """Capability map for a session that switched onto *client* (``resolve_provider_client``).
 
     The declared map of *provider*'s entry for *model* at the client's own endpoint — the same map
@@ -96,7 +96,7 @@ def routed_client_capabilities(client: Any, provider: Any, model: Any) -> Dict[s
     return dict(declared_route_capabilities(provider, model, client_route_url(client)))
 
 
-def rebound_capabilities(current: Any, providers: Any, model: Any, base_url: Any) -> Dict[str, bool]:
+def rebound_capabilities(current: Any, providers: Any, model: Any, base_url: Any) -> dict[str, bool]:
     """The session's capability map after a credential rebind moved it to *base_url*.
 
     A pool may hold entries for several URLs under one provider name, and the restore path
@@ -120,7 +120,7 @@ def rebound_capabilities(current: Any, providers: Any, model: Any, base_url: Any
     return kept
 
 
-def _entry_model_key(entry: Dict[str, Any], model: Any) -> Optional[str]:
+def _entry_model_key(entry: dict[str, Any], model: Any) -> Optional[str]:
     """The ``models:`` key of *entry* naming *model*, else *model* unchanged (no per-model block).
 
     An exact key wins; another spelling is used only when exactly one key matches it
@@ -227,7 +227,7 @@ def auto_route_model(override: Any, main_model: str, normalized_main: Optional[s
     return main_model
 
 
-def cached_route_policy(runtime: Dict[str, Any], provider: Any, base_url: Any, model: Any) -> Optional[bool]:
+def cached_route_policy(runtime: dict[str, Any], provider: Any, base_url: Any, model: Any) -> Optional[bool]:
     """The OAuth-proxy policy a client built for this cache slot would freeze in.
 
     Client construction fixes auth and transforms while ``_build_call_kwargs`` re-reads the
@@ -267,7 +267,7 @@ def named_route_identity(prov: Optional[str], base_url: Optional[str]) -> Option
     return name if named_provider_owns_endpoint(name, base_url) else None
 
 
-def affinity_capabilities(main_runtime: Any, provider: Any, route_url: Any, model: Any) -> Optional[Dict[str, bool]]:
+def affinity_capabilities(main_runtime: Any, provider: Any, route_url: Any, model: Any) -> Optional[dict[str, bool]]:
     """Capabilities for the auxiliary conversation-affinity header on this route, or None.
 
     ``x-claude-code-session-id`` rides only where ``runtime_oauth_proxy`` says this provider,

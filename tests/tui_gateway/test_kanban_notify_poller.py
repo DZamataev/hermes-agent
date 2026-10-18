@@ -263,7 +263,7 @@ def _compressed_lineage(tmp_path, monkeypatch, *ids: str):
     """A state.db where each id in ``ids`` is the compression continuation of the previous one."""
     import time as _time
 
-    import tui_gateway.server as server
+    from tui_gateway import server
     from hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -323,7 +323,7 @@ class TestCompressedSessionOwnsItsSubscriptions:
         assert _sub_rows(foreign)[0]["last_event_id"] == pre_cursor
 
     def test_stale_pre_compression_tab_leaves_events_to_the_live_continuation(self, tmp_path, monkeypatch):
-        import tui_gateway.server as server
+        from tui_gateway import server
 
         _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
         tid = _create_subscribed_task(chat_id="before-compress")
@@ -553,7 +553,7 @@ class TestLineageDelivery:
             assert len(quiescent) == 1, (key, quiescent)
 
     def test_failed_lineage_lookup_is_retried_on_the_next_poll(self, tmp_path, monkeypatch):
-        import tui_gateway.server as server
+        from tui_gateway import server
 
         db = _compressed_lineage(tmp_path, monkeypatch, "before-compress", "after-compress")
         tid = _create_subscribed_task(chat_id="before-compress")
@@ -645,7 +645,7 @@ class TestCompletionCarriesTheWholeSummary:
         summary = "x" * 50 + "\n" + "y" * (_TUI_SUMMARY_LIMIT + 500)
         tid = self._complete_claimed(summary)
         text = _collect_kanban_notifications(_session())[0]
-        head, handoff = text.split("\n", 1)
+        _head, handoff = text.split("\n", 1)
         assert handoff == summary[:_TUI_SUMMARY_LIMIT] + f"\n… (truncated; hermes kanban show {tid})"
 
     def test_a_completion_without_a_run_reads_as_before(self):
@@ -680,11 +680,12 @@ class TestNotificationPollerLoopKanbanWiring:
         monkeypatch.setattr(
             server, "_emit", lambda event, sid, payload=None: emits.append((event, payload))
         )
-        monkeypatch.setattr(
-            server,
-            "_run_prompt_submit",
-            lambda rid, sid, sess, text: submits.append(text),
-        )
+        def accept(rid, sid, sess, text):
+            # Model execution is replaced, including its concrete admission receipt.
+            server._emit("message.start", sid)
+            submits.append(text)
+            return True
+        monkeypatch.setattr(server, "_run_prompt_submit", accept)
         stop = threading.Event()
         thread = threading.Thread(
             target=server._notification_poller_loop,
