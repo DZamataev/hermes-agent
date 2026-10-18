@@ -866,8 +866,8 @@ def test_child_pin_on_an_entry_literally_named_custom(relay):
 
 
 def test_pooled_runtime_drops_the_declaration_at_another_endpoint(relay, monkeypatch):
-    """Finding 2 (review 3): the credential-pool exit of ``_resolve_named_custom_runtime`` returns
-    before the final scoping; a pool keyed by the provider's name serves any explicit URL."""
+    """Finding 2 (review 3): a pooled runtime at another endpoint must not carry the declaration.
+    Since 26c5401ad2 a pool stays on its own endpoint, so the foreign URL resolves off the pool."""
     from types import SimpleNamespace
 
     from hermes_cli import runtime_provider
@@ -881,7 +881,7 @@ def test_pooled_runtime_drops_the_declaration_at_another_endpoint(relay, monkeyp
     assert own["capabilities"] == {"anthropic_oauth_proxy": True}
     foreign = runtime_provider.resolve_runtime_provider(
         requested="tenant", target_model=TRUSTED_MODEL, explicit_base_url=f"{GATEWAY}/tenant-b")
-    assert foreign["source"] == own["source"]
+    assert foreign["base_url"].startswith(f"{GATEWAY}/tenant-b")
     assert not foreign.get("capabilities")
 
 

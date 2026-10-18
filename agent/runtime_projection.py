@@ -12,14 +12,14 @@ one-shot from each dropping a different piece.
 from __future__ import annotations
 
 import weakref
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 _IDENTITY_FIELDS = ("model", "provider", "requested_provider", "api_key", "api_mode", "auth_mode", "session_id")
 # The fields a ContextCompressor holds for its own summary route.
 _ROUTE_FIELDS = ("model", "provider", "base_url", "api_key", "api_mode")
 
 
-def live_main_runtime(agent: Any) -> Dict[str, Any]:
+def live_main_runtime(agent: Any) -> dict[str, Any]:
     """The agent's live route: owner, full endpoint (query included), model, capabilities, session.
 
     Read off the agent alone, never off ambient context state, so a snapshot cannot borrow
@@ -27,7 +27,7 @@ def live_main_runtime(agent: Any) -> Dict[str, Any]:
     provider) is kept as-is."""
     from agent.turn_context import live_route_base_url
 
-    runtime: Dict[str, Any] = {key: getattr(agent, key, "") or "" for key in _IDENTITY_FIELDS}
+    runtime: dict[str, Any] = {key: getattr(agent, key, "") or "" for key in _IDENTITY_FIELDS}
     runtime["base_url"] = live_route_base_url(agent)
     capabilities = getattr(agent, "capabilities", None)
     runtime["capabilities"] = {
@@ -45,7 +45,7 @@ def bind_route_owner(engine: Any, agent: Any) -> None:
         pass
 
 
-def compressor_main_runtime(compressor: Any) -> Dict[str, Any]:
+def compressor_main_runtime(compressor: Any) -> dict[str, Any]:
     """``main_runtime`` for a compressor's summary call on its own route.
 
     The compressor holds only model/provider/SDK-clean URL/key/API mode. When its host agent is on
@@ -60,7 +60,7 @@ def compressor_main_runtime(compressor: Any) -> Dict[str, Any]:
     return live_main_runtime(owner)
 
 
-def _same_route(route: Dict[str, Any], agent: Any) -> bool:
+def _same_route(route: dict[str, Any], agent: Any) -> bool:
     def clean(value: Any) -> str:
         return str(value or "").strip().rstrip("/")
 
