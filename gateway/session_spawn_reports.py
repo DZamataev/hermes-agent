@@ -51,8 +51,8 @@ async def deliver_reports(runner, authority, home):
     from tools.spawn_task_reports import (claim_report, display_text, finish_report, format_report,
                                           pending_reports, release_report)
     for path, record in await asyncio.to_thread(pending_reports, home):
-        # Addressed by the id the chip saw at launch: compression may have rotated it since.
-        sid = authority.db.get_compression_tip(record['to']) or record['to']
+        # The offering session's local id: it stays the session's id across compression.
+        sid = record['to']
         try:
             ref = restore_local_session(authority, sid)
         except Exception:  # health: allow BLE001 -- not this owner's session: left for its own poller
