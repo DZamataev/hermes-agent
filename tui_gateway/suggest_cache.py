@@ -59,9 +59,7 @@ def _extracted(history: list) -> list[dict]:
     return [{"text": c.text, "kind": c.kind} for c in extract_suggestions(assistant_text)]
 
 
-def _compute(session: dict, history: list, version: int, turn_at_start: Any, display: dict) -> list[dict]:
-    """The model prediction (``display.composer_predictions``, default on), with the extractor as
-    the fallback when the model abstains; the extractor alone when predictions are off."""
+def _superseded(session: dict, version: int, turn_at_start: Any):
     had_turn = isinstance(turn_at_start, dict)
     started_at = turn_at_start.get("started_at") if had_turn else None
 
@@ -73,11 +71,17 @@ def _compute(session: dict, history: list, version: int, turn_at_start: Any, dis
         started = isinstance(turn, dict) and (not had_turn or turn.get("started_at") != started_at)
         return started or int(session.get("history_version", 0)) != version
 
+    return superseded
+
+
+def compute(history: list, agent: Any, superseded, display: dict) -> list[dict]:
+    """The model prediction (``display.composer_predictions``, default on), with the extractor as
+    the fallback when the model abstains; the extractor alone when predictions are off.
+    ``superseded`` is true once a new turn makes the guess stale."""
     if bool(display.get("composer_predictions", True)):
         from tui_gateway.server import _coerce_message_text, _main_runtime_from_agent
         from tui_gateway.suggest_predict import predict_next_message
 
-        agent = session.get("agent")
         prediction = predict_next_message(
             history, _coerce_message_text, main_runtime=_main_runtime_from_agent(agent), agent=agent,
             stale=superseded)
@@ -102,7 +106,7 @@ def schedule_after_turn(session: dict) -> None:
 
         def run() -> None:
             try:
-                record.candidates = _compute(session, history, version, turn, display)
+                record.candidates = compute(history, session.get("agent"), _superseded(session, version, turn), display)
             except Exception:  # health: allow BLE001 -- decorative: a failed suggestion is no suggestion
                 logger.debug("composer suggestion failed", exc_info=True)
             finally:

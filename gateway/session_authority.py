@@ -68,6 +68,8 @@ class LiveSession:
     # Mounted by that cold path (not published by its lane): the lane publishing ANOTHER conversation
     # on the same route later supersedes it too.
     history_mount: bool = False
+    # The composer ghost of the last completed turn (``gateway/session_tui_suggest.py``).
+    composer_suggestion: object = None
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)

@@ -98,6 +98,9 @@ def _publish_completion(authority, live, ref, row, settled, response, captured):
         live.controls.snapshot(ref.session_id, None)
     except Exception:
         logger.exception('Terminal control cleanup failed for admission %s', row['admission_id'])
+    if settled['outcome'] == 'completed':
+        from gateway.session_tui_suggest import schedule_after_turn
+        schedule_after_turn(authority, live, ref)
     live.event_stream.publish(ref.session_id, completion_payload(row, settled, response, captured))
 
 

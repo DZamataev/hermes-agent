@@ -207,6 +207,8 @@ class AuthorityConnection:
         handlers['image.attach_bytes'] = partial(attach_bytes, self)
         from gateway.session_complete_path import complete_path
         handlers['complete.path'] = partial(complete_path, self)
+        from gateway.session_tui_suggest import suggest
+        handlers['complete.suggest'] = partial(suggest, self)
         from gateway.session_prune import prune
         handlers['session.prune'] = partial(prune, self)
         from gateway.session_usage import stats
