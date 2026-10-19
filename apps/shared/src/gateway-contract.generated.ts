@@ -4933,6 +4933,8 @@ export interface CanonicalCreateParams {
   editor?: Record<string, unknown> | null
   title?: string | null
   hidden?: boolean
+  title_dedupe?: boolean
+  spawn_report_to?: string | null
   follow_profile_config?: boolean | null
   service_tier?: string | null
   cwd_explicit?: boolean | null

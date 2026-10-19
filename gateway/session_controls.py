@@ -414,17 +414,25 @@ class AuthorityConnection:
     async def create(self, ref, params):
         from gateway.session_local_title import validate_title
         title = validate_title(params.pop('title')) if 'title' in params else None
+        # The spawn-task chip (tools/spawn_task_tool.py): ``title_dedupe`` titles a fresh session
+        # ``<title> (N)`` instead of reopening the user's session of that name.
+        dedupe, report_to = params.pop('title_dedupe', False), params.pop('spawn_report_to', None)
+        if type(dedupe) is not bool:
+            raise RuntimeStoreError('invalid_params', field='title_dedupe')
+        if report_to is not None and not (isinstance(report_to, str) and report_to.strip()):
+            raise RuntimeStoreError('invalid_params', field='spawn_report_to')
+        chip = {'dedupe': dedupe, 'report_to': report_to and report_to.strip()}
         if title is None:
-            return await self._create(params, None)
+            return await self._create(params, None, **chip)
         # ``-c <title> --create-if-missing``: resolve -> create -> title is one owner step per
         # authority (the commits run off the loop), so concurrent programmatic callers converge.
         lock = getattr(self.authority, '_titled_create_lock', None)
         if lock is None:
             lock = self.authority._titled_create_lock = asyncio.Lock()
         async with lock:
-            return await self._create(params, title)
+            return await self._create(params, title, **chip)
 
-    async def _create(self, params, title):
+    async def _create(self, params, title, *, dedupe=False, report_to=None):
         from gateway.session_local import stage_local_session
         from gateway.session_local_recovery import restore_local_session
         from gateway.session_local_title import resolve_titled_session, title_new_session
@@ -435,7 +443,7 @@ class AuthorityConnection:
         hidden = params.pop('hidden', False)
         if type(hidden) is not bool:
             raise RuntimeStoreError('invalid_params', field='hidden', detail='must be a boolean')
-        ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
+        ref = title and not dedupe and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
         if not ref:
             skills_prompt = None
             if 'skills' in params:
@@ -464,9 +472,13 @@ class AuthorityConnection:
                 policy = restore_policy(local_receipt(self.authority.db, ref.session_id)['policy'])
                 await asyncio.to_thread(accept_launch_hooks, policy)
             if title:
-                await tracked_write(self.authority, partial(title_new_session, self.authority, ref, title))
+                await tracked_write(self.authority, partial(title_new_session, self.authority, ref, title, dedupe=dedupe))
             if hidden:
                 await tracked_write(self.authority, partial(self.authority.db.set_session_hidden, ref.session_id, True))
+            if report_to:
+                # Read back after this session's first finished turn (gateway/session_spawn_reports.py).
+                await tracked_write(self.authority, partial(self.authority.db.patch_session_model_config,
+                                                            ref.session_id, {'spawn_report_to': report_to}))
         return await self.resume(ref, {})
 
     async def ping(self, ref, params):

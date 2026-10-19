@@ -93,7 +93,7 @@ def pending_reports(home: Path | str) -> list[tuple[Path, dict[str, Any]]]:
         if path.name.startswith("."):
             continue  # atomic_json_write's temp file
         try:
-            record = json.loads(path.read_text(encoding="utf-8"))
+            record = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             continue
         if isinstance(record, dict) and isinstance(record.get("to"), str) and record["to"]:

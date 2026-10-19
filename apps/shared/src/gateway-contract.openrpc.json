@@ -8805,6 +8805,23 @@
             "title": "Hidden",
             "type": "boolean"
           },
+          "title_dedupe": {
+            "default": false,
+            "title": "Title Dedupe",
+            "type": "boolean"
+          },
+          "spawn_report_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Spawn Report To"
+          },
           "follow_profile_config": {
             "anyOf": [
               {

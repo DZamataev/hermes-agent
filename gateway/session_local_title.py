@@ -6,6 +6,8 @@ applies the classic CLI rule (``hermes_cli.main._resolve_session_by_name_or_id``
 """
 from __future__ import annotations
 
+import contextlib
+
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -70,10 +72,24 @@ def validate_title(title):
     return cleaned
 
 
-def title_new_session(authority, ref, title):
+def title_new_session(authority, ref, title, *, dedupe=False):
     """User-provenance title on a just-created local session (auto-titling never overwrites it).
-    A concurrent creator that won the unique title is a conflict, not a silent orphan."""
+    A concurrent creator that won the unique title is a conflict, not a silent orphan.
+
+    ``dedupe`` (a model-proposed title): a taken title lands as ``<title> (N)``, never the lineage
+    ``#N`` form ``resolve_session_by_title`` prefers; with every candidate taken the session stays
+    untitled for auto-titling. A retried create keeps the title it already got."""
+    db = authority.db
+    if dedupe and db.get_session_title(ref.session_id):
+        return
     try:
-        authority.db.set_session_title(ref.session_id, title)
+        db.set_session_title(ref.session_id, title)
+        return
     except ValueError:
-        raise RuntimeStoreError('admission_conflict') from None
+        if not dedupe:
+            raise RuntimeStoreError('admission_conflict') from None
+    for n in range(2, 100):
+        suffix = f' ({n})'
+        with contextlib.suppress(ValueError):  # taken: try the next number
+            db.set_session_title(ref.session_id, f'{title[:db.MAX_TITLE_LENGTH - len(suffix)].rstrip()}{suffix}')
+            return
