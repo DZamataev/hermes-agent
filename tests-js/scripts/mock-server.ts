@@ -34,6 +34,16 @@ import { writeEnvFile, writeMockProviderConfig } from './mock-provider-config.ts
 /** A canned assistant reply used for every chat completion request. */
 export const MOCK_REPLY = 'Hello from the mock inference server! The full boot chain is working.'
 
+/**
+ * Prompt markers of the composer-prediction request (`tui_gateway/suggest_predict.py`): the
+ * cache-parity fork appends its `_FORK_PROMPT`, the short-transcript path sends `_PROMPT` as the
+ * system message. Either one means "answer with the prediction, not the canned reply".
+ */
+export const COMPOSER_PREDICTION_MARKERS = ['Composer prediction request', 'You predict the next message a user will type']
+
+/** The prediction every composer-prediction request gets; specs assert it as the composer ghost. */
+export const E2E_PREDICTED_NEXT = 'run the e2e suite again'
+
 export interface MockServerOptions {
   /** Choose distinct replies from the latest input without replaying history. */
   replyForPrompt?: (prompt: string) => string
@@ -766,6 +776,24 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
 
           if (userText) {
             _receivedUserTexts.push(userText)
+          }
+
+          // A prediction is a side request about the conversation, not a turn in it; answer it
+          // before the turn triggers below, whose history it replays.
+          if (
+            messages.some(message =>
+              COMPOSER_PREDICTION_MARKERS.some(
+                marker => typeof message?.content === 'string' && message.content.includes(marker),
+              ),
+            )
+          ) {
+            if (stream) {
+              streamTextResponse(res, model, E2E_PREDICTED_NEXT)
+            } else {
+              nonStreamingTextResponse(res, model, E2E_PREDICTED_NEXT)
+            }
+
+            return
           }
 
           const isInterimTrigger = userText.includes('E2E_INTERIM_TRIGGER')
