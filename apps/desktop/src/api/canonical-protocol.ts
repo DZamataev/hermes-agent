@@ -159,7 +159,7 @@ const OWNER_CONNECTION_VERBS = new Set([
 // gateway/session_tui_config.py), with the keys that take a `scope` (`reasoning --global`, the
 // Shift+click global yolo zap).
 const CANONICAL_CONFIG_KEYS = new Set([
-  'busy', 'verbose', 'yolo', 'model', 'reasoning', 'fast', 'personality', 'approvals.mode', 'voice.voice_chat_mode',
+  'busy', 'verbose', 'yolo', 'model', 'reasoning', 'fast', 'personality', 'approvals.mode', 'voice.voice_chat_mode', 'delegation',
   'display.message_reactions', 'display.in_app_tips', 'display.in_app_tours'
 ])
 

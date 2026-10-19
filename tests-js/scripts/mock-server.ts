@@ -270,6 +270,22 @@ function sidebarCrossScript(releasePath?: string): ScriptedTurn[] {
 
 const SIDEBAR_CROSS_SCRIPT: ScriptedTurn[] = sidebarCrossScript()
 
+// ─── Subagents-pick script ─────────────────────────────────────────────
+//
+// E2E_DELEGATE_TRIGGER makes the mock spawn one real `delegate_task` child
+// (`goal: 'say ACK'`) and answer once that child's tool result is back. The
+// result must sit AFTER the trigger message: the trigger stays in history for
+// later turns, so "any tool message present" would stop scripting turn two.
+
+export const DELEGATE_TRIGGER = 'E2E_DELEGATE_TRIGGER'
+export const DELEGATE_GOAL = 'say ACK'
+export const DELEGATE_REPLY = 'The subagent said ACK.'
+
+const DELEGATE_CALL_TURN: ScriptedTurn = {
+  text: '',
+  toolCalls: [{ name: 'delegate_task', args: { goal: DELEGATE_GOAL } }],
+}
+
 const QUEUE_STOP_SCRIPT: ScriptedTurn[] = [
   {
     text: 'Starting a task that will keep this turn active.',
@@ -929,6 +945,20 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           if (isSidebarTrigger) {
             const turn = SIDEBAR_SCRIPT[_sidebarScriptIndex] ?? SIDEBAR_SCRIPT[SIDEBAR_SCRIPT.length - 1]
             _sidebarScriptIndex++
+
+            if (stream) {
+              streamScriptedTurn(res, model, turn)
+            } else {
+              nonStreamingScriptedTurn(res, model, turn)
+            }
+
+            return
+          }
+
+          if (userText.includes(DELEGATE_TRIGGER)) {
+            const lastUserIndex = messages.findLastIndex((message: any) => message?.role === 'user')
+            const hasOwnToolResult = messages.slice(lastUserIndex + 1).some((m: any) => m?.role === 'tool')
+            const turn = hasOwnToolResult ? { text: DELEGATE_REPLY } : DELEGATE_CALL_TURN
 
             if (stream) {
               streamScriptedTurn(res, model, turn)

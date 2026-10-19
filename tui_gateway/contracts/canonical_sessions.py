@@ -5,7 +5,7 @@ Reuse upstream authority-only value shapes; these overrides do not widen METHODS
 from typing import Literal
 
 from .base import JsonValue, Params, Result
-from .common import ProfileParams, TranscriptMessage
+from .common import DelegationOverride, ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
 from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
 from .registry import canonical_method
@@ -131,6 +131,8 @@ class CanonicalSnapshotInfo(SessionInventoryFields):
     api_mode: str | None = None
     tool_count: int | None = None
     credential_hint: str | None = None
+    # The composer's Subagents pick (gateway/session_tui_config.py::_set_delegation); None = Auto.
+    delegation_override: DelegationOverride | None = None
     # ``session.info``'s session-start notice: ``session.create`` returns the same projection.
     config_warning: str | None = None
 

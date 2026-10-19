@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Literal
 
 from .base import JsonValue, Params, Result
-from .common import McpServerStatus, OpenModel, ProjectRef
+from .common import DelegationOverride, McpServerStatus, OpenModel, ProjectRef
 from .events import SkinPayload
 from .groups_bot_relay import RoomParams, RoomTaskReceipt
 from .prompt_voice import ClarifyLockParams, ClarifyLockResult
@@ -195,6 +195,8 @@ class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
     api_mode: str | None = None
     tool_count: int | None = None
     credential_hint: str | None = None
+    # The composer's Subagents pick (gateway/session_tui_config.py::_set_delegation); None = Auto.
+    delegation_override: DelegationOverride | None = None
     # A session-start notice (the project plugins this gateway does not load).
     config_warning: str | None = None
 

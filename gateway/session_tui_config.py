@@ -185,6 +185,8 @@ async def config_set(connection, ref, params):
         return await asyncio.to_thread(_set_personality, connection, value)
     if key in ('approvals.mode', 'approval_mode'):
         return await asyncio.to_thread(_set_approval_mode, connection, value)
+    if key == 'delegation':
+        return await _set_delegation(connection, ref, value)
     if key in _DISPLAY_TOGGLE_KEYS or key == 'voice.voice_chat_mode':
         return {'key': key, **await asyncio.to_thread(_write_profile_config, connection,
                                                       lambda cfg: _set_profile_leaf(cfg, key, value))}
@@ -196,6 +198,24 @@ async def config_set(connection, ref, params):
     if key == 'skin':
         await _broadcast_skin(connection)
     return {'key': key, **result}
+
+
+async def _set_delegation(connection, ref, value):
+    """The composer's Subagents pick (main's sidecar: ``tui_gateway/methods_config_set.py::_set_delegation``).
+    Session-only: kept on the conversation's row, which ``delegate_task`` reads for an agent the sidecar
+    did not stamp (``tools/delegate_tool_routes.py``) and a compression rotation carries forward."""
+    from gateway.session_runtime_workers import tracked_write
+    from tui_gateway.session_delegation import CLEAR_WORDS, MODEL_CONFIG_KEY, normalize_delegation_pick
+    if not ref.session_id:
+        raise RuntimeStoreError('invalid_params')
+    pick = None
+    if not (isinstance(value, str) and value.strip().lower() in CLEAR_WORDS):
+        if (pick := normalize_delegation_pick(value)) is None:
+            raise RuntimeStoreError('invalid_params', field='value')
+    await tracked_write(connection.authority, partial(
+        connection.authority.db.update_conversation_model_config_value, ref.session_id, MODEL_CONFIG_KEY,
+        lambda _old: pick))
+    return {'key': 'delegation', 'value': pick['model'] if pick else 'auto', 'delegation_override': pick or {}}
 
 
 async def _broadcast_skin(connection):
