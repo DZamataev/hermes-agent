@@ -1,6 +1,8 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { $composerPredictions } from '@/store/composer-ghost'
 import { resetBrowseState } from '@/store/composer-input-history'
 
 import { pickPlaceholder } from '../composer-utils'
@@ -22,6 +24,7 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
   const { t } = useI18n()
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
+  const predictions = useStore($composerPredictions)
 
   const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
     pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders)
@@ -57,5 +60,7 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
     ? reconnecting
       ? t.composer.placeholderReconnecting
       : t.composer.placeholderStarting
-    : restingPlaceholder
+    : sessionId && predictions
+      ? ''
+      : restingPlaceholder
 }
