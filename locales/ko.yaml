@@ -2161,6 +2161,7 @@ cli:
     preparing_stt: "로컬 STT 모델 '{model}'을(를) 준비하고 있어요 (처음 사용 시 Hugging Face에서 다운로드할 수 있어요)..."
     transcribing: "음성 인식 중..."
     stop_phrase: "종료 문구가 감지되어 음성 채팅을 종료해요."
+    stop_phrase_conversation: "정지 문구가 감지되었습니다 — 대화를 종료합니다."
     transcription_failed: "음성 인식 실패: {error}"
     processing_error: "음성 처리 오류: {error}"
     recording_preserved: "녹음 파일을 보존했어요: {path}"

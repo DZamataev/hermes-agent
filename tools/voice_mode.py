@@ -125,14 +125,19 @@ def _rms(np, data) -> float:
     return float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
 
 
-def _default_input_samplerate(sd) -> int:
-    """Default input device rate, else the Whisper-friendly SAMPLE_RATE."""
+def _default_device_samplerate(sd, kind: str) -> int:
+    """Default ``kind`` ("input"/"output") device rate, else the Whisper-friendly SAMPLE_RATE."""
     with suppress(Exception):
-        info = sd.query_devices(None, "input")
+        info = sd.query_devices(None, kind)
         rate = info.get("default_samplerate") if isinstance(info, dict) else getattr(info, "default_samplerate", None)
         if isinstance(rate, (int, float)) and rate > 0:
             return round(rate)
     return SAMPLE_RATE
+
+
+def _default_input_samplerate(sd) -> int:
+    """Default input device rate, else the Whisper-friendly SAMPLE_RATE."""
+    return _default_device_samplerate(sd, "input")
 
 
 # ── Environment detection ──
@@ -367,10 +372,25 @@ def _get_beep_volume() -> float:
     return volume
 
 
+def play_cue(kind: str, frequency: int, count: int) -> None:
+    """Record ``start``/``stop`` cue: ``voice.<kind>_sound`` (an audio file) when set, else the beep."""
+    path = os.path.expanduser(str(_voice_config().get(f"{kind}_sound") or "").strip())
+    if path:
+        if os.path.isfile(path) and play_audio_file(path):
+            return
+        logger.warning("voice.%s_sound %s could not be played; using the beep", kind, path)
+    play_beep(frequency=frequency, count=count)
+
+
+# Playback is not interactive: PortAudio's default low-latency buffer underruns (audible stutter)
+# whenever the CPU is busy, e.g. Piper synthesizing the next sentence; "high" was still too small.
+_PLAYBACK_LATENCY_S = 0.2
+
+
 def _sd_play_blocking(sd, audio, sample_rate: int, *, timeout: float, blocksize: int = 0) -> None:
     """``sd.play`` then poll until idle or *timeout* (``sd.wait()`` has no timeout and
     hangs forever if the device stalls)."""
-    sd.play(audio, samplerate=sample_rate, blocksize=blocksize)
+    sd.play(audio, samplerate=sample_rate, blocksize=blocksize, latency=_PLAYBACK_LATENCY_S)
     deadline = time.monotonic() + timeout
     while sd.get_stream() and sd.get_stream().active and time.monotonic() < deadline:
         time.sleep(0.01)
@@ -427,6 +447,8 @@ def mark_audio_output_active(active: bool) -> None:
     global _audio_output_active_count
     with _audio_output_lock:
         _audio_output_active_count = max(0, _audio_output_active_count + (1 if active else -1))
+    if active:
+        stop_thinking_sound()  # the reply is playing: the wait is over (no ticks between sentences)
 
 
 def is_audio_output_active() -> bool:
@@ -464,10 +486,44 @@ def _synth_thinking_blip(np, frequency: float) -> Any:
     return (tone * env * volume * 32767).astype(np.int16)
 
 
+def _thinking_clip(np) -> Any:
+    """``voice.thinking_sound_file`` as int16 mono at SAMPLE_RATE, or None (use the blips)."""
+    path = os.path.expanduser(str(_voice_config().get("thinking_sound_file") or "").strip())
+    if not path:
+        return None
+    ffmpeg = shutil.which("ffmpeg")
+    try:
+        if not (ffmpeg and os.path.isfile(path)):
+            raise OSError("missing file or ffmpeg")
+        raw = subprocess.run(
+            [ffmpeg, "-nostdin", "-loglevel", "quiet", "-i", path, "-f", "s16le", "-ac", "1",
+             "-ar", str(SAMPLE_RATE), "-"], capture_output=True, timeout=30, check=True).stdout
+        clip = np.frombuffer(raw, dtype=np.int16)
+        if len(clip):
+            return clip
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug("thinking clip decode failed: %s", e)
+    logger.warning("voice.thinking_sound_file %s could not be loaded; using the blips", path)
+    return None
+
+
+def _play_clip_until(sd, clip, stop: threading.Event) -> None:
+    """Play *clip* on a PRIVATE output stream in 0.1 s chunks, stopping early once *stop* is set.
+    sd.play/sd.stop share one module-level stream with replies and cues; driving it from this
+    thread while a reply starts deadlocks PortAudio (Pa_StopStream never returns)."""
+    chunk = SAMPLE_RATE // 10
+    with sd.OutputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", latency=_PLAYBACK_LATENCY_S) as out:
+        for i in range(0, len(clip), chunk):
+            if stop.is_set():
+                return
+            out.write(clip[i:i + chunk])
+
+
 def _thinking_sound_loop(stop: threading.Event, should_play) -> None:
-    """Daemon loop: alternating-pitch blips every ~0.8-1.2s until *stop*; skips (without
-    stopping) while *should_play* is False. macOS exits immediately: sounddevice output
-    is TCC-gated and per-second afplay churn is worse than silence."""
+    """Daemon loop: the configured clip back to back, else alternating-pitch blips every
+    ~0.8-1.2s, until *stop*; skips (without stopping) while *should_play* is False. macOS
+    exits immediately: sounddevice output is TCC-gated and per-second afplay churn is worse
+    than silence."""
     if not _sounddevice_output_allowed():
         return
     try:
@@ -475,20 +531,19 @@ def _thinking_sound_loop(stop: threading.Event, should_play) -> None:
     except (ImportError, OSError):
         return
     import random
-    blips = [_synth_thinking_blip(np, p) for p in (392.0, 329.6)]  # G4 / E4
+    clip = _thinking_clip(np)
+    blips = [clip] if clip is not None else [_synth_thinking_blip(np, p) for p in (392.0, 329.6)]  # G4 / E4
     i = 0
     while not stop.is_set():
         try:
             if should_play is None or should_play():
                 blip = blips[i % len(blips)]
                 i += 1
-                sd.play(blip, samplerate=SAMPLE_RATE)
-                stop.wait(len(blip) / SAMPLE_RATE + 0.02)
-                sd.stop()
+                _play_clip_until(sd, blip, stop)
         except Exception as e:
             logger.debug("Thinking sound blip failed: %s", e)
             return
-        stop.wait(0.8 + random.random() * 0.4)
+        stop.wait(0.05 if clip is not None else 0.8 + random.random() * 0.4)
 
 
 def start_thinking_sound(should_play=None) -> bool:
@@ -1010,8 +1065,9 @@ def _wsl_powershell_tts_available() -> bool:
 
 
 def play_audio_file(file_path: str) -> bool:
-    """Play an audio file; True on success. WAV via ``sounddevice.play()`` when allowed,
-    else system players: afplay (macOS), WSL2 PowerShell bridge, ffplay, aplay (Linux).
+    """Play an audio file; True on success. WAV plays via ``sounddevice.play()`` when
+    allowed, compressed formats are decoded to WAV first, else system players:
+    afplay (macOS), WSL2 PowerShell bridge, ffplay, aplay (Linux, WAV only).
     Interruptible via ``stop_playback()``."""
     mark_audio_output_active(True)  # ref-count real speaker output for the whole call
     try:
@@ -1090,7 +1146,8 @@ def _system_player_candidates(file_path: str) -> list[list[str]]:
     if ps_cmd:
         players.append(ps_cmd)
     players.append(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", file_path])
-    if system == "Linux":
+    # aplay decodes nothing: handed an mp3 it plays the bytes as raw U8 noise.
+    if system == "Linux" and file_path.endswith(".wav"):
         players.append(["aplay", "-q", file_path])
     return players
 
@@ -1123,13 +1180,48 @@ def _run_system_player(cmd: list[str]) -> bool:
     return False
 
 
+def _play_compressed_via_sounddevice(file_path: str) -> bool:
+    """Decode a compressed file to a temp WAV and play it through sounddevice.
+
+    The bundled ffplay is SDL-built without ALSA and aplay cannot decode, so
+    headless ALSA hosts otherwise get silence or raw-byte noise.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return False
+    try:
+        sd, _ = _import_audio()
+    except (ImportError, OSError):
+        return False
+    # PortAudio over ALSA plug/dmix can refuse a file's own rate (22050 Hz) yet opens the default.
+    rate = _default_device_samplerate(sd, "output")
+    fd, tmp_wav = tempfile.mkstemp(suffix=".wav", prefix="hermes_play_")
+    os.close(fd)
+    try:
+        decoded = subprocess.run(
+            [ffmpeg, "-nostdin", "-loglevel", "quiet", "-y", "-i", file_path,
+             "-f", "wav", "-acodec", "pcm_s16le", "-ar", str(rate), tmp_wav],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False,
+        ).returncode == 0
+        return decoded and _play_wav_via_sounddevice(tmp_wav)
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug("ffmpeg decode of %s failed: %s", file_path, e)
+        return False
+    finally:
+        _unlink_quietly(tmp_wav)
+
+
 def _play_audio_file_impl(file_path: str) -> bool:
     if not os.path.isfile(file_path):
         logger.warning("Audio file not found: %s", file_path)
         return False
     # macOS skips sounddevice output (TCC media-library prompt); afplay handles all formats.
-    if file_path.endswith(".wav") and _sounddevice_output_allowed() and _play_wav_via_sounddevice(file_path):
-        return True
+    if _sounddevice_output_allowed():
+        if file_path.endswith(".wav"):
+            if _play_wav_via_sounddevice(file_path):
+                return True
+        elif _play_compressed_via_sounddevice(file_path):
+            return True
     for cmd in _system_player_candidates(file_path):
         if shutil.which(cmd[0]) and _run_system_player(cmd):
             return True

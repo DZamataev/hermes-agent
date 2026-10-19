@@ -23,7 +23,11 @@ def test_play_audio_file_scrubbed_env(tmp_path, monkeypatch):
 
     with patch.object(vm, "platform") as plat, patch.object(
         vm.shutil, "which", return_value="/usr/bin/ffplay"
-    ), patch.object(vm.subprocess, "Popen", side_effect=fake_popen):
+    ), patch.object(vm.subprocess, "Popen", side_effect=fake_popen), patch.object(
+        # Compressed playback decodes through sounddevice first; this test pins
+        # the system-player fallback and its scrubbed env.
+        vm, "_sounddevice_output_allowed", return_value=False
+    ):
         plat.system.return_value = "Linux"
         ok = vm.play_audio_file(str(audio))
 

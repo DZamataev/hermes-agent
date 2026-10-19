@@ -154,6 +154,7 @@ wake_word:
   sensitivity: 0.6            # 0.0-1.0 — higher = stricter (fewer false triggers), consistent across all engines
   confirmation_frames: 3      # openWakeWord only — consecutive over-threshold frames required to fire
   start_new_session: true     # start a fresh session on wake vs. continue the current one
+  follow_up_seconds: 0        # keep listening this many seconds after a wake reply (0 = off)
   openwakeword:
     model: hey_hermes         # bundled default, or an absolute path to a custom .tflite
   porcupine:
@@ -163,6 +164,12 @@ wake_word:
 `sensitivity` and `start_new_session` apply to all three engines. For sherpa,
 `phrase` selects the detection phrase. For openWakeWord and Porcupine, `phrase`
 is a display label; their model or keyword selects the detection phrase.
+
+In the CLI, `follow_up_seconds` keeps the microphone open after Hermes finishes
+speaking the reply to a wake-word turn, so you can answer without saying the
+phrase again — like a smart speaker. `0` (the default) turns the window off.
+Silence inside the window ends the conversation and the wake listener resumes as
+usual; a spoken stop phrase only ends the conversation (voice mode and TTS stay on).
 
 `input_device` is passed directly to the wake listener's PortAudio
 (`sounddevice`) stream. Use either a numeric device index or an unambiguous

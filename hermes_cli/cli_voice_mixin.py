@@ -59,8 +59,8 @@ class CLIVoiceMixin:
         if hasattr(self, '_app') and self._app:
             self._app.invalidate()
 
-    def _voice_start_recording(self):
-        """Start capturing audio from the microphone."""
+    def _voice_start_recording(self, max_wait=None):
+        """Start capturing audio from the microphone (``max_wait`` = seconds to wait for speech)."""
         from cli import _ACCENT, _DIM, _RST, _cprint
         if getattr(self, '_should_exit', False):
             return
@@ -103,6 +103,8 @@ class CLIVoiceMixin:
         rec.on_live_partial = self._voice_on_live_partial
         rec._silence_threshold = _numeric_or(voice_cfg.get("silence_threshold"), 200)
         rec._silence_duration = _numeric_or(voice_cfg.get("silence_duration"), 3.0)
+        # The recorder is reused: reset the wait every start so a short follow-up window never sticks.
+        rec._max_wait = max_wait or 15.0
         # voice.max_recording_seconds — hard cap on one recording; explicit <= 0 disables it.
         _max_rec = _numeric_or(voice_cfg.get("max_recording_seconds"), None)
         rec._max_recording_seconds = (_max_rec if _max_rec > 0 else 0.0) if _max_rec is not None else 120.0
@@ -117,7 +119,7 @@ class CLIVoiceMixin:
             self._voice_stop_and_transcribe()
 
         # Audio cue: single beep BEFORE starting stream (avoid CoreAudio conflict)
-        self._voice_beep(frequency=880, count=1)
+        self._voice_beep(frequency=880, count=1, kind="start")
 
         try:
             self._voice_recorder.start(on_silence_stop=_on_silence)
@@ -145,12 +147,12 @@ class CLIVoiceMixin:
                 time.sleep(0.15)
         threading.Thread(target=_refresh_level, daemon=True).start()
 
-    def _voice_beep(self, *, frequency: int, count: int) -> None:
-        """Play a record start/stop beep when enabled; never raises."""
+    def _voice_beep(self, *, frequency: int, count: int, kind: str) -> None:
+        """Play the record ``start``/``stop`` cue (sound file or beep) when enabled; never raises."""
         if self._voice_beeps_enabled():
             try:
-                from tools.voice_mode import play_beep
-                play_beep(frequency=frequency, count=count)
+                from tools.voice_mode import play_cue
+                play_cue(kind, frequency, count)
             except Exception:
                 pass
 
@@ -188,6 +190,17 @@ class CLIVoiceMixin:
         self._voice_live_text = text
         self._voice_invalidate()
 
+    def _voice_start_thinking(self) -> bool:
+        """Waiting sound until the reply plays; silent while the mic records or a barge capture runs."""
+        from cli import logger
+        try:
+            from tools.voice_mode import is_audio_output_active, start_thinking_sound
+            return start_thinking_sound(should_play=lambda: not (
+                is_audio_output_active() or self._voice_recording or self._voice_barge_capture.is_set()))
+        except (ImportError, RuntimeError):  # no audio stack / no thread to spare: wait in silence
+            logger.debug("thinking sound unavailable", exc_info=True)
+            return False
+
     def _voice_stop_and_transcribe(self):
         """Stop recording, transcribe via STT, and queue the transcript as input."""
         from cli import _DIM, _RST, _VoiceInputMessage, _cprint
@@ -207,10 +220,12 @@ class CLIVoiceMixin:
                 return
             wav_path = self._voice_recorder.stop()
             # Audio cue: double beep after stream stopped (no CoreAudio conflict)
-            self._voice_beep(frequency=660, count=2)
+            self._voice_beep(frequency=660, count=2, kind="stop")
             if wav_path is None:
                 _cprint(f"{_DIM}{t('cli.voice.no_speech')}{_RST}")
+                self._wake_conversation = False  # silence ends a wake-word conversation
                 return
+            self._voice_start_thinking()  # the wait starts now: transcription is its longest part
             self._voice_invalidate()
             stt_model = self._voice_stt_model()
             if self._voice_stt_provider() == "local":
@@ -224,6 +239,12 @@ class CLIVoiceMixin:
                 transcript = result["transcript"].strip()
                 if is_voice_stop_phrase(transcript):
                     # Bare "stop" (or configured phrase) ends the voice chat, not a turn.
+                    if getattr(self, "_wake_conversation", False):
+                        # Inside a wake-word conversation only the conversation ends:
+                        # _disable_voice_mode would also kill TTS until a restart.
+                        self._wake_conversation = False
+                        _cprint(f"{_DIM}{t('cli.voice.stop_phrase_conversation')}{_RST}")
+                        return
                     _cprint(f"{_DIM}{t('cli.voice.stop_phrase')}{_RST}")
                     self._disable_voice_mode()
                     return
@@ -233,6 +254,7 @@ class CLIVoiceMixin:
                 submitted = True
             elif result.get("success"):
                 _cprint(f"{_DIM}{t('cli.voice.no_speech')}{_RST}")
+                self._wake_conversation = False  # silence ends a wake-word conversation
             else:
                 _cprint(f"\n{_DIM}{t('cli.voice.transcription_failed', error=result.get('error') or t('cli.shared.unknown_error'))}{_RST}")
                 transcription_failed = True
@@ -242,6 +264,9 @@ class CLIVoiceMixin:
         finally:
             with self._voice_lock:
                 self._voice_processing = False
+            if not submitted:
+                from tools.voice_mode import stop_thinking_sound
+                stop_thinking_sound()  # nothing to answer: end the wait sound
             self._voice_live_text = ""
             self._voice_invalidate()
             # On failure keep the source recording so long dictation is not lost.
@@ -629,6 +654,7 @@ class CLIVoiceMixin:
             say(f"{_DIM}{t('cli.voice.wake_installing')}{_RST}")
 
         self._wake_start_new_session = bool(cfg.get("start_new_session", True))
+        self._wake_follow_up_seconds = _numeric_or(cfg.get("follow_up_seconds"), 0.0)
         try:
             start_listening(self._on_wake_word, owner=self, config=cfg)
         except Exception as e:
@@ -712,9 +738,11 @@ class CLIVoiceMixin:
         with self._voice_lock:
             self._voice_mode = True
         self._voice_continuous = False
+        self._wake_conversation = True  # a spoken reply may be answered without the phrase
         try:
             self._voice_start_recording()
         except Exception as e:
+            self._wake_conversation = False
             _cprint(f"{_DIM}{t('cli.voice.wake_capture_failed', error=e)}{_RST}")
 
     def _start_wake_watchdog(self):
@@ -736,6 +764,7 @@ class CLIVoiceMixin:
                         self._agent_running
                         or self._voice_recording
                         or getattr(self, "_voice_processing", False)
+                        or getattr(self, "_wake_follow_up_pending", False)
                         or not self._pending_input.empty())
                     if busy:
                         idle_polls = 0

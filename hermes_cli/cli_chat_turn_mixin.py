@@ -388,16 +388,10 @@ class CLIChatTurnMixin:
     def _chat_monitor_agent_thread(self, turn, agent_thread):
         """Poll the interrupt queue while the agent thread runs; returns the interrupting message (or None)."""
         from cli import _cprint, _hermes_home, logger
-        # Ambient "thinking" blips in voice mode; skipped per-blip while TTS speaks, the mic
-        # records or a barge capture is live. voice.thinking_sound gates it (default on).
+        # Ambient "thinking" sound in voice mode (often already running since the user stopped
+        # speaking); voice.thinking_sound gates it (default on).
         if self._voice_mode:
-            try:
-                from tools.voice_mode import start_thinking_sound
-                turn.thinking_started = start_thinking_sound(should_play=lambda: (
-                    self._voice_tts_done.is_set() and not self._voice_recording
-                    and not self._voice_barge_capture.is_set()))
-            except Exception:
-                turn.thinking_started = False
+            turn.thinking_started = self._voice_start_thinking()
 
         interrupt_msg = None
         while agent_thread.is_alive():

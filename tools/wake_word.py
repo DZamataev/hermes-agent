@@ -78,6 +78,7 @@ _DEFAULTS: dict[str, Any] = {
     "enabled": False, "surface": "auto", "input_device": None, "capture": "auto",
     "provider": "auto", "phrase": "hey hermes", "sensitivity": 0.6,
     "confirmation_frames": _DEFAULT_CONFIRMATION_FRAMES, "start_new_session": True,
+    "follow_up_seconds": 0,
 }
 
 # Bundled "hey hermes" model (tools/wakewords/) — the default; alias names resolve

@@ -563,6 +563,9 @@ class CLIInitMixin:
         self._voice_barge_capture = threading.Event()  # barge monitor is capturing the interruption
         self._voice_last_tts_text = ""  # echo guard
         self._voice_barge_phase = None  # "generation" | "playback"
+        self._wake_conversation = False  # a turn started by the wake word
+        self._wake_follow_up_seconds = 0.0  # wake_word.follow_up_seconds; 0 = off
+        self._wake_follow_up_pending = False  # follow-up window owns the mic (watchdog stays paused)
 
         self._status_bar_visible = _status_bar_visible_from_display_config(CLI_CONFIG.get("display"))
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))

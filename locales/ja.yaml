@@ -2161,6 +2161,7 @@ cli:
     preparing_stt: "ローカル STT モデル '{model}' を準備しています (初回は Hugging Face からダウンロードされる場合があります)..."
     transcribing: "文字起こし中..."
     stop_phrase: "停止フレーズを検出しました — 音声チャットを終了します。"
+    stop_phrase_conversation: "停止フレーズを検出しました — 会話を終了します。"
     transcription_failed: "文字起こしに失敗しました: {error}"
     processing_error: "音声処理エラー: {error}"
     recording_preserved: "録音を保存しました: {path}"

@@ -28,8 +28,24 @@ import tools.voice_mode as vm
 class _FakeSD:
     def __init__(self):
         self.played = []
+        fake = self
 
-    def play(self, audio, samplerate=None):
+        class OutputStream:  # the loop plays on a private stream, never the global sd.play one
+            def __init__(self, samplerate=None, **_kw):
+                self.samplerate = samplerate
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                pass
+
+            def write(self, data):
+                fake.played.append((data, self.samplerate))
+
+        self.OutputStream = OutputStream
+
+    def play(self, audio, samplerate=None, **_kw):
         self.played.append((audio, samplerate))
 
     def stop(self):

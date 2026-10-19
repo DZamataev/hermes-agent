@@ -1248,8 +1248,8 @@ DEFAULT_CONFIG = {
         # authenticated REST at session start) instead of relaying via the gateway.
         "client_direct": True,
         "beep_enabled": True,  # record start/stop beeps in CLI voice mode
-        "beep_volume": 0.3,  # beep amplitude multiplier, 0.0-1.0
-        "thinking_sound": True,  # ambient bubble sound while the agent works (volume = beep_volume)
+        "beep_volume": 0.3, "start_sound": "", "stop_sound": "",  # beep amplitude 0.0-1.0; *_sound: cue file
+        "thinking_sound": True, "thinking_sound_file": "",  # waiting sound (volume = beep_volume); file = loop clip
         "silence_threshold": 200,  # RMS below this = silence (0-32767)
         "silence_duration": 3.0,  # seconds of silence before auto-stop
         "barge_in": True,  # interrupt the agent / stop TTS when the user starts talking
@@ -1289,7 +1289,7 @@ DEFAULT_CONFIG = {
         # openWakeWord/pyopen-wakeword only: consecutive over-threshold frames to fire (higher = fewer
         # false triggers, more latency; 1 = single-frame)
         "confirmation_frames": 3,
-        "start_new_session": True,  # fresh session on wake vs. continue the current one
+        "start_new_session": True, "follow_up_seconds": 0,  # fresh session on wake; follow-up window seconds
         # sherpa only: listen for every wake-enabled profile's phrase and route to it
         "profile_routing": True,
         "openwakeword": {
