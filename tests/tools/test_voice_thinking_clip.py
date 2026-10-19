@@ -29,14 +29,38 @@ class _Np:
 
 
 class _Sd:
+    """sounddevice stand-in. The waiting loop must play on its OWN OutputStream: the module-level
+    sd.play/sd.stop stream belongs to replies and cues, and touching it from the loop's thread
+    deadlocked PortAudio (Pa_StopStream) under a concurrent reply."""
+
     def __init__(self):
-        self.played = []
+        self.played = []  # one entry per clip: samples written to that clip's private stream
+        self.on_write = None
+        sd = self
 
-    def play(self, audio, **_kw):
-        self.played.append(audio)
+        class OutputStream:
+            def __init__(self, **kwargs):
+                assert kwargs["channels"] == 1 and kwargs["dtype"] == "int16"
+                self.samples = 0
 
-    def stop(self):
-        pass
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                sd.played.append(self.samples)
+
+            def write(self, data):
+                self.samples += len(data)
+                if sd.on_write:
+                    sd.on_write()
+
+        self.OutputStream = OutputStream
+
+    def play(self, *_a, **_kw):
+        raise AssertionError("waiting sound used the global sd.play stream")
+
+    def stop(self, *_a, **_kw):
+        raise AssertionError("waiting sound used the global sd.stop")
 
 
 @pytest.fixture(autouse=True)
@@ -85,7 +109,20 @@ def test_a_configured_clip_loops_instead_of_the_blips(sd, tick, monkeypatch):
     assert _wait(lambda: len(sd.played) >= 2), "the clip did not loop"
     vm.stop_thinking_sound()
     # Decoded to the loop's 16 kHz: 0.25 s → ~4000 samples, not the file's 48 kHz 12000.
-    assert all(3800 <= len(clip) <= 4200 for clip in sd.played), [len(c) for c in sd.played]
+    assert all(3800 <= n <= 4200 for n in sd.played), sd.played
+
+
+def test_stop_cuts_a_clip_midway(sd, tmp_path, monkeypatch):
+    ffmpeg = shutil.which("ffmpeg") or pytest.skip("ffmpeg not installed")
+    long_clip = tmp_path / "long.wav"
+    subprocess.run([ffmpeg, "-nostdin", "-loglevel", "quiet", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=500:duration=3", str(long_clip)], check=True, timeout=30)
+    monkeypatch.setattr(vm, "_voice_config", lambda: {"thinking_sound_file": str(long_clip)})
+    sd.on_write = vm.stop_thinking_sound  # the reply starts right after the first chunk
+
+    assert vm.start_thinking_sound() is True
+    assert _wait(lambda: len(sd.played) >= 1)
+    assert sd.played[0] < 16000, f"a stopped clip kept playing: {sd.played[0]} of 48000 samples"
 
 
 def test_a_missing_clip_warns_and_falls_back_to_the_blips(sd, tmp_path, monkeypatch, caplog):
@@ -96,7 +133,7 @@ def test_a_missing_clip_warns_and_falls_back_to_the_blips(sd, tmp_path, monkeypa
         assert vm.start_thinking_sound() is True
         assert _wait(lambda: len(sd.played) >= 1)
     vm.stop_thinking_sound()
-    assert len(sd.played[0]) == 160
+    assert sd.played[0] == 160
     assert any("gone.wav" in r.getMessage() for r in caplog.records)
 
 

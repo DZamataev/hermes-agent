@@ -507,6 +507,18 @@ def _thinking_clip(np) -> Any:
     return None
 
 
+def _play_clip_until(sd, clip, stop: threading.Event) -> None:
+    """Play *clip* on a PRIVATE output stream in 0.1 s chunks, stopping early once *stop* is set.
+    sd.play/sd.stop share one module-level stream with replies and cues; driving it from this
+    thread while a reply starts deadlocks PortAudio (Pa_StopStream never returns)."""
+    chunk = SAMPLE_RATE // 10
+    with sd.OutputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", latency=_PLAYBACK_LATENCY_S) as out:
+        for i in range(0, len(clip), chunk):
+            if stop.is_set():
+                return
+            out.write(clip[i:i + chunk])
+
+
 def _thinking_sound_loop(stop: threading.Event, should_play) -> None:
     """Daemon loop: the configured clip back to back, else alternating-pitch blips every
     ~0.8-1.2s, until *stop*; skips (without stopping) while *should_play* is False. macOS
@@ -527,9 +539,7 @@ def _thinking_sound_loop(stop: threading.Event, should_play) -> None:
             if should_play is None or should_play():
                 blip = blips[i % len(blips)]
                 i += 1
-                sd.play(blip, samplerate=SAMPLE_RATE, latency=_PLAYBACK_LATENCY_S)
-                stop.wait(len(blip) / SAMPLE_RATE + 0.02)
-                sd.stop()
+                _play_clip_until(sd, blip, stop)
         except Exception as e:
             logger.debug("Thinking sound blip failed: %s", e)
             return
