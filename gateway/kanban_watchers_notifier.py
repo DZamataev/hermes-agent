@@ -160,6 +160,24 @@ def _platform_names(mapping: Any) -> set[str]:
     return {getattr(platform, "value", str(platform)).lower() for platform in mapping}
 
 
+def _local_session_id(runner: Any, sub: dict) -> Optional[str]:
+    """The Desktop/Ink session (``gateway run``'s local sessions) a subscription addresses, or None.
+
+    ``kanban_create`` there writes ``local``/``<session id>``; the CLI and the skills' scripts write
+    ``tui``/``$HERMES_SESSION_KEY``, which is this owner's route key ``agent:<ns>:local:dm:<id>`` (a
+    sidecar session's key never has a ``local`` platform, so its own poller keeps those rows). Either
+    is woken as a turn on the session itself: its adapter has no passive channel."""
+    from gateway.session_authorities import active_authority
+    platform, chat_id = (sub.get("platform") or "").lower(), sub.get("chat_id") or ""
+    if platform == "tui":
+        from gateway.run import _parse_session_key
+        parsed = _parse_session_key(chat_id) or {}
+        platform, chat_id = parsed.get("platform"), parsed.get("chat_id") or ""
+    if platform != "local" or not chat_id or active_authority(runner) is None:
+        return None
+    return chat_id
+
+
 def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profile: Optional[str]) -> Any:
     """Resolve a durable route without turning a missing secondary bot into primary authority."""
     adapter = runner._authorization_adapter(platform, owner_profile)
@@ -304,12 +322,14 @@ class _Collector:
         """Claim one subscription's unseen events; None when skipped or nothing new."""
         owner_profile = sub.get("notifier_profile") or None
         platform = (sub.get("platform") or "").lower()
-        if platform not in self.active_platforms:
+        local_sid = _local_session_id(self.runner, sub)
+        if local_sid is None and platform not in self.active_platforms:
             logger.debug("kanban notifier: subscription for %s on %s skipped; adapter not connected",
                          sub.get("task_id"), platform or "<missing>")
             return None
         from gateway.config import Platform
-        if _adapter_for_subscription(self.runner, Platform(platform), sub, owner_profile or self.notifier_profile) is None:
+        if local_sid is None and _adapter_for_subscription(
+                self.runner, Platform(platform), sub, owner_profile or self.notifier_profile) is None:
             _warn_anchorless_thread_sub_once(sub, platform)
             return None
         old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(
@@ -336,7 +356,8 @@ class _Collector:
         task = self.kb.get_task(conn, sub["task_id"])
         logger.debug("kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                      len(events), sub["task_id"], slug, old_cursor, cursor)
-        return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task, "board": slug}
+        return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task, "board": slug,
+                "local_sid": local_sid}
 
     def collect_board(self, slug: str) -> None:
         """Claim events on one board, appending delivery dicts to ``deliveries``."""
@@ -557,8 +578,10 @@ class _KanbanNotification:
         # The wake self-post path needs the key even when every event was skipped.
         self.sub_key = (sub["task_id"], sub["platform"], sub["chat_id"], sub.get("thread_id") or "")
         mode = sub.get("delivery_mode") or "notify"
-        self.wake_agent = mode in ("notify+wake", "wake")
-        self.send_passive = mode != "wake"
+        self.local_sid = d.get("local_sid")
+        # A local session has no passive channel: every subscription mode is a wake there.
+        self.wake_agent = bool(self.local_sid) or mode in ("notify+wake", "wake")
+        self.send_passive = not self.local_sid and mode != "wake"
         # Worker handoff carried into the synthetic wake turn so the woken
         # creator doesn't re-decompose work already on the board.
         self.wake_handoff = self.wake_review_detail = self.wake_board_summary = self.session_key = self.synth = ""
@@ -683,6 +706,24 @@ class _KanbanNotification:
         """Wake the creator session (raises on failure): push adapters get a full SessionSource, non-push a raw self-post."""
         from gateway.wake import deliver_wake
         sub = self.sub
+        if self.local_sid:
+            # Its route's adapter FIFO has no reader and a rebuilt source never matches the live
+            # one: the wake is an admission on the session itself, or a retry next tick.
+            from gateway.session_authorities import active_authority
+            from gateway.session_automation import admit_local_wake
+            from gateway.wake import WakeNotAccepted
+            from hermes_state_runtime import RuntimeStoreError
+            category = {"notification_category": "diagnostic"} if self.wake_diagnostic else {}
+            async with self._owner_scope():
+                try:
+                    admitted = await admit_local_wake(
+                        active_authority(self.runner), self.local_sid, self.synth, "kanban-wake", category)
+                except RuntimeStoreError as exc:
+                    raise WakeNotAccepted(str(exc)) from exc
+            if not admitted:
+                raise WakeNotAccepted("local session has no live route")
+            self._log_woke()
+            return
         if not self.is_push_adapter:
             # A served profile's raw-session wake runs in THAT profile's scope, in-process: the
             # shared listener's /p/<profile>/ self-post would need the profile's own
@@ -798,16 +839,17 @@ class _KanbanNotification:
 
     async def deliver(self) -> None:
         try:
-            self.plat = self.platform_cls(self.platform_str)
+            self.plat = self.platform_cls("local" if self.local_sid else self.platform_str)
         except ValueError:
             await self.advance()
             return
         # Recheck the exact route after claiming: config/adapters can change between ticks. The
         # recheck reads the served profile's session store for a stateless destination, so it runs
-        # off the event loop (the claim path already collects in a worker thread).
-        adapter = await asyncio.to_thread(
+        # off the event loop (the claim path already collects in a worker thread). A local session
+        # is woken through its owner (``wake``), not an adapter.
+        adapter = None if self.local_sid else await asyncio.to_thread(
             _adapter_for_subscription, self.runner, self.plat, self.sub, self.sub_profile or None)
-        if adapter is None:
+        if adapter is None and not self.local_sid:
             logger.debug("kanban notifier: adapter %s disconnected before delivery for %s; rewinding claim",
                          self.platform_str, self.task_id)
             await self.rewind()

@@ -100,22 +100,11 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
         if source is None:
             raise ValueError("deliver_wake: push-capable adapter requires a SessionSource")
         from gateway.platforms.event import MessageEvent, MessageType
-        from hermes_state_runtime import RuntimeStoreError
-        category = {"notification_category": notification_category} if notification_category != "result" else {}
-        from gateway.session_local import LocalSessionAdapter
-        if isinstance(adapter, LocalSessionAdapter):  # Desktop/Ink sessions on the shared owner
-            # Its adapter FIFO has no reader and a rebuilt source never matches the live one: the wake
-            # is an admission on the session itself, or nothing.
-            from gateway.session_automation import admit_local_wake
-            try:
-                if await admit_local_wake(adapter.authority, adapter, source.chat_id, text, "kanban-wake", category):
-                    return
-            except RuntimeStoreError as exc:
-                raise WakeNotAccepted(str(exc)) from exc
-            raise WakeNotAccepted("local session has no live route")
         runner = getattr(adapter, "gateway_runner", None)
         if runner is not None:
             from gateway.session_automation import admit_route_wake
+            from hermes_state_runtime import RuntimeStoreError
+            category = {"notification_category": notification_category} if notification_category != "result" else {}
             try:
                 if await admit_route_wake(runner, adapter, source, text, "kanban-wake", category):
                     return  # committed to the session FIFO: never interrupts the admitted turn

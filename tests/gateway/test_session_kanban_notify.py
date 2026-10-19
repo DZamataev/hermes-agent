@@ -108,17 +108,32 @@ def test_a_card_event_wakes_the_local_session_that_created_it(tmp_path, monkeypa
                 monkeypatch.setenv('HERMES_HOME', str(home))
                 from hermes_cli import kanban_db as kb
                 from hermes_cli import kanban_db_connect as kbc
+                from hermes_cli import kanban_db_notify as kbn
+
+                async def finish(card, summary, admitted_before):
+                    conn = kbc.connect()
+                    try:
+                        assert kb.complete_task(conn, card, summary=summary)
+                    finally:
+                        conn.close()
+                    # Before the fix the notifier re-claimed and rewound this event every tick, silently.
+                    await async_wait_until(lambda: len(_admissions(home)) > admitted_before, timeout=40, interval=.2,
+                                           what=f'{card} to wake the session')
+                    await async_wait_until(lambda: all(r[1] == 'terminal' for r in _admissions(home)),
+                                           timeout=40, interval=.1, what='the wake turn to settle')
+                    users = [m['content'] for m in (await rpc(ws, 'session.resume', session_id=sid))['result']['messages']
+                             if m.get('role') == 'user']
+                    assert card in users[-1] and summary in users[-1], users
+
+                await finish(task, 'probe finished', 1)
+                # The CLI / skills' scripts: `notify-subscribe --platform tui --chat-id "$HERMES_SESSION_KEY"`,
+                # passive mode. On the shared owner that key is the session's local route key.
                 conn = kbc.connect()
                 try:
-                    assert kb.complete_task(conn, task, summary='probe finished')
+                    cli_card = kb.create_task(conn, title='cli card', assignee='ghost')
+                    kbn.add_notify_sub(conn, task_id=cli_card, platform='tui', chat_id=f'agent:main:local:dm:{sid}',
+                                       notifier_profile='default')
                 finally:
                     conn.close()
-                # Before the fix the notifier re-claimed and rewound this event every tick, silently.
-                await async_wait_until(lambda: len(_admissions(home)) >= 2, timeout=40, interval=.2,
-                                       what='the card event to wake the session')
-                await async_wait_until(lambda: all(r[1] == 'terminal' for r in _admissions(home)),
-                                       timeout=40, interval=.1, what='the wake turn to settle')
-                users = [m['content'] for m in (await rpc(ws, 'session.resume', session_id=sid))['result']['messages']
-                         if m.get('role') == 'user']
-                assert users[0] == 'MAKE_CARD' and task in users[1] and 'probe finished' in users[1], users
+                await finish(cli_card, 'cli finished', 2)
         asyncio.run(probe())
