@@ -613,13 +613,15 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
     return entry, release
 
 
-async def admit_local_wake(authority, adapter, sid, text, producer, metadata=None):
-    """``admit_route_wake`` for a local session named only by id (a durable address such as a Kanban
-    subscription): restored (it may not be attached), then woken on its live source. The id may
-    predate a compression rotation. Raises ``RuntimeStoreError`` when this owner does not serve it."""
-    from gateway.session_local_recovery import restore_local_session
-    ref = restore_local_session(authority, authority.db.get_compression_tip(sid) or sid)
+async def admit_local_wake(authority, sid, text, producer, metadata=None):
+    """``admit_route_wake`` for a local session named only by its id (a durable address such as a
+    Kanban subscription): restored when not attached, then woken on its live source. The local id
+    stays the session's id across compression. Raises ``RuntimeStoreError`` when this owner does
+    not serve it."""
+    from gateway.session_local_recovery import local_adapter_map, restore_local_session
+    ref = restore_local_session(authority, sid)
     live = authority.sessions[ref.session_id]
+    adapter = local_adapter_map(authority)[Platform.LOCAL]
     return await admit_route_wake(authority.runner, adapter, live.source, text, producer, metadata)
 
 
