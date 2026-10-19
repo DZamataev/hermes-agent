@@ -382,10 +382,15 @@ def play_cue(kind: str, frequency: int, count: int) -> None:
     play_beep(frequency=frequency, count=count)
 
 
+# Playback is not interactive: PortAudio's default low-latency buffer underruns (audible stutter)
+# whenever the CPU is busy, e.g. Piper synthesizing the next sentence; "high" was still too small.
+_PLAYBACK_LATENCY_S = 0.2
+
+
 def _sd_play_blocking(sd, audio, sample_rate: int, *, timeout: float, blocksize: int = 0) -> None:
     """``sd.play`` then poll until idle or *timeout* (``sd.wait()`` has no timeout and
     hangs forever if the device stalls)."""
-    sd.play(audio, samplerate=sample_rate, blocksize=blocksize)
+    sd.play(audio, samplerate=sample_rate, blocksize=blocksize, latency=_PLAYBACK_LATENCY_S)
     deadline = time.monotonic() + timeout
     while sd.get_stream() and sd.get_stream().active and time.monotonic() < deadline:
         time.sleep(0.01)

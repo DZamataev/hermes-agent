@@ -150,3 +150,25 @@ def test_wav_goes_straight_to_sounddevice(tmp_path, monkeypatch):
     assert vm.play_audio_file(str(wav)) is True
     assert len(played["audio"]) == 1600
     assert played["rate"] == 16000
+
+
+def test_file_playback_asks_portaudio_for_a_roomy_buffer():
+    # The default low-latency buffer underran on a 4-core box while Piper synthesized the next
+    # sentence: a 6 s tone stretched to 7.4 s with 8 dropouts; 0.2 s gave none ("high" still 4-6).
+    calls = {}
+
+    class _Sd:
+        @staticmethod
+        def play(audio, **kwargs):
+            calls.update(kwargs)
+
+        @staticmethod
+        def get_stream():
+            return None
+
+        @staticmethod
+        def stop():
+            pass
+
+    vm._sd_play_blocking(_Sd, [0] * 160, 16000, timeout=1.0)
+    assert calls["latency"] >= 0.2
