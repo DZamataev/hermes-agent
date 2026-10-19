@@ -125,14 +125,19 @@ def _rms(np, data) -> float:
     return float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
 
 
-def _default_input_samplerate(sd) -> int:
-    """Default input device rate, else the Whisper-friendly SAMPLE_RATE."""
+def _default_device_samplerate(sd, kind: str) -> int:
+    """Default ``kind`` ("input"/"output") device rate, else the Whisper-friendly SAMPLE_RATE."""
     with suppress(Exception):
-        info = sd.query_devices(None, "input")
+        info = sd.query_devices(None, kind)
         rate = info.get("default_samplerate") if isinstance(info, dict) else getattr(info, "default_samplerate", None)
         if isinstance(rate, (int, float)) and rate > 0:
             return round(rate)
     return SAMPLE_RATE
+
+
+def _default_input_samplerate(sd) -> int:
+    """Default input device rate, else the Whisper-friendly SAMPLE_RATE."""
+    return _default_device_samplerate(sd, "input")
 
 
 # ── Environment detection ──
@@ -1134,12 +1139,18 @@ def _play_compressed_via_sounddevice(file_path: str) -> bool:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         return False
+    try:
+        sd, _ = _import_audio()
+    except (ImportError, OSError):
+        return False
+    # PortAudio over ALSA plug/dmix can refuse a file's own rate (22050 Hz) yet opens the default.
+    rate = _default_device_samplerate(sd, "output")
     fd, tmp_wav = tempfile.mkstemp(suffix=".wav", prefix="hermes_play_")
     os.close(fd)
     try:
         decoded = subprocess.run(
             [ffmpeg, "-nostdin", "-loglevel", "quiet", "-y", "-i", file_path,
-             "-f", "wav", "-acodec", "pcm_s16le", tmp_wav],
+             "-f", "wav", "-acodec", "pcm_s16le", "-ar", str(rate), tmp_wav],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False,
         ).returncode == 0
         return decoded and _play_wav_via_sounddevice(tmp_wav)

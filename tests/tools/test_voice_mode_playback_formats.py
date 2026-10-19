@@ -77,6 +77,31 @@ def test_mp3_is_decoded_and_played_via_sounddevice(mp3, sd_capture, monkeypatch)
     assert system_players == []
 
 
+class _OutputDevice:
+    """sounddevice stand-in whose default output runs at 48 kHz."""
+
+    @staticmethod
+    def query_devices(_device=None, kind=None):
+        assert kind == "output"
+        return {"default_samplerate": 48000.0}
+
+
+def test_mp3_is_decoded_at_the_output_device_rate(tmp_path, sd_capture, monkeypatch):
+    # PortAudio over ALSA plug+dmix refuses some file rates (22050 Hz, Piper's native one) while
+    # the device's own default always opens — decode straight to that rate.
+    ffmpeg = shutil.which("ffmpeg") or pytest.skip("ffmpeg not installed")
+    mp3 = tmp_path / "piper.mp3"
+    subprocess.run(
+        [ffmpeg, "-nostdin", "-loglevel", "quiet", "-y", "-f", "lavfi", "-i",
+         "sine=frequency=440:duration=0.3", "-ac", "1", "-ar", "22050", "-c:a", "libmp3lame", str(mp3)],
+        check=True, timeout=30)
+    monkeypatch.setattr(vm, "_import_audio", lambda: (_OutputDevice(), _Np))
+
+    assert vm.play_audio_file(str(mp3)) is True
+    assert sd_capture["rate"] == 48000
+    assert len(sd_capture["audio"]) > 0.25 * 48000
+
+
 def test_decoded_temp_wav_is_removed(mp3, sd_capture, tmp_path, monkeypatch):
     tmp_wav = tmp_path / "decoded.wav"
     fd = os.open(tmp_wav, os.O_CREAT | os.O_RDWR)
