@@ -207,24 +207,27 @@ def test_watchdog_treats_a_pending_window_as_busy(monkeypatch):
     # Drive the loop's sleep instead of the wall clock: 6 polls = two full idle rounds.
     polls = threading.Event()
     sleep_calls = 0
+    real_sleep = time.sleep
 
     def _fake_sleep(_seconds):
         nonlocal sleep_calls
         sleep_calls += 1
         if sleep_calls >= 6:
             polls.set()
+        real_sleep(0.001)  # yield the GIL, or a failing assert leaves the loop spinning and pytest hangs
 
     monkeypatch.setattr(
         "hermes_cli.cli_voice_mixin.time", SimpleNamespace(sleep=_fake_sleep))
 
     cli._start_wake_watchdog()
+    try:
+        assert polls.wait(5), "watchdog never polled"
+        assert not resumed.is_set(), "listener resumed while the follow-up window owned the mic"
 
-    assert polls.wait(5), "watchdog never polled"
-    assert not resumed.is_set(), "listener resumed while the follow-up window owned the mic"
-
-    cli._wake_follow_up_pending = False
-    assert resumed.wait(5), "listener never resumed after the window closed"
-    cli._wake_word_active = False
+        cli._wake_follow_up_pending = False
+        assert resumed.wait(5), "listener never resumed after the window closed"
+    finally:
+        cli._wake_word_active = False
 
 
 # ── Silence / stop phrase / keyboard ──────────────────────────────────────
