@@ -192,11 +192,13 @@ class CLIVoiceMixin:
 
     def _voice_start_thinking(self) -> bool:
         """Waiting sound until the reply plays; silent while the mic records or a barge capture runs."""
+        from cli import logger
         try:
             from tools.voice_mode import is_audio_output_active, start_thinking_sound
             return start_thinking_sound(should_play=lambda: not (
                 is_audio_output_active() or self._voice_recording or self._voice_barge_capture.is_set()))
-        except Exception:
+        except (ImportError, RuntimeError):  # no audio stack / no thread to spare: wait in silence
+            logger.debug("thinking sound unavailable", exc_info=True)
             return False
 
     def _voice_stop_and_transcribe(self):
@@ -263,11 +265,8 @@ class CLIVoiceMixin:
             with self._voice_lock:
                 self._voice_processing = False
             if not submitted:
-                try:
-                    from tools.voice_mode import stop_thinking_sound
-                    stop_thinking_sound()  # nothing to answer: end the wait sound
-                except Exception:
-                    pass
+                from tools.voice_mode import stop_thinking_sound
+                stop_thinking_sound()  # nothing to answer: end the wait sound
             self._voice_live_text = ""
             self._voice_invalidate()
             # On failure keep the source recording so long dictation is not lost.
