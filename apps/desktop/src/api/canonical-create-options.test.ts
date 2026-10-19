@@ -27,7 +27,9 @@ const CASES: Array<[string, Record<string, unknown>, Record<string, unknown> | R
   ['Fast speed', { ...BASE, cwd: '/w', cwd_explicit: false, fast: true }, { profile: 'default', cwd: '/w', service_tier: 'priority' }],
   ['Ultrafast speed', { ...BASE, fast: true, service_tier: 'ultrafast' }, { profile: 'default', service_tier: 'ultrafast' }],
   // KoNit-K P1: a manual model pick ships its provider; the owner's create contract admits both.
-  ['manual model + provider', { ...BASE, model: 'gpt-5', provider: 'openrouter', fast: false }, { profile: 'default', model: 'gpt-5', provider: 'openrouter', service_tier: 'normal' }]
+  ['manual model + provider', { ...BASE, model: 'gpt-5', provider: 'openrouter', fast: false }, { profile: 'default', model: 'gpt-5', provider: 'openrouter', service_tier: 'normal' }],
+  // The spawn-task chip: a model-proposed title and the offering session to report back to.
+  ['spawn-task chip', { ...BASE, title: 'Fix login', title_dedupe: true, spawn_report_to: 'local-parent' }, { profile: 'default', title: 'Fix login', title_dedupe: true, spawn_report_to: 'local-parent' }]
 ]
 
 test.each(CASES)('%s: the Desktop create frame is admitted by the owner contract or refused by name', async (_label, params, expected) => {
