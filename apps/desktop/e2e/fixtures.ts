@@ -31,6 +31,7 @@ import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts
 import { type MockServerOptions, startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import { resolveElectronBinary } from './electron-binary'
+import { stopSandboxBackend } from './sandbox-backend'
 import { installErrorBannerGuard } from './test'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
@@ -150,6 +151,8 @@ export function createSandbox(prefix: string): Sandbox {
     hermesHome,
     userDataDir,
     cleanup: () => {
+      stopSandboxBackend(hermesHome)
+
       try {
         fs.rmSync(root, { recursive: true, force: true })
       } catch {
@@ -298,6 +301,20 @@ export async function launchDesktop(
   })
 
   const page = await app.firstWindow()
+
+  if (process.env.E2E_HIDE_WINDOWS === '1') {
+    // A local run in the operator's desktop session: the windows stay "visible" to Playwright and
+    // the renderer, but transparent and click-through on screen.
+    await app.evaluate(({ app: electronApp, BrowserWindow }) => {
+      const hide = (win: InstanceType<typeof BrowserWindow>) => {
+        win.setOpacity(0)
+        win.setIgnoreMouseEvents(true)
+      }
+
+      BrowserWindow.getAllWindows().forEach(hide)
+      electronApp.on('browser-window-created', (_event: unknown, win: InstanceType<typeof BrowserWindow>) => hide(win))
+    })
+  }
 
   // Install the error-banner guard so any [role="alert"] that appears
   // during a test is collected and surfaced in afterEach.
