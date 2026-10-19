@@ -166,7 +166,7 @@ Two-stage algorithm detects when you've finished speaking:
 
 If no speech is detected at all for 15 seconds, recording stops automatically.
 
-Both `silence_threshold` and `silence_duration` are configurable in `config.yaml`. You can also disable the record start/stop beeps with `voice.beep_enabled: false`. To play your own sounds instead of the beeps, point `voice.start_sound` and `voice.stop_sound` at audio files (WAV plays directly, other formats are decoded with ffmpeg); a file that is missing or fails to play falls back to the beep.
+Both `silence_threshold` and `silence_duration` are configurable in `config.yaml`. You can also disable the record start/stop beeps with `voice.beep_enabled: false`. To play your own sounds instead of the beeps, point `voice.start_sound` and `voice.stop_sound` at audio files (WAV plays directly, other formats are decoded with ffmpeg); a file that is missing or fails to play falls back to the beep. While you wait for the reply — from the moment you stop speaking, through transcription and the model's turn, until the reply starts to play — a soft waiting sound plays (`voice.thinking_sound`); `voice.thinking_sound_file` loops a clip of your own (a ticking clock, say) in its place.
 
 ### Ending a voice chat by voice
 
@@ -500,6 +500,8 @@ voice:
   beep_enabled: true               # Play record start/stop beeps
   start_sound: ""                  # Audio file played instead of the start beep ("" = beep)
   stop_sound: ""                   # Audio file played instead of the stop beep ("" = beep)
+  thinking_sound: true             # Soft waiting sound from end of speech until the reply plays
+  thinking_sound_file: ""          # Audio clip looped as the waiting sound instead of the blips
   silence_threshold: 200           # RMS level (0-32767) below which counts as silence
   silence_duration: 3.0            # Seconds of silence before auto-stop
   stop_phrases: ["stop"]           # Saying exactly one of these ends the voice chat; [] disables

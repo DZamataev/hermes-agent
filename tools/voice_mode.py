@@ -447,6 +447,8 @@ def mark_audio_output_active(active: bool) -> None:
     global _audio_output_active_count
     with _audio_output_lock:
         _audio_output_active_count = max(0, _audio_output_active_count + (1 if active else -1))
+    if active:
+        stop_thinking_sound()  # the reply is playing: the wait is over (no ticks between sentences)
 
 
 def is_audio_output_active() -> bool:
@@ -484,10 +486,32 @@ def _synth_thinking_blip(np, frequency: float) -> Any:
     return (tone * env * volume * 32767).astype(np.int16)
 
 
+def _thinking_clip(np) -> Any:
+    """``voice.thinking_sound_file`` as int16 mono at SAMPLE_RATE, or None (use the blips)."""
+    path = os.path.expanduser(str(_voice_config().get("thinking_sound_file") or "").strip())
+    if not path:
+        return None
+    ffmpeg = shutil.which("ffmpeg")
+    try:
+        if not (ffmpeg and os.path.isfile(path)):
+            raise OSError("missing file or ffmpeg")
+        raw = subprocess.run(
+            [ffmpeg, "-nostdin", "-loglevel", "quiet", "-i", path, "-f", "s16le", "-ac", "1",
+             "-ar", str(SAMPLE_RATE), "-"], capture_output=True, timeout=30, check=True).stdout
+        clip = np.frombuffer(raw, dtype=np.int16)
+        if len(clip):
+            return clip
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug("thinking clip decode failed: %s", e)
+    logger.warning("voice.thinking_sound_file %s could not be loaded; using the blips", path)
+    return None
+
+
 def _thinking_sound_loop(stop: threading.Event, should_play) -> None:
-    """Daemon loop: alternating-pitch blips every ~0.8-1.2s until *stop*; skips (without
-    stopping) while *should_play* is False. macOS exits immediately: sounddevice output
-    is TCC-gated and per-second afplay churn is worse than silence."""
+    """Daemon loop: the configured clip back to back, else alternating-pitch blips every
+    ~0.8-1.2s, until *stop*; skips (without stopping) while *should_play* is False. macOS
+    exits immediately: sounddevice output is TCC-gated and per-second afplay churn is worse
+    than silence."""
     if not _sounddevice_output_allowed():
         return
     try:
@@ -495,20 +519,21 @@ def _thinking_sound_loop(stop: threading.Event, should_play) -> None:
     except (ImportError, OSError):
         return
     import random
-    blips = [_synth_thinking_blip(np, p) for p in (392.0, 329.6)]  # G4 / E4
+    clip = _thinking_clip(np)
+    blips = [clip] if clip is not None else [_synth_thinking_blip(np, p) for p in (392.0, 329.6)]  # G4 / E4
     i = 0
     while not stop.is_set():
         try:
             if should_play is None or should_play():
                 blip = blips[i % len(blips)]
                 i += 1
-                sd.play(blip, samplerate=SAMPLE_RATE)
+                sd.play(blip, samplerate=SAMPLE_RATE, latency=_PLAYBACK_LATENCY_S)
                 stop.wait(len(blip) / SAMPLE_RATE + 0.02)
                 sd.stop()
         except Exception as e:
             logger.debug("Thinking sound blip failed: %s", e)
             return
-        stop.wait(0.8 + random.random() * 0.4)
+        stop.wait(0.05 if clip is not None else 0.8 + random.random() * 0.4)
 
 
 def start_thinking_sound(should_play=None) -> bool:

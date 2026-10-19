@@ -190,6 +190,15 @@ class CLIVoiceMixin:
         self._voice_live_text = text
         self._voice_invalidate()
 
+    def _voice_start_thinking(self) -> bool:
+        """Waiting sound until the reply plays; silent while the mic records or a barge capture runs."""
+        try:
+            from tools.voice_mode import is_audio_output_active, start_thinking_sound
+            return start_thinking_sound(should_play=lambda: not (
+                is_audio_output_active() or self._voice_recording or self._voice_barge_capture.is_set()))
+        except Exception:
+            return False
+
     def _voice_stop_and_transcribe(self):
         """Stop recording, transcribe via STT, and queue the transcript as input."""
         from cli import _DIM, _RST, _VoiceInputMessage, _cprint
@@ -214,6 +223,7 @@ class CLIVoiceMixin:
                 _cprint(f"{_DIM}{t('cli.voice.no_speech')}{_RST}")
                 self._wake_conversation = False  # silence ends a wake-word conversation
                 return
+            self._voice_start_thinking()  # the wait starts now: transcription is its longest part
             self._voice_invalidate()
             stt_model = self._voice_stt_model()
             if self._voice_stt_provider() == "local":
@@ -252,6 +262,12 @@ class CLIVoiceMixin:
         finally:
             with self._voice_lock:
                 self._voice_processing = False
+            if not submitted:
+                try:
+                    from tools.voice_mode import stop_thinking_sound
+                    stop_thinking_sound()  # nothing to answer: end the wait sound
+                except Exception:
+                    pass
             self._voice_live_text = ""
             self._voice_invalidate()
             # On failure keep the source recording so long dictation is not lost.

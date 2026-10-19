@@ -1249,7 +1249,7 @@ DEFAULT_CONFIG = {
         "client_direct": True,
         "beep_enabled": True,  # record start/stop beeps in CLI voice mode
         "beep_volume": 0.3, "start_sound": "", "stop_sound": "",  # beep amplitude 0.0-1.0; *_sound: cue file
-        "thinking_sound": True,  # ambient bubble sound while the agent works (volume = beep_volume)
+        "thinking_sound": True, "thinking_sound_file": "",  # waiting sound (volume = beep_volume); file = loop clip
         "silence_threshold": 200,  # RMS below this = silence (0-32767)
         "silence_duration": 3.0,  # seconds of silence before auto-stop
         "barge_in": True,  # interrupt the agent / stop TTS when the user starts talking

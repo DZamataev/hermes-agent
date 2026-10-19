@@ -29,7 +29,7 @@ class _FakeSD:
     def __init__(self):
         self.played = []
 
-    def play(self, audio, samplerate=None):
+    def play(self, audio, samplerate=None, **_kw):
         self.played.append((audio, samplerate))
 
     def stop(self):
