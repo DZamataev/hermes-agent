@@ -431,7 +431,11 @@ def _classic_cli_fields(authority, ref, live, agent, policy):
         hint = mask_secret(str(agent.api_key))
     tools = getattr(agent, 'tools', None) if agent is not None else None
     started = row.get('started_at')
+    from hermes_state_sessions import _parse_model_config
+    from tui_gateway.session_delegation import delegation_override_from_model_config
     return {'title': row.get('title'), 'started_at': started,
             'last_active_at': row.get('last_activity_at') or started, 'yolo': yolo,
             'api_mode': api_mode or None, 'tool_count': len(tools) if isinstance(tools, list) else None,
-            'credential_hint': hint}
+            'credential_hint': hint,
+            # The composer's Subagents pick (gateway/session_tui_config.py::_set_delegation).
+            'delegation_override': delegation_override_from_model_config(_parse_model_config(row.get('model_config')))}

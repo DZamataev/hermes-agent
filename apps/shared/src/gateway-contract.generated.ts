@@ -4635,6 +4635,7 @@ export interface CanonicalSessionInfo {
   api_mode?: string | null
   tool_count?: number | null
   credential_hint?: string | null
+  delegation_override?: DelegationOverride | null
   config_warning?: string | null
   [key: string]: unknown
 }
@@ -5004,6 +5005,7 @@ export interface CanonicalSnapshotInfo {
   api_mode?: string | null
   tool_count?: number | null
   credential_hint?: string | null
+  delegation_override?: DelegationOverride | null
   config_warning?: string | null
 }
 export interface CanonicalResumeParams {

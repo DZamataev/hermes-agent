@@ -14,15 +14,27 @@ from __future__ import annotations
 from typing import Any, Optional
 
 _ROUTE_FIELDS = ("provider", "model", "reasoning_effort")
+_UNSTAMPED = object()
 
 
 def _session_route(parent_agent: Any) -> Optional[dict[str, str]]:
-    """The parent session's forced subagent route, or None when the session is on Auto."""
-    raw = getattr(parent_agent, "_delegation_override", None)
+    """The parent session's forced subagent route, or None when the session is on Auto. The sidecar stamps
+    it on its agents; an agent nobody stamped (the shared owner's) reads its conversation's row."""
+    raw = getattr(parent_agent, "_delegation_override", _UNSTAMPED)
+    if raw is _UNSTAMPED:
+        raw = _stored_route(parent_agent)
     if not isinstance(raw, dict):
         return None
     route = {k: str(raw.get(k) or "").strip() for k in _ROUTE_FIELDS}
     return route if route["model"] else None
+
+
+def _stored_route(parent_agent: Any) -> Any:
+    sid = str(getattr(parent_agent, "session_id", "") or "")
+    db = getattr(parent_agent, "_session_db", None)
+    if not sid or db is None:
+        return None
+    return db.get_session_model_config_value(db.get_compression_tip(sid) or sid, "delegation_override")
 
 
 def _parse_task_effort(raw: Any, index: int) -> Any:

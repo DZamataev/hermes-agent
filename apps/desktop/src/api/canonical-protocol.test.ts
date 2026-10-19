@@ -242,3 +242,11 @@ test('a message-level branch carries its durable boundary row; a whole-chat bran
   expect(() => protocol.prepare('session.branch', { session_id: 's', count: 2 })).toThrow(/not saved yet/)
   expect(protocol.prepare('session.branch', { session_id: 's' })).toMatchObject({ payload: {} })
 })
+
+test('the composer Subagents pick reaches the owner (gateway/session_tui_config.py::_set_delegation)', () => {
+  const protocol = new CanonicalDesktopProtocol()
+  const value = { provider: '', model: 'gpt-5-mini', reasoning_effort: '' }
+  const pick = protocol.prepare('config.set', { session_id: 's', key: 'delegation', value })
+  expect(protocol.wire('config.set', pick)).toBe('config.set')
+  expect(pick).toMatchObject({ key: 'delegation', value })
+})

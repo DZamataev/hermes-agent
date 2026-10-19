@@ -10333,6 +10333,17 @@
             "default": null,
             "title": "Credential Hint"
           },
+          "delegation_override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DelegationOverride"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "config_warning": {
             "anyOf": [
               {
@@ -11066,6 +11077,17 @@
             ],
             "default": null,
             "title": "Credential Hint"
+          },
+          "delegation_override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DelegationOverride"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "config_warning": {
             "anyOf": [
