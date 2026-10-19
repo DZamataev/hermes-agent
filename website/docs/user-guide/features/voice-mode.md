@@ -166,7 +166,7 @@ Two-stage algorithm detects when you've finished speaking:
 
 If no speech is detected at all for 15 seconds, recording stops automatically.
 
-Both `silence_threshold` and `silence_duration` are configurable in `config.yaml`. You can also disable the record start/stop beeps with `voice.beep_enabled: false`.
+Both `silence_threshold` and `silence_duration` are configurable in `config.yaml`. You can also disable the record start/stop beeps with `voice.beep_enabled: false`. To play your own sounds instead of the beeps, point `voice.start_sound` and `voice.stop_sound` at audio files (WAV plays directly, other formats are decoded with ffmpeg); a file that is missing or fails to play falls back to the beep.
 
 ### Ending a voice chat by voice
 
@@ -498,6 +498,8 @@ voice:
   max_recording_seconds: 120       # Maximum recording length
   auto_tts: false                  # Auto-enable TTS when voice mode starts
   beep_enabled: true               # Play record start/stop beeps
+  start_sound: ""                  # Audio file played instead of the start beep ("" = beep)
+  stop_sound: ""                   # Audio file played instead of the stop beep ("" = beep)
   silence_threshold: 200           # RMS level (0-32767) below which counts as silence
   silence_duration: 3.0            # Seconds of silence before auto-stop
   stop_phrases: ["stop"]           # Saying exactly one of these ends the voice chat; [] disables

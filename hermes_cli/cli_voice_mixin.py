@@ -119,7 +119,7 @@ class CLIVoiceMixin:
             self._voice_stop_and_transcribe()
 
         # Audio cue: single beep BEFORE starting stream (avoid CoreAudio conflict)
-        self._voice_beep(frequency=880, count=1)
+        self._voice_beep(frequency=880, count=1, kind="start")
 
         try:
             self._voice_recorder.start(on_silence_stop=_on_silence)
@@ -147,12 +147,12 @@ class CLIVoiceMixin:
                 time.sleep(0.15)
         threading.Thread(target=_refresh_level, daemon=True).start()
 
-    def _voice_beep(self, *, frequency: int, count: int) -> None:
-        """Play a record start/stop beep when enabled; never raises."""
+    def _voice_beep(self, *, frequency: int, count: int, kind: str) -> None:
+        """Play the record ``start``/``stop`` cue (sound file or beep) when enabled; never raises."""
         if self._voice_beeps_enabled():
             try:
-                from tools.voice_mode import play_beep
-                play_beep(frequency=frequency, count=count)
+                from tools.voice_mode import play_cue
+                play_cue(kind, frequency, count)
             except Exception:
                 pass
 
@@ -209,7 +209,7 @@ class CLIVoiceMixin:
                 return
             wav_path = self._voice_recorder.stop()
             # Audio cue: double beep after stream stopped (no CoreAudio conflict)
-            self._voice_beep(frequency=660, count=2)
+            self._voice_beep(frequency=660, count=2, kind="stop")
             if wav_path is None:
                 _cprint(f"{_DIM}{t('cli.voice.no_speech')}{_RST}")
                 self._wake_conversation = False  # silence ends a wake-word conversation

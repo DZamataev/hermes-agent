@@ -141,15 +141,15 @@ def _beeps_enabled() -> bool:
     return True
 
 
-def _play_beep(frequency: int, count: int = 1) -> None:
-    """Audible cue matching cli.py's beeps (880 Hz once on start, 660 Hz twice on stop).
+def _play_beep(kind: str, frequency: int, count: int = 1) -> None:
+    """Record ``start``/``stop`` cue matching cli.py's (sound file, else 880 Hz once / 660 Hz twice).
     Best-effort — a missing speaker must never break the voice loop."""
     if not _beeps_enabled():
         return
     try:
-        from tools.voice_mode import play_beep
+        from tools.voice_mode import play_cue
 
-        play_beep(frequency=frequency, count=count)
+        play_cue(kind, frequency, count)
     except Exception as e:
         _debug(f"beep {frequency}Hz failed: {e}")
 
@@ -371,7 +371,7 @@ def start_continuous(
     _debug(f"start_continuous: begin (threshold={silence_threshold}, duration={silence_duration}s)")
     # CLI parity: beep *before* opening the stream — after stream.start() it triggers a CoreAudio
     # conflict on macOS.
-    _play_beep(frequency=880, count=1)
+    _play_beep(kind="start", frequency=880, count=1)
     try:
         rec.start(on_silence_stop=_continuous_on_silence)
     except Exception as e:
@@ -451,7 +451,7 @@ def _finish_stop(on_status) -> None:
     global _continuous_stopping
     with _continuous_lock:
         _continuous_stopping = False
-    _play_beep(frequency=660, count=2)
+    _play_beep(kind="stop", frequency=660, count=2)
     _safe_call(on_status, "idle")
 
 
@@ -486,7 +486,7 @@ def _continuous_on_silence() -> None:
     # when stop() returns None despite the VAD firing.
     _debug(f"_continuous_on_silence: rec.stop -> {wav_path!r} (peak_rms={getattr(rec, '_peak_rms', -1)})")
     # CLI parity: double beep after the stream stops (safe from the CoreAudio conflict).
-    _play_beep(frequency=660, count=2)
+    _play_beep(kind="stop", frequency=660, count=2)
 
     transcript, stop_phrase, stop_text = _turn_transcript(
         wav_path, "continuous transcription failed: %s", "_continuous_on_silence", "ending loop", trace=True
@@ -532,7 +532,7 @@ def _rearm_after_turn(rec: Any, on_status, no_speech: int) -> None:
         _deactivate(on_status)
         return
     _debug(f"_continuous_on_silence: restarting loop (no_speech={no_speech})")
-    _play_beep(frequency=880, count=1)
+    _play_beep(kind="start", frequency=880, count=1)
     try:
         rec.start(on_silence_stop=_continuous_on_silence)
     except Exception as e:

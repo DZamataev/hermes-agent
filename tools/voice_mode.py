@@ -372,6 +372,16 @@ def _get_beep_volume() -> float:
     return volume
 
 
+def play_cue(kind: str, frequency: int, count: int) -> None:
+    """Record ``start``/``stop`` cue: ``voice.<kind>_sound`` (an audio file) when set, else the beep."""
+    path = os.path.expanduser(str(_voice_config().get(f"{kind}_sound") or "").strip())
+    if path:
+        if os.path.isfile(path) and play_audio_file(path):
+            return
+        logger.warning("voice.%s_sound %s could not be played; using the beep", kind, path)
+    play_beep(frequency=frequency, count=count)
+
+
 def _sd_play_blocking(sd, audio, sample_rate: int, *, timeout: float, blocksize: int = 0) -> None:
     """``sd.play`` then poll until idle or *timeout* (``sd.wait()`` has no timeout and
     hangs forever if the device stalls)."""
