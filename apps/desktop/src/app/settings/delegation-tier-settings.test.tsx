@@ -91,19 +91,18 @@ describe('DelegationTierSettings', () => {
   }
 
   it('a configured base_url is named instead of the provider it overrides', () => {
-    renderSettings({ ...CONFIG, delegation: { ...CONFIG.delegation, base_url: 'http://localhost:9/v1' } })
+    renderSettings(setNested(CONFIG, 'delegation.tiers.easy.base_url', 'http://localhost:9/v1'))
 
     expect(
-      within(screen.getByTestId('delegation-tier-normal')).getByText(/http:\/\/localhost:9\/v1: claude-sonnet-5/)
+      within(screen.getByTestId('delegation-tier-easy')).getByText(/http:\/\/localhost:9\/v1: deepseek-v4-flash/)
     ).toBeTruthy()
   })
 
   it('shows each tier and what an unset tier falls back to', () => {
     renderSettings()
 
-    expect(
-      within(screen.getByTestId('delegation-tier-normal')).getByText(/anthropic: claude-sonnet-5 · Medium/)
-    ).toBeTruthy()
+    // Normal is the base delegation route, edited by the Settings route row (DelegationRouteRow), not here.
+    expect(screen.queryByTestId('delegation-tier-normal')).toBeNull()
     expect(
       within(screen.getByTestId('delegation-tier-easy')).getByText(/deepseek: deepseek-v4-flash · Low/)
     ).toBeTruthy()

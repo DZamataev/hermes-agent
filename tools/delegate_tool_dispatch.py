@@ -393,7 +393,9 @@ def _unit_model_label(unit: _Batch) -> Optional[str]:
     configured) the label stays what it always was — the call's route model (None → "?")."""
     per_task = unit.task_route_models
     if not per_task or not any(per_task):
-        return unit.creds.get("model")
+        # creds["model"] is None when delegation.model is blank (children inherit): report what the child runs on.
+        return unit.creds.get("model") or next(
+            (getattr(c, "model", None) for (_, _, c) in unit.children if getattr(c, "model", None)), None)
     models = list(dict.fromkeys(
         str(per_task[i] or getattr(c, "model", "") or "") for (i, _, c) in unit.children))
     return ", ".join(m for m in models if m) or None  # "?" rather than another unit's models

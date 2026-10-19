@@ -22,10 +22,10 @@ def _unit(children_idx, task_route_models, creds_model=None):
     )
 
 
-def test_zero_config_keeps_the_old_label():
-    """No route anywhere: the label is the call's creds model (None), NOT the parent's model on the child."""
+def test_zero_config_names_the_inherited_child_model():
+    """No route anywhere: creds model is None (children inherit), so the label is what the child runs on."""
 
-    assert _unit_model_label(_unit([0, 1], [None, None, None, None])) is None
+    assert _unit_model_label(_unit([0, 1], [None, None, None, None])) == "parent-model"
 
 
 def test_a_split_unit_names_only_its_own_tasks_models():
@@ -106,8 +106,8 @@ def _t(i, **kw):
     return {"goal": f"{GOAL} #{i}", **kw}
 
 
-def test_e2e_zero_config_label_is_unchanged():
-    assert _labels({"independent_completions": True}, [_t(0), _t(1)]) == [([0], None), ([1], None)]
+def test_e2e_zero_config_names_the_inherited_child_model():
+    assert _labels({"independent_completions": True}, [_t(0), _t(1)]) == [([0], "claude-sonnet"), ([1], "claude-sonnet")]
 
 
 def test_e2e_mixed_unit_names_parent_and_tier_models():

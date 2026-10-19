@@ -20,7 +20,8 @@ _WAIT_SECONDS = 75.0  # the sidecar's own wait: longer than the prediction's hun
 def schedule_after_turn(authority, live, ref):
     """Start the suggestion for the turn that just completed. Called before its ``message.complete``
     is published, so a client asking on that event finds the record."""
-    if live.source is None or live.source.platform != Platform.LOCAL:
+    source = getattr(live, 'source', None)
+    if source is None or source.platform != Platform.LOCAL:
         return
     try:
         _start(authority, live, ref)

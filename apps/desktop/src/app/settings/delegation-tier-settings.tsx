@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { getNested } from './helpers'
-import { ListRow, Pill } from './primitives'
+import { ListRow } from './primitives'
 
 export type DelegationTier = 'easy' | 'hard' | 'normal'
 
@@ -84,8 +84,9 @@ function TierPicker({
  * Settings → Advanced → Subagents: the model each `delegate_task` difficulty
  * tier runs on. The parent model names a tier per task (easy / normal / hard)
  * and never a model id, so this map is the whole routing policy. "Normal" is
- * the existing `delegation.provider/model/reasoning_effort`; easy and hard
- * fall back to it when unset. A chat can still force one model for all its
+ * the existing `delegation.provider/model/reasoning_effort`, edited by upstream's
+ * route row (DelegationRouteRow) on the same page, so only easy and hard render
+ * here; they fall back to Normal when unset. A chat can still force one model for all its
  * subagents from the composer's Subagents pill — that pick never lands here.
  */
 export function DelegationTierSettings({
@@ -104,11 +105,10 @@ export function DelegationTierSettings({
   return (
     <div className="mb-4 grid gap-1" data-testid="delegation-tier-settings">
       <p className="mb-1 text-xs text-muted-foreground">{copy.description}</p>
-      {DELEGATION_TIERS.map(tier => {
+      {DELEGATION_TIERS.filter(tier => tier !== 'normal').map(tier => {
         const route = tierRoute(config, tier)
-        const fallback = tier === 'normal' ? copy.inheritParent : copy.inheritNormal
         // A configured base_url wins over provider in the backend (direct endpoint), so name the endpoint.
-        const endpoint = text(getNested(config, `${tier === 'normal' ? 'delegation' : `delegation.tiers.${tier}`}.base_url`))
+        const endpoint = text(getNested(config, `delegation.tiers.${tier}.base_url`))
 
         const label = route.model
           ? [
@@ -117,7 +117,7 @@ export function DelegationTierSettings({
             ]
               .filter(Boolean)
               .join(' · ')
-          : fallback
+          : copy.inheritNormal
 
         return (
           <div
@@ -144,12 +144,7 @@ export function DelegationTierSettings({
                 </div>
               }
               description={copy.hints[tier]}
-              title={
-                <span className="flex items-baseline gap-2">
-                  {copy.tiers[tier]}
-                  {tier === 'normal' ? <Pill>{copy.defaultPill}</Pill> : null}
-                </span>
-              }
+              title={copy.tiers[tier]}
             />
           </div>
         )

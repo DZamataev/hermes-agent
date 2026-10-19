@@ -9,7 +9,7 @@ import { $busyInputConfig, busyInputOwnerKey, normalizeBusyInputMode } from '@/s
 import { setComposerPredictionsFromConfig } from '@/store/composer-ghost'
 import { setDisplayTimestampsFromConfig } from '@/store/display-timestamps'
 import { $activeGatewayProfile } from '@/store/profile'
-import { setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
+import { localShowReasoning, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 import { $connection } from '@/store/session'
 import {
   getComposerSelectionGeneration,
@@ -158,7 +158,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         }
 
         setDisplayTimestampsFromConfig(config.display?.timestamps)
-        setShowReasoningFromConfig(config.display?.show_reasoning)
+        setShowReasoningFromConfig(localShowReasoning(config.display))
         setComposerPredictionsFromConfig(config.display?.composer_predictions)
         setShowToolActivityFromConfig(config.display?.tool_progress)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)

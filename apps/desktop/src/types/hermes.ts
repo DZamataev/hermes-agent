@@ -487,6 +487,8 @@ export interface HermesConfig {
   display?: {
     show_reasoning?: boolean | string
     composer_predictions?: boolean
+    /** Per-platform overrides; a local session's `/reasoning show|hide` saves `platforms.cli`. */
+    platforms?: Record<string, { show_reasoning?: boolean | string } | undefined>
     personality?: string
     skin?: string
     interim_assistant_messages?: boolean
