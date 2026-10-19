@@ -516,6 +516,20 @@ function includesApprovalCommandTrigger(value: unknown): boolean {
 }
 
 /**
+ * A marker that makes the mock call the real `kanban_create` tool once, so the
+ * card's finish wakes the Desktop session that made it; the same turn then ends
+ * with plain text once the tool result is in the history.
+ */
+export const KANBAN_CARD_TRIGGER = 'E2E_KANBAN_CARD_TRIGGER'
+export const KANBAN_CARD_TITLE = 'E2E kanban card'
+export const KANBAN_CARD_CREATED_TEXT = 'Card E2E kanban card is on the board; I will report when it finishes.'
+
+const KANBAN_CARD_TURN: ScriptedTurn = {
+  text: '',
+  toolCalls: [{ name: 'kanban_create', args: { title: KANBAN_CARD_TITLE, assignee: 'ghost' } }],
+}
+
+/**
  * Per-speaker scripted line for Bot Mode group rooms. A room turn prompt opens
  * with `You are @<handle>` and quotes the user's message verbatim, so one user
  * send can script every member's reply:
@@ -809,6 +823,24 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
 
               return
             }
+          }
+
+          if (userText.includes(KANBAN_CARD_TRIGGER)) {
+            // The trigger stays in history, so script the card only until this
+            // turn's own tool call is in the messages.
+            const called = messages.some(
+              message => message?.role === 'assistant' && JSON.stringify(message.tool_calls ?? '').includes('kanban_create'),
+            )
+
+            const turn = called ? { text: KANBAN_CARD_CREATED_TEXT } : KANBAN_CARD_TURN
+
+            if (stream) {
+              streamScriptedTurn(res, model, turn)
+            } else {
+              nonStreamingScriptedTurn(res, model, turn)
+            }
+
+            return
           }
 
           if (includesBatchClarifyTrigger(parsed.messages)) {
