@@ -12,6 +12,7 @@ import dataclasses
 import logging
 import time
 from contextlib import nullcontext, suppress
+from functools import partial
 from typing import TYPE_CHECKING, Any, Optional
 
 from gateway.config import Platform
@@ -369,6 +370,8 @@ class GatewayGoalsMixin:
         hooks = [("loop completion", self._post_turn_loop_completion)]
         if final_text.strip():
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
+            from gateway.session_spawn_reports import after_local_turn
+            hooks.append(("spawn-task report", partial(after_local_turn, self)))
         for label, hook in hooks:
             try:
                 await hook(session_entry=session_entry, source=source, final_response=final_text)

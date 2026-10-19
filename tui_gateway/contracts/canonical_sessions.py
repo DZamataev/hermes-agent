@@ -39,6 +39,11 @@ class CanonicalCreateParams(ProfileParams):
     editor: dict[str, JsonValue] | None = None
     title: str | None = None
     hidden: bool = False
+    # The spawn-task chip (gateway/session_spawn_reports.py): a taken ``title`` lands as ``<title> (N)``
+    # on a fresh session instead of reopening the titled one; ``spawn_report_to`` is the offering
+    # session's stored id, told when this session finishes its first turn.
+    title_dedupe: bool = False
+    spawn_report_to: str | None = None
     follow_profile_config: bool | None = None
     service_tier: str | None = None
     cwd_explicit: bool | None = None
