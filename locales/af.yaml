@@ -2158,6 +2158,7 @@ cli:
     preparing_stt: "Berei plaaslike STT-model '{model}' voor (eerste gebruik kan dit vanaf Hugging Face aflaai)..."
     transcribing: "Transkribeer..."
     stop_phrase: "Stopfrase bespeur — stemgesprek word beëindig."
+    stop_phrase_conversation: "Stopfrase bespeur — gesprek beëindig."
     transcription_failed: "Transkripsie het misluk: {error}"
     processing_error: "Stemverwerkingsfout: {error}"
     recording_preserved: "Opname bewaar by: {path}"

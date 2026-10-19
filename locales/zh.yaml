@@ -2158,6 +2158,7 @@ cli:
     preparing_stt: "正在准备本地 STT 模型 '{model}'（首次使用可能需要从 Hugging Face 下载）..."
     transcribing: "转写中..."
     stop_phrase: "检测到停止短语 — 结束语音聊天。"
+    stop_phrase_conversation: "检测到停止词——对话已结束。"
     transcription_failed: "转写失败：{error}"
     processing_error: "语音处理出错：{error}"
     recording_preserved: "录音已保留在：{path}"

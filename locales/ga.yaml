@@ -2158,6 +2158,7 @@ cli:
     preparing_stt: "Ag ullmhú na samhla STT áitiúla '{model}' (d'fhéadfaí í a íoslódáil ó Hugging Face an chéad uair)..."
     transcribing: "Ag tras-scríobh..."
     stop_phrase: "Braitheadh frása stoptha — ag cur deireadh leis an gcomhrá gutha."
+    stop_phrase_conversation: "Aimsíodh frása stad — tá an comhrá críochnaithe."
     transcription_failed: "Theip ar an tras-scríobh: {error}"
     processing_error: "Earráid próiseála gutha: {error}"
     recording_preserved: "Taifeadadh caomhnaithe ag: {path}"

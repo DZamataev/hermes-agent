@@ -2175,6 +2175,7 @@ cli:
     preparing_stt: "A helyi '{model}' STT-modell előkészítése (első használatnál letöltődhet a Hugging Face-ről)..."
     transcribing: "Átírás..."
     stop_phrase: "Leállító kifejezés érzékelve — a hangos beszélgetés véget ér."
+    stop_phrase_conversation: "Stop-szó észlelve — a beszélgetés véget ért."
     transcription_failed: "Az átírás nem sikerült: {error}"
     processing_error: "Hangfeldolgozási hiba: {error}"
     recording_preserved: "A felvétel megőrizve itt: {path}"

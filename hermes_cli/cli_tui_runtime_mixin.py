@@ -78,6 +78,8 @@ class CLITuiRuntimeMixin:
         from tools.process_registry_notifications import TimelineNotification
         self._tui_dock_drop_dequeued()
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
+        if not is_voice_input:
+            self._wake_conversation = False  # typed input never continues a wake-word conversation
         if not user_input:
             return
         notification_preview = user_input if isinstance(user_input, TimelineNotification) else None
@@ -204,6 +206,33 @@ class CLITuiRuntimeMixin:
                 except Exception as e:
                     _cprint(f"{_DIM}{t('cli.voice.autorestart_failed', error=e)}{_RST}")
             threading.Thread(target=_restart_recording, daemon=True).start()
+
+        # Wake-word conversation: keep listening after the spoken reply (smart-speaker style).
+        _follow_up = getattr(self, "_wake_follow_up_seconds", 0) or 0
+        if (self._voice_mode and getattr(self, "_wake_conversation", False)
+                and _follow_up > 0 and not self._voice_recording and not self._voice_continuous):
+            # Latch BEFORE the thread so the wake watchdog keeps the listener paused meanwhile.
+            self._wake_follow_up_pending = True
+
+            def _follow_up_recording():
+                try:
+                    if self._voice_tts:
+                        self._voice_tts_done.wait(timeout=60)
+                        time.sleep(0.3)
+                    if self._voice_barge_capture.is_set():
+                        return
+                    if not (self._voice_mode and self._wake_conversation):
+                        return  # voice mode was turned off while the reply played
+                    self._voice_start_recording(max_wait=_follow_up)
+                    self._app.invalidate()
+                except Exception as e:
+                    logger.exception("Wake-word follow-up recording failed")
+                    self._wake_conversation = False
+                    _cprint(f"{_DIM}{t('cli.voice.autorestart_failed', error=e)}{_RST}")
+                finally:
+                    self._wake_follow_up_pending = False
+            from agent.memory_provider import spawn_context_thread
+            spawn_context_thread(_follow_up_recording, name="wake-follow-up").start()
 
         with suppress(Exception):
             self._drain_process_notifications("cli-post-turn")

@@ -2158,6 +2158,7 @@ cli:
     preparing_stt: "جارٍ تجهيز نموذج STT المحلي '{model}' (قد يُنزَّل من Hugging Face عند أول استخدام)..."
     transcribing: "جارٍ النسخ الصوتي..."
     stop_phrase: "تم اكتشاف عبارة الإيقاف — إنهاء المحادثة الصوتية."
+    stop_phrase_conversation: "تم اكتشاف عبارة التوقف — انتهت المحادثة."
     transcription_failed: "فشل النسخ الصوتي: {error}"
     processing_error: "خطأ في معالجة الصوت: {error}"
     recording_preserved: "حُفظ التسجيل في: {path}"

@@ -59,8 +59,8 @@ class CLIVoiceMixin:
         if hasattr(self, '_app') and self._app:
             self._app.invalidate()
 
-    def _voice_start_recording(self):
-        """Start capturing audio from the microphone."""
+    def _voice_start_recording(self, max_wait=None):
+        """Start capturing audio from the microphone (``max_wait`` = seconds to wait for speech)."""
         from cli import _ACCENT, _DIM, _RST, _cprint
         if getattr(self, '_should_exit', False):
             return
@@ -103,6 +103,8 @@ class CLIVoiceMixin:
         rec.on_live_partial = self._voice_on_live_partial
         rec._silence_threshold = _numeric_or(voice_cfg.get("silence_threshold"), 200)
         rec._silence_duration = _numeric_or(voice_cfg.get("silence_duration"), 3.0)
+        # The recorder is reused: reset the wait every start so a short follow-up window never sticks.
+        rec._max_wait = max_wait or 15.0
         # voice.max_recording_seconds — hard cap on one recording; explicit <= 0 disables it.
         _max_rec = _numeric_or(voice_cfg.get("max_recording_seconds"), None)
         rec._max_recording_seconds = (_max_rec if _max_rec > 0 else 0.0) if _max_rec is not None else 120.0
@@ -210,6 +212,7 @@ class CLIVoiceMixin:
             self._voice_beep(frequency=660, count=2)
             if wav_path is None:
                 _cprint(f"{_DIM}{t('cli.voice.no_speech')}{_RST}")
+                self._wake_conversation = False  # silence ends a wake-word conversation
                 return
             self._voice_invalidate()
             stt_model = self._voice_stt_model()
@@ -224,6 +227,12 @@ class CLIVoiceMixin:
                 transcript = result["transcript"].strip()
                 if is_voice_stop_phrase(transcript):
                     # Bare "stop" (or configured phrase) ends the voice chat, not a turn.
+                    if getattr(self, "_wake_conversation", False):
+                        # Inside a wake-word conversation only the conversation ends:
+                        # _disable_voice_mode would also kill TTS until a restart.
+                        self._wake_conversation = False
+                        _cprint(f"{_DIM}{t('cli.voice.stop_phrase_conversation')}{_RST}")
+                        return
                     _cprint(f"{_DIM}{t('cli.voice.stop_phrase')}{_RST}")
                     self._disable_voice_mode()
                     return
@@ -233,6 +242,7 @@ class CLIVoiceMixin:
                 submitted = True
             elif result.get("success"):
                 _cprint(f"{_DIM}{t('cli.voice.no_speech')}{_RST}")
+                self._wake_conversation = False  # silence ends a wake-word conversation
             else:
                 _cprint(f"\n{_DIM}{t('cli.voice.transcription_failed', error=result.get('error') or t('cli.shared.unknown_error'))}{_RST}")
                 transcription_failed = True
@@ -629,6 +639,7 @@ class CLIVoiceMixin:
             say(f"{_DIM}{t('cli.voice.wake_installing')}{_RST}")
 
         self._wake_start_new_session = bool(cfg.get("start_new_session", True))
+        self._wake_follow_up_seconds = _numeric_or(cfg.get("follow_up_seconds"), 0.0)
         try:
             start_listening(self._on_wake_word, owner=self, config=cfg)
         except Exception as e:
@@ -712,9 +723,11 @@ class CLIVoiceMixin:
         with self._voice_lock:
             self._voice_mode = True
         self._voice_continuous = False
+        self._wake_conversation = True  # a spoken reply may be answered without the phrase
         try:
             self._voice_start_recording()
         except Exception as e:
+            self._wake_conversation = False
             _cprint(f"{_DIM}{t('cli.voice.wake_capture_failed', error=e)}{_RST}")
 
     def _start_wake_watchdog(self):
@@ -736,6 +749,7 @@ class CLIVoiceMixin:
                         self._agent_running
                         or self._voice_recording
                         or getattr(self, "_voice_processing", False)
+                        or getattr(self, "_wake_follow_up_pending", False)
                         or not self._pending_input.empty())
                     if busy:
                         idle_polls = 0

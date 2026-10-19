@@ -2158,6 +2158,7 @@ cli:
     preparing_stt: "Підготовка локальної STT-моделі '{model}' (при першому використанні вона може завантажитися з Hugging Face)..."
     transcribing: "Транскрибування..."
     stop_phrase: "Виявлено фразу зупинки — завершення голосового чату."
+    stop_phrase_conversation: "Виявлено стоп-фразу — розмову завершено."
     transcription_failed: "Не вдалося транскрибувати: {error}"
     processing_error: "Помилка обробки голосу: {error}"
     recording_preserved: "Запис збережено в: {path}"

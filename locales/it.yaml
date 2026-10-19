@@ -2158,6 +2158,7 @@ cli:
     preparing_stt: "Preparazione del modello STT locale '{model}' (al primo uso potrebbe essere scaricato da Hugging Face)..."
     transcribing: "Trascrizione in corso..."
     stop_phrase: "Frase di stop rilevata — chiusura della chat vocale."
+    stop_phrase_conversation: "Frase di stop rilevata: conversazione terminata."
     transcription_failed: "Trascrizione non riuscita: {error}"
     processing_error: "Errore nell'elaborazione vocale: {error}"
     recording_preserved: "Registrazione conservata in: {path}"

@@ -2158,6 +2158,7 @@ cli:
     preparing_stt: "Yerel STT modeli '{model}' hazırlanıyor (ilk kullanımda Hugging Face'ten indirilebilir)..."
     transcribing: "Yazıya dökülüyor..."
     stop_phrase: "Durdurma ifadesi algılandı — sesli sohbet sonlandırılıyor."
+    stop_phrase_conversation: "Durma ifadesi algılandı — konuşma sona erdi."
     transcription_failed: "Yazıya dökme başarısız oldu: {error}"
     processing_error: "Ses işleme hatası: {error}"
     recording_preserved: "Kayıt şurada saklandı: {path}"
