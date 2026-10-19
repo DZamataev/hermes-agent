@@ -6,6 +6,7 @@ import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromC
 import { composerServiceTier } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
 import { $busyInputConfig, busyInputOwnerKey, normalizeBusyInputMode } from '@/store/busy-input-mode'
+import { setComposerPredictionsFromConfig } from '@/store/composer-ghost'
 import { setDisplayTimestampsFromConfig } from '@/store/display-timestamps'
 import { $activeGatewayProfile } from '@/store/profile'
 import { setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
@@ -158,6 +159,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
 
         setDisplayTimestampsFromConfig(config.display?.timestamps)
         setShowReasoningFromConfig(config.display?.show_reasoning)
+        setComposerPredictionsFromConfig(config.display?.composer_predictions)
         setShowToolActivityFromConfig(config.display?.tool_progress)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)
         setChatFontFamilyFromConfig(config.desktop?.font_family)

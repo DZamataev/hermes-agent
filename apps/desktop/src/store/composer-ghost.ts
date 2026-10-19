@@ -44,3 +44,13 @@ export function noteSessionTurnEnded(sessionId: string): void {
 export function resetSessionGhosts(): void {
   $sessionGhosts.set({})
 }
+
+/**
+ * Mirrors `display.composer_predictions` (Settings → Chat). While on, a session with history shows
+ * no stock follow-up placeholder: the composer stays empty until the prediction arrives.
+ */
+export const $composerPredictions = atom(true)
+
+export function setComposerPredictionsFromConfig(value: unknown): void {
+  $composerPredictions.set(!(value === false || value === 'false' || value === 0))
+}

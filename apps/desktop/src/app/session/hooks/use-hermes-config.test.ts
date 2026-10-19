@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { $terminalFontFamily, setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
 import { getHermesConfig } from '@/hermes'
 import { persistString } from '@/lib/storage'
+import { $composerPredictions } from '@/store/composer-ghost'
 import { $showReasoning, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 import {
   $currentCwd,
@@ -67,6 +68,22 @@ describe('useHermesConfig refreshHermesConfig', () => {
       await result.current.refreshHermesConfig()
     })
     expect($showReasoning.get()).toBe(true)
+  })
+
+  it('mirrors display.composer_predictions, on when the key is missing', async () => {
+    mockConfig({ display: { composer_predictions: false } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    expect($composerPredictions.get()).toBe(false)
+
+    mockConfig({})
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    expect($composerPredictions.get()).toBe(true)
   })
 
   it('mirrors display.tool_progress independently of show_reasoning', async () => {
