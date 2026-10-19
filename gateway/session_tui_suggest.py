@@ -31,6 +31,10 @@ def schedule_after_turn(authority, live, ref):
 
 
 def _start(authority, live, ref):
+    # The thread's compute() reads tui_gateway.server; import it here so the thread never runs that import
+    # itself — a half-imported module in sys.modules breaks whoever reads it meanwhile (free in production:
+    # gateway startup already imported it).
+    import tui_gateway.server
     from tui_gateway.suggest_cache import _TurnSuggestion
     record = live.composer_suggestion = _TurnSuggestion(0)
     agent = authority.agent(ref)
