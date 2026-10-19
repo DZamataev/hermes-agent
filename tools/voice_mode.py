@@ -1010,8 +1010,9 @@ def _wsl_powershell_tts_available() -> bool:
 
 
 def play_audio_file(file_path: str) -> bool:
-    """Play an audio file; True on success. WAV via ``sounddevice.play()`` when allowed,
-    else system players: afplay (macOS), WSL2 PowerShell bridge, ffplay, aplay (Linux).
+    """Play an audio file; True on success. WAV plays via ``sounddevice.play()`` when
+    allowed, compressed formats are decoded to WAV first, else system players:
+    afplay (macOS), WSL2 PowerShell bridge, ffplay, aplay (Linux, WAV only).
     Interruptible via ``stop_playback()``."""
     mark_audio_output_active(True)  # ref-count real speaker output for the whole call
     try:
@@ -1090,7 +1091,8 @@ def _system_player_candidates(file_path: str) -> list[list[str]]:
     if ps_cmd:
         players.append(ps_cmd)
     players.append(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", file_path])
-    if system == "Linux":
+    # aplay decodes nothing: handed an mp3 it plays the bytes as raw U8 noise.
+    if system == "Linux" and file_path.endswith(".wav"):
         players.append(["aplay", "-q", file_path])
     return players
 
@@ -1123,13 +1125,42 @@ def _run_system_player(cmd: list[str]) -> bool:
     return False
 
 
+def _play_compressed_via_sounddevice(file_path: str) -> bool:
+    """Decode a compressed file to a temp WAV and play it through sounddevice.
+
+    The bundled ffplay is SDL-built without ALSA and aplay cannot decode, so
+    headless ALSA hosts otherwise get silence or raw-byte noise.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return False
+    fd, tmp_wav = tempfile.mkstemp(suffix=".wav", prefix="hermes_play_")
+    os.close(fd)
+    try:
+        decoded = subprocess.run(
+            [ffmpeg, "-nostdin", "-loglevel", "quiet", "-y", "-i", file_path,
+             "-f", "wav", "-acodec", "pcm_s16le", tmp_wav],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False,
+        ).returncode == 0
+        return decoded and _play_wav_via_sounddevice(tmp_wav)
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug("ffmpeg decode of %s failed: %s", file_path, e)
+        return False
+    finally:
+        _unlink_quietly(tmp_wav)
+
+
 def _play_audio_file_impl(file_path: str) -> bool:
     if not os.path.isfile(file_path):
         logger.warning("Audio file not found: %s", file_path)
         return False
     # macOS skips sounddevice output (TCC media-library prompt); afplay handles all formats.
-    if file_path.endswith(".wav") and _sounddevice_output_allowed() and _play_wav_via_sounddevice(file_path):
-        return True
+    if _sounddevice_output_allowed():
+        if file_path.endswith(".wav"):
+            if _play_wav_via_sounddevice(file_path):
+                return True
+        elif _play_compressed_via_sounddevice(file_path):
+            return True
     for cmd in _system_player_candidates(file_path):
         if shutil.which(cmd[0]) and _run_system_player(cmd):
             return True
