@@ -177,6 +177,16 @@ describe('MarkdownLink filesystem hrefs', () => {
     expect(screen.queryByText(/blocked/)).toBeNull()
   })
 
+  it('routes an angle-bracket relative path with a combining mark in the first segment', async () => {
+    // The angle branch needed \p{M} too: `é` decomposed in a spaced path is
+    // the same directory as the NFC spelling, not a host.
+    render(<MarkdownTextContent isRunning={false} text={'[a](<e\u0301 dir/x.md>)'} />)
+
+    await screen.findByText('x.md')
+    expect(screen.getByRole('button', { name: 'Open preview' })).toBeTruthy()
+    expect(screen.queryByText(/blocked/)).toBeNull()
+  })
+
   it('leaves anchors, web, mail and bare host links out of the preview pipeline', () => {
     render(
       <MarkdownTextContent

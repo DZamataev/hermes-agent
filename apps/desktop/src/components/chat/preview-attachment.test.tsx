@@ -2,9 +2,10 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { PRIMARY_SESSION_VIEW, SessionViewProvider } from '@/app/chat/session-view'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import type * as PreviewStore from '@/store/preview'
-import { $selectedStoredSessionId } from '@/store/session'
+import { $currentCwd, $selectedStoredSessionId } from '@/store/session'
 
 // #101683 regression coverage: the delivered-file card must branch on the
 // target's LOCAL filesystem state — an existing directory opens natively with
@@ -50,7 +51,10 @@ function fileTarget(path: string, previewKind = 'text') {
 function mountDesktopStub(normalizePreviewTarget: (target: string, baseDir?: string) => unknown) {
   const openDir = vi.fn(async () => ({ ok: true }))
   const revealPath = vi.fn(async () => true)
-  const saveGatewayFile = vi.fn(async () => ({ path: '/Users/me/Downloads/report.md', saved: true }))
+  const saveGatewayFile = vi.fn(async (_request: Record<string, unknown>) => ({
+    path: '/Users/me/Downloads/report.md',
+    saved: true
+  }))
 
   window.hermesDesktop = {
     normalizePreviewTarget: vi.fn(normalizePreviewTarget),
@@ -74,6 +78,7 @@ describe('PreviewAttachment local target classification (#101683)', () => {
 
   afterEach(() => {
     cleanup()
+    $currentCwd.set('')
     $selectedStoredSessionId.set(null)
     window.hermesDesktop = previousDesktop
   })
@@ -143,10 +148,12 @@ describe('PreviewAttachment local target classification (#101683)', () => {
     expect(revealPath).not.toHaveBeenCalled()
   })
 
-  it('downloads with the session id so the backend resolves the path against its cwd', async () => {
+  it('downloads a relative target joined to the session cwd, without a session id', async () => {
     isDesktopFsRemoteMode.mockReturnValue(true)
     const { saveGatewayFile } = mountDesktopStub(() => fileTarget('/srv/report.md'))
+    // A stored id must not reach the request: the path alone selects the file.
     $selectedStoredSessionId.set('stored-1')
+    $currentCwd.set('/panel/repo')
 
     render(<PreviewAttachment target="docs/report.md" />)
 
@@ -154,9 +161,42 @@ describe('PreviewAttachment local target classification (#101683)', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Download' }))
     })
 
-    expect(saveGatewayFile).toHaveBeenCalledWith(
-      expect.objectContaining({ path: 'docs/report.md', sessionId: 'stored-1' })
+    expect(saveGatewayFile).toHaveBeenCalledWith(expect.objectContaining({ path: '/panel/repo/docs/report.md' }))
+    expect(saveGatewayFile.mock.calls[0][0]).not.toHaveProperty('sessionId')
+  })
+
+  it('downloads an absolute target unchanged and without a session id', async () => {
+    isDesktopFsRemoteMode.mockReturnValue(true)
+    const { saveGatewayFile } = mountDesktopStub(() => fileTarget('/srv/report.md'))
+    $selectedStoredSessionId.set('stored-1')
+    $currentCwd.set('/panel/repo')
+
+    render(<PreviewAttachment target="/srv/shared/report.md" />)
+
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Download' }))
+    })
+
+    expect(saveGatewayFile).toHaveBeenCalledWith(expect.objectContaining({ path: '/srv/shared/report.md' }))
+    expect(saveGatewayFile.mock.calls[0][0]).not.toHaveProperty('sessionId')
+  })
+
+  it('joins a relative target to the cwd of its own session view', async () => {
+    isDesktopFsRemoteMode.mockReturnValue(true)
+    const { saveGatewayFile } = mountDesktopStub(() => fileTarget('/srv/report.md'))
+    $currentCwd.set('/primary/repo')
+
+    render(
+      <SessionViewProvider value={{ ...PRIMARY_SESSION_VIEW, $cwd: atom('/tile/repo'), kind: 'tile' }}>
+        <PreviewAttachment target="docs/report.md" />
+      </SessionViewProvider>
     )
+
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Download' }))
+    })
+
+    expect(saveGatewayFile).toHaveBeenCalledWith(expect.objectContaining({ path: '/tile/repo/docs/report.md' }))
   })
 
   it('reports a missing path instead of opening a broken preview tab', async () => {

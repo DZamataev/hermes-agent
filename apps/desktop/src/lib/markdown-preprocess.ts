@@ -221,8 +221,10 @@ const FENCE_TOGGLE_RE = /^[ \t]*(?:```|~~~)/
 // CommonMark angle-bracket destinations (`[notes](<~/My Notes/todo.md>`) are
 // matched separately so paths with spaces route to the preview pipeline too
 // (#102782) — `routeFileLinksToPreview` strips the surrounding `<>`.
-// Relative paths (`.planning/x.md`, `docs/a.md`, `../a.md`) resolve against the
-// session cwd in MarkdownLink; left alone, the hardener paints "[blocked]".
+// Relative paths (`.planning/x.md`, `docs/a.md`, `../a.md`) route raw: the card
+// resolves Open itself (native normalizer with cwd and HOME fallback), while
+// Download and inline media get the path joined with the panel cwd. Left alone,
+// the hardener paints "[blocked]".
 // A dotted first segment (`example.com/x`) is a host, not a directory.
 const FILE_LINK_RE =
   /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target>(?:<(?:file:\/\/|\/|~\/|[a-z]:[\\/]|\.{1,2}\/|\.?[\p{L}\p{N}\p{M}_ -]+\/)[^>]*>)|(?:file:\/\/|\/|~\/|[a-z]:[\\/]|\.{1,2}\/|\.?[\p{L}\p{N}\p{M}_-]+\/)[^)\s]*)\)/giu

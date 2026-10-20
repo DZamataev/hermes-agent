@@ -5,7 +5,7 @@ import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { Download, FolderOpen, MonitorPlay } from '@/lib/icons'
-import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { normalizeOrLocalPreviewTarget, resolveAgainstCwd } from '@/lib/local-preview'
 import { downloadGatewayMediaFile } from '@/lib/media'
 import { previewName } from '@/lib/preview-targets'
 import { notifyError } from '@/store/notifications'
@@ -51,7 +51,6 @@ export function PreviewAttachment({ target }: { target: string }) {
   // This link lives in one session's transcript; resolve it against THAT
   // session's cwd, not the primary chat's.
   const cwd = useStore(useSessionView().$cwd)
-  const storedId = useStore(useSessionView().$storedId)
   const openSources = useStore($previewTabSources)
   const [opening, setOpening] = useState(false)
   const [downloading, setDownloading] = useState(false)
@@ -201,10 +200,10 @@ export function PreviewAttachment({ target }: { target: string }) {
 
     try {
       // Works in both modes: the Electron main process fetches the bytes
-      // through the session's backend connection (local gateway or remote)
-      // and prompts for a save location. The session id is what lets the
-      // backend resolve a relative target against THIS session's cwd.
-      const result = await downloadGatewayMediaFile(target, { sessionId: storedId ?? undefined })
+      // through the window's backend connection (local gateway or remote)
+      // and prompts for a save location. The backend resolves against its own
+      // cwd, so send this session's path and let the id stay out of it.
+      const result = await downloadGatewayMediaFile(resolveAgainstCwd(target, cwd))
 
       if (mountedRef.current && result.saved) {
         setDownloaded(true)
