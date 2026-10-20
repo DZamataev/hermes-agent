@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import tempfile
 import threading
 import time
@@ -17,6 +18,11 @@ import time
 from agent.i18n import t
 from hermes_constants import is_termux as _is_termux_environment
 from typing import Optional
+
+# voice.on_conversation_* hooks: the start hook runs before the recording bell, so keep it
+# short; the end hook only has to be long enough for a player to resume.
+_CONVERSATION_START_TIMEOUT = 2.0
+_CONVERSATION_END_TIMEOUT = 10.0
 
 
 def _config_section(name: str) -> dict:
@@ -677,6 +683,7 @@ class CLIVoiceMixin:
         was_active = getattr(self, "_wake_word_active", False)
         self._wake_word_active = False
         self._wake_suspended = False
+        self._close_wake_conversation_hook()  # no watchdog left to close it
         try:
             from tools.wake_word import stop_listening
             stop_listening(owner=self)
@@ -686,6 +693,34 @@ class CLIVoiceMixin:
             _cli._cli_wake_owner = None
         if announce:
             _cprint(f"{_DIM}{t('cli.voice.wake_stopped' if was_active else 'cli.voice.wake_not_running')}{_RST}")
+
+    def _run_voice_hook(self, key: str, timeout: float) -> bool:
+        """Run ``voice.<key>`` as a shell command; False when it isn't configured.
+
+        Output is dropped — the CLI owns the terminal — and every failure is a debug note:
+        a broken player must never take the conversation down with it.
+        """
+        cmd = str(_config_section("voice").get(key) or "").strip()
+        if not cmd:
+            return False
+        from cli import logger
+        try:
+            subprocess.run(
+                cmd, shell=True, timeout=timeout, check=False,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            logger.debug("voice.%s hook %r failed: %s", key, cmd, e)
+        return True
+
+    def _close_wake_conversation_hook(self) -> None:
+        """``voice.on_conversation_end``, once per conversation the start hook opened."""
+        if not getattr(self, "_wake_conv_hook_open", False):
+            return
+        self._wake_conv_hook_open = False
+        threading.Thread(
+            target=self._run_voice_hook,
+            args=("on_conversation_end", _CONVERSATION_END_TIMEOUT),
+            name="voice-conversation-end", daemon=True).start()
 
     def _on_wake_word(self):
         """Fired after the detector hears the wake phrase."""
@@ -738,6 +773,9 @@ class CLIVoiceMixin:
         with self._voice_lock:
             self._voice_mode = True
         self._voice_continuous = False
+        # Before the bell: whatever the hook pauses must already be silent when it rings.
+        self._wake_conv_hook_open = self._run_voice_hook(
+            "on_conversation_start", _CONVERSATION_START_TIMEOUT)
         self._wake_conversation = True  # a spoken reply may be answered without the phrase
         try:
             self._voice_start_recording()
@@ -778,6 +816,7 @@ class CLIVoiceMixin:
                             from tools.wake_word import resume_listening
                             if resume_listening(owner=self):
                                 self._wake_suspended = False
+                                self._close_wake_conversation_hook()
                             else:
                                 self._wake_word_active = False
                         except Exception as e:

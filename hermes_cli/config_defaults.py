@@ -1260,6 +1260,11 @@ DEFAULT_CONFIG = {
         # Saying EXACTLY one of these (case-insensitive, punctuation ignored) ends the voice chat
         # instead of going to the agent. [] disables.
         "stop_phrases": ["stop"],
+        # Shell commands around a wake-word conversation (headless box: pause/resume a player).
+        # start runs before the recording bell (2 s bound, so it can't hold the turn up);
+        # end runs in the background (10 s bound) once the conversation closes, and only if
+        # start actually ran. "" = off.
+        "on_conversation_start": "", "on_conversation_end": "",
     },
     # Native images (vision_analyze, browser screenshots, replayed user images) are re-sent on every later call.
     "vision": {
