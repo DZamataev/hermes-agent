@@ -63,17 +63,30 @@ describe('MarkdownLink filesystem hrefs', () => {
     expect(container.querySelector('a[href="/tmp/demo.mp4"]')).toBeNull()
   })
 
-  it('leaves anchors and relative links out of the preview pipeline', () => {
+  it('routes relative file links through the preview pipeline', async () => {
+    // Models cite repo files relative to the session cwd; Streamdown's
+    // hardener can't parse `.planning/x` without a base and painted
+    // "label [blocked]". PreviewAttachment resolves them against the cwd.
     render(
       <MarkdownTextContent
         isRunning={false}
-        text={'[frag](#section-2) and [rel](docs/guide.md) and [site](https://example.com)'}
+        text={'[plan](.planning/plan.html), [guide](docs/guide.md), [up](../notes.md) and [here](./todo.md)'}
       />
     )
 
-    // Fragment anchors survive untouched; relative links are NOT rewritten
-    // (they keep Streamdown's pre-existing handling) — neither gains a
-    // preview affordance.
+    await screen.findByText('plan.html')
+    expect(screen.getAllByRole('button', { name: 'Open preview' })).toHaveLength(4)
+    expect(screen.queryByText(/blocked/)).toBeNull()
+  })
+
+  it('leaves anchors, web and mail links out of the preview pipeline', () => {
+    render(
+      <MarkdownTextContent
+        isRunning={false}
+        text={'[frag](#section-2) and [site](https://example.com) and [mail](mailto:a@b.c)'}
+      />
+    )
+
     expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
     expect(document.querySelector('a[href="#section-2"]')).not.toBeNull()
   })
