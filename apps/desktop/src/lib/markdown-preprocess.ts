@@ -225,7 +225,7 @@ const FENCE_TOGGLE_RE = /^[ \t]*(?:```|~~~)/
 // session cwd in MarkdownLink; left alone, the hardener paints "[blocked]".
 // A dotted first segment (`example.com/x`) is a host, not a directory.
 const FILE_LINK_RE =
-  /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target>(?:<(?:file:\/\/|\/|~\/|[a-z]:[\\/]|\.{1,2}\/|\.?[\p{L}\p{N}_ -]+\/)[^>]*>)|(?:file:\/\/|\/|~\/|[a-z]:[\\/]|\.{1,2}\/|\.?[\p{L}\p{N}_-]+\/)[^)\s]*)\)/giu
+  /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target>(?:<(?:file:\/\/|\/|~\/|[a-z]:[\\/]|\.{1,2}\/|\.?[\p{L}\p{N}\p{M}_ -]+\/)[^>]*>)|(?:file:\/\/|\/|~\/|[a-z]:[\\/]|\.{1,2}\/|\.?[\p{L}\p{N}\p{M}_-]+\/)[^)\s]*)\)/giu
 
 // A transcript directive on its own line: `::name{...}`. Attribute values are
 // prose the model wrote (a task brief, a question) and read as markdown to the
@@ -591,8 +591,10 @@ function rewriteProseSegment(segment: string, sourceListIds: Set<string>): strin
   return linkifySessionRefs(
     escapeLoneTildes(
       autoLinkRawUrls(
-        routeFileLinksToPreview(
-          escapeUnknownHtmlLikeTags(
+        // File routing first: an angle-bracket target with a space
+        // (`<My Docs/report.md>`) reads as an unknown tag to the escaper.
+        escapeUnknownHtmlLikeTags(
+          routeFileLinksToPreview(
             segment
               .replace(/`{3,}/g, '')
               .replace(CITATION_TRANSPORT_MARKER_RE, '')

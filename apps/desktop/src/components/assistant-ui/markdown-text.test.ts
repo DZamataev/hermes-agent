@@ -686,4 +686,14 @@ describe('preprocessMarkdown', () => {
     // stays a price opener, an escaped `\\` stays a literal backslash.
     expect(preprocessMarkdown(String.raw`costs \$5 and $a\\$ ok`)).toBe(String.raw`costs \$5 and $a\\$ ok`)
   })
+
+  it('routes an angle-bracket file link before escaping html-like tags', () => {
+    // `<My Docs/report.md>` looks like an unknown tag to the escaper; file
+    // routing has to claim the link first, or it paints as literal text.
+    expect(preprocessMarkdown('[a](<My Docs/report.md>)')).toContain('#preview/My%20Docs%2Freport.md')
+  })
+
+  it('still escapes unknown html-like tags outside a file link', () => {
+    expect(preprocessMarkdown('[x](<b>y</b>) and <mytag>z</mytag>')).toContain('&lt;mytag&gt;z&lt;/mytag&gt;')
+  })
 })

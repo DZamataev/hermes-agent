@@ -51,6 +51,7 @@ export function PreviewAttachment({ target }: { target: string }) {
   // This link lives in one session's transcript; resolve it against THAT
   // session's cwd, not the primary chat's.
   const cwd = useStore(useSessionView().$cwd)
+  const storedId = useStore(useSessionView().$storedId)
   const openSources = useStore($previewTabSources)
   const [opening, setOpening] = useState(false)
   const [downloading, setDownloading] = useState(false)
@@ -201,8 +202,9 @@ export function PreviewAttachment({ target }: { target: string }) {
     try {
       // Works in both modes: the Electron main process fetches the bytes
       // through the session's backend connection (local gateway or remote)
-      // and prompts for a save location.
-      const result = await downloadGatewayMediaFile(target)
+      // and prompts for a save location. The session id is what lets the
+      // backend resolve a relative target against THIS session's cwd.
+      const result = await downloadGatewayMediaFile(target, { sessionId: storedId ?? undefined })
 
       if (mountedRef.current && result.saved) {
         setDownloaded(true)

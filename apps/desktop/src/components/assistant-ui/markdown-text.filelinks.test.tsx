@@ -1,6 +1,9 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { PRIMARY_SESSION_VIEW, SessionViewProvider } from '@/app/chat/session-view'
+import { renderMediaTags } from '@/lib/chat-messages/parts'
 import type * as Media from '@/lib/media'
 import { $currentCwd } from '@/store/session'
 
@@ -95,18 +98,25 @@ describe('MarkdownLink filesystem hrefs', () => {
     expect(screen.queryByText(/blocked/)).toBeNull()
   })
 
-  it('resolves a relative link against the session cwd before the card sees it', async () => {
-    // The card's Download goes to the gateway, whose own cwd is not the session's.
+  it('hands the raw relative target to the card with the session cwd', async () => {
+    // The card's Open resolves the target itself against the session cwd, so
+    // the old HOME/attachments fallback in the native normalizer still sees a
+    // relative path; Download resolves against the session on the backend.
     const normalizePreviewTarget = vi.fn().mockResolvedValue(null)
     vi.stubGlobal('hermesDesktop', { normalizePreviewTarget })
     $currentCwd.set('/repo/app')
 
-    render(<MarkdownTextContent isRunning={false} text="[guide](docs/guide.md) and [up](../notes.md)" />)
+    render(
+      <MarkdownTextContent
+        isRunning={false}
+        text={`${renderMediaTags('MEDIA:.hermes/attachments/report.md')} and [guide](docs/guide.md)`}
+      />
+    )
 
     await waitFor(() => expect(normalizePreviewTarget).toHaveBeenCalledTimes(2))
-    expect(normalizePreviewTarget.mock.calls.map(call => call[0]).sort()).toEqual([
-      '/repo/app/docs/guide.md',
-      '/repo/notes.md'
+    expect(normalizePreviewTarget.mock.calls.map(call => call.slice(0, 2))).toEqual([
+      ['.hermes/attachments/report.md', '/repo/app'],
+      ['docs/guide.md', '/repo/app']
     ])
   })
 
@@ -117,6 +127,21 @@ describe('MarkdownLink filesystem hrefs', () => {
     await waitFor(() => expect(container.querySelector('video')).not.toBeNull())
     expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
     expect(resolveMediaPlaybackSrc).toHaveBeenCalledWith('/repo/out/demo.mp4')
+  })
+
+  it('plays inline media from the cwd of the panel that rendered the transcript', async () => {
+    // The media stream has no cwd of its own, so the path must already be
+    // absolute — resolved against THIS pane, not the primary chat.
+    $currentCwd.set('/primary')
+
+    const { container } = render(
+      <SessionViewProvider value={{ ...PRIMARY_SESSION_VIEW, $cwd: atom('/panel') }}>
+        <MarkdownTextContent isRunning={false} text="[clip](out/demo.mp4)" />
+      </SessionViewProvider>
+    )
+
+    await waitFor(() => expect(container.querySelector('video')).not.toBeNull())
+    expect(resolveMediaPlaybackSrc).toHaveBeenCalledWith('/panel/out/demo.mp4')
   })
 
   it('routes angle-bracket and non-ASCII relative paths, not ~user/', async () => {
@@ -130,6 +155,26 @@ describe('MarkdownLink filesystem hrefs', () => {
     await screen.findByText('My Notes.md')
     await screen.findByText('план.md')
     expect(screen.getAllByRole('button', { name: 'Open preview' })).toHaveLength(2)
+  })
+
+  it('routes an angle-bracket relative path whose first directory has a space', async () => {
+    // escapeUnknownHtmlLikeTags used to read `<My Docs/report.md>` as an
+    // unknown tag and escape it before file routing ever saw the link.
+    render(<MarkdownTextContent isRunning={false} text={'[a](<My Docs/report.md>)'} />)
+
+    await screen.findByText('report.md')
+    expect(screen.getByRole('button', { name: 'Open preview' })).toBeTruthy()
+    expect(screen.queryByText(/blocked/)).toBeNull()
+  })
+
+  it('routes a relative path with a combining mark in the first segment', async () => {
+    // `é` written decomposed (e + U+0301) is the same directory name as the
+    // NFC spelling, and must not read as a host.
+    render(<MarkdownTextContent isRunning={false} text={'[a](e\u0301/x.md)'} />)
+
+    await screen.findByText('x.md')
+    expect(screen.getByRole('button', { name: 'Open preview' })).toBeTruthy()
+    expect(screen.queryByText(/blocked/)).toBeNull()
   })
 
   it('leaves anchors, web, mail and bare host links out of the preview pipeline', () => {

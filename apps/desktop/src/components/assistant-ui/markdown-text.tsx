@@ -283,32 +283,31 @@ function flattenChildrenToText(node: unknown): string {
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
   const cwd = useStore(useSessionView().$cwd)
   const rawMediaPath = mediaPathFromMarkdownHref(href)
-  const mediaPath = rawMediaPath && resolveAgainstCwd(rawMediaPath, cwd)
 
-  if (mediaPath) {
+  if (rawMediaPath) {
     // A delivered markdown document is renderable content, not an opaque
     // download: route it to the preview rail (which renders .md with a
     // rendered/source toggle) instead of the download-link fallback that
     // `mediaKind() === 'file'` would produce. (#84951)
-    if (isMarkdownDocumentPath(mediaPath)) {
-      return <PreviewAttachment target={mediaPath} />
-    }
-
     // Non-media files (PDFs, data files, anything outside MEDIA_BY_EXT):
     // MediaAttachment's kind==='file' branch is a degraded dead-end (bare
     // "Open <name>" anchor). Route through the preview pipeline instead —
     // the same file card + "Open preview" the bare-path markdown-link
     // branch below produces — so MEDIA: uniformly delivers the richest
     // rendering for every file type.
-    if (mediaKind(mediaPath) === 'file') {
-      return <PreviewAttachment target={mediaPath} />
+    if (isMarkdownDocumentPath(rawMediaPath) || mediaKind(rawMediaPath) === 'file') {
+      // The card resolves its own preview and download against the session
+      // cwd; the native normalizer's HOME/attachments fallback only fires
+      // while the target is still relative.
+      return <PreviewAttachment target={rawMediaPath} />
     }
 
-    return <MediaAttachment path={mediaPath} />
+    // Only the inline player takes an absolute path: the media stream has no
+    // cwd of its own to resolve one against.
+    return <MediaAttachment path={resolveAgainstCwd(rawMediaPath, cwd)} />
   }
 
-  const rawPreviewTarget = previewTargetFromMarkdownHref(href)
-  const previewTarget = rawPreviewTarget && resolveAgainstCwd(rawPreviewTarget, cwd)
+  const previewTarget = previewTargetFromMarkdownHref(href)
 
   if (previewTarget) {
     return <PreviewAttachment target={previewTarget} />

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import type * as PreviewStore from '@/store/preview'
+import { $selectedStoredSessionId } from '@/store/session'
 
 // #101683 regression coverage: the delivered-file card must branch on the
 // target's LOCAL filesystem state — an existing directory opens natively with
@@ -49,14 +50,16 @@ function fileTarget(path: string, previewKind = 'text') {
 function mountDesktopStub(normalizePreviewTarget: (target: string, baseDir?: string) => unknown) {
   const openDir = vi.fn(async () => ({ ok: true }))
   const revealPath = vi.fn(async () => true)
+  const saveGatewayFile = vi.fn(async () => ({ path: '/Users/me/Downloads/report.md', saved: true }))
 
   window.hermesDesktop = {
     normalizePreviewTarget: vi.fn(normalizePreviewTarget),
     openDir,
-    revealPath
+    revealPath,
+    saveGatewayFile
   } as never
 
-  return { openDir, revealPath }
+  return { openDir, revealPath, saveGatewayFile }
 }
 
 async function buttons() {
@@ -71,6 +74,7 @@ describe('PreviewAttachment local target classification (#101683)', () => {
 
   afterEach(() => {
     cleanup()
+    $selectedStoredSessionId.set(null)
     window.hermesDesktop = previousDesktop
   })
 
@@ -137,6 +141,22 @@ describe('PreviewAttachment local target classification (#101683)', () => {
     // The remote path is not on this machine: no native folder action fires.
     expect(openDir).not.toHaveBeenCalled()
     expect(revealPath).not.toHaveBeenCalled()
+  })
+
+  it('downloads with the session id so the backend resolves the path against its cwd', async () => {
+    isDesktopFsRemoteMode.mockReturnValue(true)
+    const { saveGatewayFile } = mountDesktopStub(() => fileTarget('/srv/report.md'))
+    $selectedStoredSessionId.set('stored-1')
+
+    render(<PreviewAttachment target="docs/report.md" />)
+
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Download' }))
+    })
+
+    expect(saveGatewayFile).toHaveBeenCalledWith(
+      expect.objectContaining({ path: 'docs/report.md', sessionId: 'stored-1' })
+    )
   })
 
   it('reports a missing path instead of opening a broken preview tab', async () => {
