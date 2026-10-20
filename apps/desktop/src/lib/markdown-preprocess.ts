@@ -525,8 +525,11 @@ function routeFileLinksToPreview(text: string): string {
   return text.replace(FILE_LINK_RE, (match: string, ...args: unknown[]) => {
     const groups = args.at(-1) as { label: string; target: string }
     const target = groups.target.replace(/^<|>$/g, '')
+    // The inline media player has no session cwd; only the preview card resolves relative paths.
+    const relative = !/^(?:file:|\/|~\/|[a-z]:[\\/])/i.test(target)
 
-    const href = mediaKind(target) === 'file' ? previewMarkdownHref(target) : mediaMarkdownHref(target)
+    const href =
+      relative || mediaKind(target) === 'file' ? previewMarkdownHref(target) : mediaMarkdownHref(target)
 
     return `[${groups.label}](${href})`
   })

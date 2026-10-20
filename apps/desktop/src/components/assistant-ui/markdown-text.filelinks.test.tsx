@@ -79,6 +79,14 @@ describe('MarkdownLink filesystem hrefs', () => {
     expect(screen.queryByText(/blocked/)).toBeNull()
   })
 
+  it('routes relative media links to the preview card, not the cwd-less inline player', async () => {
+    const { container } = render(<MarkdownTextContent isRunning={false} text="[shot](docs/a.png) [clip](out/demo.mp4)" />)
+
+    await screen.findByText('a.png')
+    expect(screen.getAllByRole('button', { name: 'Open preview' })).toHaveLength(2)
+    expect(container.querySelector('img, video')).toBeNull()
+  })
+
   it('leaves anchors, web, mail and bare host links out of the preview pipeline', () => {
     render(
       <MarkdownTextContent
