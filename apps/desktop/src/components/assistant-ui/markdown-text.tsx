@@ -7,10 +7,12 @@ import {
   type SyntaxHighlighterProps,
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
+import { useStore } from '@nanostores/react'
 import type { code as streamdownCode } from '@streamdown/code'
 import { type ComponentProps, isValidElement, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { defaultRemarkPlugins } from 'streamdown'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
@@ -22,6 +24,7 @@ import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
+import { resolveAgainstCwd } from '@/lib/local-preview'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
@@ -278,7 +281,9 @@ function flattenChildrenToText(node: unknown): string {
 }
 
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
-  const mediaPath = mediaPathFromMarkdownHref(href)
+  const cwd = useStore(useSessionView().$cwd)
+  const rawMediaPath = mediaPathFromMarkdownHref(href)
+  const mediaPath = rawMediaPath && resolveAgainstCwd(rawMediaPath, cwd)
 
   if (mediaPath) {
     // A delivered markdown document is renderable content, not an opaque
@@ -302,7 +307,8 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     return <MediaAttachment path={mediaPath} />
   }
 
-  const previewTarget = previewTargetFromMarkdownHref(href)
+  const rawPreviewTarget = previewTargetFromMarkdownHref(href)
+  const previewTarget = rawPreviewTarget && resolveAgainstCwd(rawPreviewTarget, cwd)
 
   if (previewTarget) {
     return <PreviewAttachment target={previewTarget} />

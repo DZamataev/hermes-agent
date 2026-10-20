@@ -1,5 +1,17 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import type * as Media from '@/lib/media'
+import { $currentCwd } from '@/store/session'
+
+const { resolveMediaPlaybackSrc } = vi.hoisted(() => ({ resolveMediaPlaybackSrc: vi.fn() }))
+
+vi.mock('@/lib/media', async importOriginal => {
+  const actual = await importOriginal<typeof Media>()
+  resolveMediaPlaybackSrc.mockImplementation(actual.resolveMediaPlaybackSrc)
+
+  return { ...actual, resolveMediaPlaybackSrc }
+})
 
 import { MarkdownTextContent } from './markdown-text'
 
@@ -13,7 +25,11 @@ import { MarkdownTextContent } from './markdown-text'
 // authenticated /api/fs bridge. Media-extension paths keep their inline
 // player instead.
 describe('MarkdownLink filesystem hrefs', () => {
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    $currentCwd.set('')
+  })
 
   it('routes an absolute file path link through the preview attachment', async () => {
     render(<MarkdownTextContent isRunning={false} text="Wrote it: [report](/home/user/report.md)" />)
@@ -79,12 +95,41 @@ describe('MarkdownLink filesystem hrefs', () => {
     expect(screen.queryByText(/blocked/)).toBeNull()
   })
 
-  it('routes relative media links to the preview card, not the cwd-less inline player', async () => {
-    const { container } = render(<MarkdownTextContent isRunning={false} text="[shot](docs/a.png) [clip](out/demo.mp4)" />)
+  it('resolves a relative link against the session cwd before the card sees it', async () => {
+    // The card's Download goes to the gateway, whose own cwd is not the session's.
+    const normalizePreviewTarget = vi.fn().mockResolvedValue(null)
+    vi.stubGlobal('hermesDesktop', { normalizePreviewTarget })
+    $currentCwd.set('/repo/app')
 
-    await screen.findByText('a.png')
+    render(<MarkdownTextContent isRunning={false} text="[guide](docs/guide.md) and [up](../notes.md)" />)
+
+    await waitFor(() => expect(normalizePreviewTarget).toHaveBeenCalledTimes(2))
+    expect(normalizePreviewTarget.mock.calls.map(call => call[0]).sort()).toEqual([
+      '/repo/app/docs/guide.md',
+      '/repo/notes.md'
+    ])
+  })
+
+  it('plays a relative media link inline from the session cwd', async () => {
+    $currentCwd.set('/repo')
+    const { container } = render(<MarkdownTextContent isRunning={false} text="[clip](out/demo.mp4)" />)
+
+    await waitFor(() => expect(container.querySelector('video')).not.toBeNull())
+    expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
+    expect(resolveMediaPlaybackSrc).toHaveBeenCalledWith('/repo/out/demo.mp4')
+  })
+
+  it('routes angle-bracket and non-ASCII relative paths, not ~user/', async () => {
+    render(
+      <MarkdownTextContent
+        isRunning={false}
+        text={'[a](<docs/My Notes.md>) [b](документы/план.md) [c](~user/docs/a.md)'}
+      />
+    )
+
+    await screen.findByText('My Notes.md')
+    await screen.findByText('план.md')
     expect(screen.getAllByRole('button', { name: 'Open preview' })).toHaveLength(2)
-    expect(container.querySelector('img, video')).toBeNull()
   })
 
   it('leaves anchors, web, mail and bare host links out of the preview pipeline', () => {

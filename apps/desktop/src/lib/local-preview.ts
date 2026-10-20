@@ -85,6 +85,13 @@ function joinPath(base: string, rel: string) {
   return `${root}${parts.join('/')}`
 }
 
+// Chat links are written relative to the session cwd; the gateway's own cwd is not it.
+export function resolveAgainstCwd(target: string, cwd?: null | string): string {
+  return cwd && !/^(?:[a-z][a-z0-9+.-]*:|[/~#])/i.test(target) && !isWindowsAbsolutePath(target)
+    ? joinPath(cwd, target)
+    : target
+}
+
 function pathToFileUrl(path: string) {
   const isWindowsUnc = path.startsWith('\\\\')
   const normalized = isWindowsUnc || /^[a-z]:[\\/]/i.test(path) ? path.replace(/\\/g, '/') : path

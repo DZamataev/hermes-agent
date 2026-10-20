@@ -222,10 +222,10 @@ const FENCE_TOGGLE_RE = /^[ \t]*(?:```|~~~)/
 // matched separately so paths with spaces route to the preview pipeline too
 // (#102782) — `routeFileLinksToPreview` strips the surrounding `<>`.
 // Relative paths (`.planning/x.md`, `docs/a.md`, `../a.md`) resolve against the
-// session cwd in PreviewAttachment; left alone, the hardener paints "[blocked]".
+// session cwd in MarkdownLink; left alone, the hardener paints "[blocked]".
 // A dotted first segment (`example.com/x`) is a host, not a directory.
 const FILE_LINK_RE =
-  /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target>(?:<(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^>]*>)|(?:file:\/\/|\/|~\/|[a-z]:[\\/]|\.{1,2}\/|\.?[\w~-]+\/)[^)\s]*)\)/gi
+  /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target>(?:<(?:file:\/\/|\/|~\/|[a-z]:[\\/]|\.{1,2}\/|\.?[\p{L}\p{N}_ -]+\/)[^>]*>)|(?:file:\/\/|\/|~\/|[a-z]:[\\/]|\.{1,2}\/|\.?[\p{L}\p{N}_-]+\/)[^)\s]*)\)/giu
 
 // A transcript directive on its own line: `::name{...}`. Attribute values are
 // prose the model wrote (a task brief, a question) and read as markdown to the
@@ -525,11 +525,8 @@ function routeFileLinksToPreview(text: string): string {
   return text.replace(FILE_LINK_RE, (match: string, ...args: unknown[]) => {
     const groups = args.at(-1) as { label: string; target: string }
     const target = groups.target.replace(/^<|>$/g, '')
-    // The inline media player has no session cwd; only the preview card resolves relative paths.
-    const relative = !/^(?:file:|\/|~\/|[a-z]:[\\/])/i.test(target)
 
-    const href =
-      relative || mediaKind(target) === 'file' ? previewMarkdownHref(target) : mediaMarkdownHref(target)
+    const href = mediaKind(target) === 'file' ? previewMarkdownHref(target) : mediaMarkdownHref(target)
 
     return `[${groups.label}](${href})`
   })
