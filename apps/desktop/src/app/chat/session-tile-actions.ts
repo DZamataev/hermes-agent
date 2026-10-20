@@ -66,6 +66,7 @@ import {
 import { useSubmitPrompt } from '../session/hooks/use-prompt-actions/submit'
 import {
   isDeepTruncateRefusal,
+  isStaleGenerationRefusal,
   markSessionRecentlyInterrupted,
   shouldInterruptBeforeRewind,
   type SubmitTextOptions,
@@ -508,6 +509,11 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         }
       } catch (err) {
         discardOptimisticMessage()
+
+        if (isStaleGenerationRefusal(err)) {
+          return false
+        }
+
         notifyError(err, copy.promptFailed)
         throw err
       }

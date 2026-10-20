@@ -87,6 +87,7 @@ import {
   type GatewayRequest,
   inlineErrorMessage,
   isDeepTruncateRefusal,
+  isStaleGenerationRefusal,
   markSessionRecentlyInterrupted,
   readFileDataUrlForAttach,
   readImageForRemoteAttach,
@@ -925,6 +926,11 @@ export function usePromptActions({
           }
         } catch (err) {
           discardOptimisticMessage()
+
+          if (isStaleGenerationRefusal(err)) {
+            return false
+          }
+
           throw err
         }
 

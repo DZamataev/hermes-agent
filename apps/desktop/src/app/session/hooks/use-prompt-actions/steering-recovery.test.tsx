@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { QueryClient } from '@tanstack/react-query'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
@@ -7,6 +8,7 @@ import { createSessionRpcDispatcher } from '@/app/contrib/session-rpc-dispatcher
 import { sessionRoute } from '@/app/routes'
 import { textPart } from '@/lib/chat-messages'
 import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
+import { $notifications, clearNotifications } from '@/store/notifications'
 import {
   $activeSessionId,
   $activeSessionStoredIdRotation,
@@ -541,3 +543,21 @@ it.each(rebuiltRuntimeCases)(
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
   }
 )
+
+it('a correction for a turn that already ended is handed back to the queue, not shown as a failure', async () => {
+  // The owner fences steer/redirect by the running turn's generation: a correction typed as that turn
+  // settles (a quick first turn, a background wake starting the next) is refused stale_generation.
+  // The text is not lost: the caller queues it for the session's next turn.
+  seed()
+  clearNotifications()
+  vi.mocked(requestGatewayForAgent).mockRejectedValue(
+    new JsonRpcGatewayError('stale_generation', { code: 4001, data: { reason: 'stale_generation', execution_generation: 2 } })
+  )
+  await act(async () => {
+    expect(await handle.actions.redirectPrompt('typed as the turn ended')).toBe(false)
+  })
+  expect($notifications.get()).toEqual([])
+  expect(JSON.stringify(handle.cache.sessionStateByRuntimeIdRef.current.get('rt-B')?.messages)).not.toContain(
+    'typed as the turn ended'
+  )
+})
