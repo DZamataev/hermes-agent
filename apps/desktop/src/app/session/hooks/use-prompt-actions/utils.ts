@@ -293,6 +293,12 @@ export function isDeepTruncateRefusal(error: unknown): boolean {
   return error instanceof JsonRpcGatewayError && error.code === GATEWAY_DEEP_TRUNCATE_REFUSED_CODE
 }
 
+// A steer/redirect fenced to a turn that ended meanwhile (the owner's `stale_generation`): nothing
+// was delivered, so the composer queues the text for the next turn instead of reporting a failure.
+export function isStaleGenerationRefusal(error: unknown): boolean {
+  return (error as { data?: { reason?: unknown } } | null)?.data?.reason === 'stale_generation'
+}
+
 export function isSessionBusyError(error: unknown): boolean {
   // The shared owner answers its typed reason (`session_busy`), the legacy sidecar prose.
   return /session[ _]busy/i.test(error instanceof Error ? error.message : String(error))

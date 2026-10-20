@@ -12,6 +12,7 @@ const requestGatewayMock = vi.hoisted(() => vi.fn())
 
 const { $activeSessionId, $sessions, setSessions } = await import('@/store/session')
 const { $confirmRequest, settleConfirm } = await import('@/store/confirm')
+const { $notifications, clearNotifications } = await import('@/store/notifications')
 
 const { $sessionStates, $sessionTiles, clearAllSessionStates, publishSessionState, setSessionTileDelegate } =
   await import('@/store/session-states')
@@ -174,6 +175,16 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
       await expect(result.current.steerPrompt('keep correction', mode)).rejects.toThrow('correction unsupported')
     })
     expect(requestGatewayMock).toHaveBeenCalledExactlyOnceWith(mode === 'steer' ? 'session.steer' : 'session.redirect', { session_id: RUNTIME_SESSION_ID, text: 'keep correction' })
+  })
+
+  it.each(['interrupt', 'steer'] as const)('hands a tile %s fenced to an ended turn back to the queue without a failure', async mode => {
+    // stale_generation: the turn ended as the correction was sent; nothing was delivered.
+    clearNotifications()
+    requestGatewayMock.mockRejectedValue(Object.assign(new Error('stale_generation'), { data: { reason: 'stale_generation' } }))
+    const { result } = renderTileActions()
+    const accepted = await act(async () => result.current.steerPrompt('typed as the turn ended', mode))
+    expect(accepted).toBe(false)
+    expect($notifications.get()).toEqual([])
   })
 
   it('resumes the stored session and retries once when session.redirect (steer) reports "session not found"', async () => {
