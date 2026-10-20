@@ -126,8 +126,11 @@ def _shutdown_agent_memory_provider(agent) -> None:
 
 def _stop_cli_wake_word() -> None:
     from tools.wake_word import stop_listening
-    if _cli()._cli_wake_owner is not None:
-        stop_listening(owner=_cli()._cli_wake_owner)
+    owner = _cli()._cli_wake_owner
+    if owner is not None:
+        # Inline: the process is going away, a daemon thread would die before `music release`.
+        owner._close_wake_conversation_hook(wait=True)
+        stop_listening(owner=owner)
 
 
 def _interrupt_async_delegations() -> None:

@@ -712,14 +712,22 @@ class CLIVoiceMixin:
             logger.debug("voice.%s hook %r failed: %s", key, cmd, e)
         return True
 
-    def _close_wake_conversation_hook(self) -> None:
-        """``voice.on_conversation_end``, once per conversation the start hook opened."""
+    def _close_wake_conversation_hook(self, wait: bool = False) -> None:
+        """``voice.on_conversation_end``, once per conversation the start hook opened.
+
+        ``wait=True`` runs it on the caller's thread: at process exit a daemon thread
+        would be killed before ``music release`` reaches the player.
+        """
         if not getattr(self, "_wake_conv_hook_open", False):
             return
         self._wake_conv_hook_open = False
+        args = ("on_conversation_end", _CONVERSATION_END_TIMEOUT)
+        if wait:
+            self._run_voice_hook(*args)
+            return
         threading.Thread(
             target=self._run_voice_hook,
-            args=("on_conversation_end", _CONVERSATION_END_TIMEOUT),
+            args=args,
             name="voice-conversation-end", daemon=True).start()
 
     def _on_wake_word(self):
@@ -798,11 +806,13 @@ class CLIVoiceMixin:
                     if not getattr(self, "_wake_suspended", False):
                         idle_polls = 0
                         continue
+                    tts = getattr(self, "_voice_tts_done", None)
                     busy = (
                         self._agent_running
                         or self._voice_recording
                         or getattr(self, "_voice_processing", False)
                         or getattr(self, "_wake_follow_up_pending", False)
+                        or (tts is not None and not tts.is_set())  # reply still sounding
                         or not self._pending_input.empty())
                     if busy:
                         idle_polls = 0
@@ -818,10 +828,15 @@ class CLIVoiceMixin:
                                 self._wake_suspended = False
                                 self._close_wake_conversation_hook()
                             else:
+                                # Dead watchdog: the conversation can never close itself.
+                                self._close_wake_conversation_hook(wait=True)
                                 self._wake_word_active = False
                         except Exception as e:
                             logger.debug("wake word resume failed: %s", e)
             finally:
+                # Safety net for the exits above (and _should_exit): same reason as shutdown,
+                # a daemon thread would lose the hook to process exit.
+                self._close_wake_conversation_hook(wait=True)
                 self._wake_watchdog_started = False
 
         threading.Thread(target=_loop, daemon=True, name="wake-watchdog").start()

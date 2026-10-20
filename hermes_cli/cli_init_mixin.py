@@ -566,6 +566,7 @@ class CLIInitMixin:
         self._wake_conversation = False  # a turn started by the wake word
         self._wake_follow_up_seconds = 0.0  # wake_word.follow_up_seconds; 0 = off
         self._wake_follow_up_pending = False  # follow-up window owns the mic (watchdog stays paused)
+        self._wake_conv_hook_open = False  # on_conversation_start ran; end hook still owes a release
 
         self._status_bar_visible = _status_bar_visible_from_display_config(CLI_CONFIG.get("display"))
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))

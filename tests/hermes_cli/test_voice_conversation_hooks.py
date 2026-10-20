@@ -70,6 +70,14 @@ def _resume_via_watchdog(monkeypatch, cli, resumed):
 # ── Config ────────────────────────────────────────────────────────────────
 
 
+def test_hook_timeouts_are_the_production_bounds():
+    """The hangs tests monkeypatch these; the shipped deadlines stay pinned."""
+    from hermes_cli import cli_voice_mixin as mixin
+
+    assert mixin._CONVERSATION_START_TIMEOUT == 2.0
+    assert mixin._CONVERSATION_END_TIMEOUT == 10.0
+
+
 def test_hooks_default_off_everywhere():
     from hermes_cli.config import DEFAULT_CONFIG
 
@@ -231,3 +239,84 @@ def test_end_hook_never_blocks_the_caller(monkeypatch):
 
     assert time.monotonic() - started < 0.5, "the end hook ran on the caller's thread"
     assert cli._wake_conv_hook_open is False
+
+
+# ── Every way a conversation can end releases it ──────────────────────────
+
+
+def _watchdog_cli(monkeypatch):
+    """A CLI with a conversation open and a watchdog that hasn't started yet."""
+    _with_hooks(monkeypatch, start="music hold", end="music release")
+    cli, _events = _woken_cli(monkeypatch)
+    run = _Recorder()
+    monkeypatch.setattr("hermes_cli.cli_voice_mixin.subprocess.run", run)
+    cli._on_wake_word()
+    cli._wake_word_active = True
+    cli._wake_suspended = True
+    cli._wake_watchdog_started = False
+    monkeypatch.setattr(
+        "hermes_cli.cli_voice_mixin.time",
+        SimpleNamespace(sleep=lambda _s: time.sleep(0.001)))
+    return cli, run
+
+
+def test_failed_resume_still_releases_the_conversation(monkeypatch):
+    cli, run = _watchdog_cli(monkeypatch)
+    monkeypatch.setattr("tools.wake_word.resume_listening", lambda *_a, **_kw: False)
+    try:
+        cli._start_wake_watchdog()
+        assert _wait(lambda: len(run.cmds) == 2), run.cmds
+        assert cli._wake_word_active is False, "the watchdog should give up"
+        time.sleep(0.05)
+        assert run.cmds == ["music hold", "music release"]
+    finally:
+        cli._wake_word_active = False
+
+
+def test_watchdog_waits_for_tts_before_resuming_and_releasing(monkeypatch):
+    cli, run = _watchdog_cli(monkeypatch)
+    cli._voice_tts_done.clear()  # the reply is still playing
+    resumed = threading.Event()
+    monkeypatch.setattr(
+        "tools.wake_word.resume_listening", lambda *_a, **_kw: resumed.set() or True)
+    try:
+        cli._start_wake_watchdog()
+        time.sleep(0.3)  # ~100 watchdog rounds: plenty to resume if TTS were ignored
+        assert not resumed.is_set(), "mic re-armed over the assistant's own voice"
+        assert run.cmds == ["music hold"]
+
+        cli._voice_tts_done.set()
+        assert resumed.wait(5), "listener never resumed after TTS"
+        assert _wait(lambda: len(run.cmds) == 2), run.cmds
+        assert run.cmds == ["music hold", "music release"]
+    finally:
+        cli._wake_word_active = False
+
+
+def test_cli_exit_releases_the_conversation_synchronously(monkeypatch):
+    """Process exit kills daemon threads, so shutdown must run the hook inline."""
+    import cli as cli_module
+
+    from hermes_cli.cli_shutdown import _stop_cli_wake_word
+
+    _with_hooks(monkeypatch, start="music hold", end="music release")
+    cli, _events = _woken_cli(monkeypatch)
+    ran = []
+    monkeypatch.setattr(
+        "hermes_cli.cli_voice_mixin.subprocess.run",
+        lambda cmd, **_kw: ran.append((cmd, threading.current_thread().name)) or SimpleNamespace(returncode=0))
+    monkeypatch.setattr("tools.wake_word.stop_listening", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli_module, "_cli_wake_owner", cli)
+    cli._on_wake_word()
+
+    try:
+        _stop_cli_wake_word()
+        # Both inline on the shutdown thread: the hold from the start, the release from exit.
+        assert ran == [("music hold", "MainThread"), ("music release", "MainThread")]
+        assert cli._wake_conv_hook_open is False
+    finally:
+        monkeypatch.setattr(cli_module, "_cli_wake_owner", None)
+
+    ran.clear()
+    _stop_cli_wake_word()  # no conversation open → nothing to release
+    assert ran == []
