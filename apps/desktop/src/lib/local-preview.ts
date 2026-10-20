@@ -85,11 +85,17 @@ function joinPath(base: string, rel: string) {
   return `${root}${parts.join('/')}`
 }
 
+const isCwdRelative = (target: string) =>
+  !/^(?:[a-z][a-z0-9+.-]*:|[/~#])/i.test(target) && !isWindowsAbsolutePath(target)
+
 // Chat links are written relative to the session cwd; the gateway's own cwd is not it.
 export function resolveAgainstCwd(target: string, cwd?: null | string): string {
-  return cwd && !/^(?:[a-z][a-z0-9+.-]*:|[/~#])/i.test(target) && !isWindowsAbsolutePath(target)
-    ? joinPath(cwd, target)
-    : target
+  return cwd && isCwdRelative(target) ? joinPath(cwd, target) : target
+}
+
+// For the backend: it resolves `..` (symlinks) and `\` (a POSIX filename char) on its own filesystem.
+export function prefixCwd(target: string, cwd?: null | string): string {
+  return cwd && isCwdRelative(target) ? `${cwd.replace(/[\\/]+$/, '')}/${target}` : target
 }
 
 function pathToFileUrl(path: string) {

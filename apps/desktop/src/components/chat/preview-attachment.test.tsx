@@ -165,6 +165,23 @@ describe('PreviewAttachment local target classification (#101683)', () => {
     expect(saveGatewayFile.mock.calls[0][0]).not.toHaveProperty('sessionId')
   })
 
+  it('leaves `..` and a literal backslash for the backend to resolve on its own filesystem', async () => {
+    // A symlinked `link/..` and a POSIX name containing `\\` mean different files once collapsed.
+    isDesktopFsRemoteMode.mockReturnValue(true)
+    const { saveGatewayFile } = mountDesktopStub(() => fileTarget('/srv/report.md'))
+    $currentCwd.set('/panel/repo/')
+
+    render(<PreviewAttachment target={'link/../docs/a\\b.md'} />)
+
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Download' }))
+    })
+
+    expect(saveGatewayFile).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/panel/repo/link/../docs/a\\b.md' })
+    )
+  })
+
   it('downloads an absolute target unchanged and without a session id', async () => {
     isDesktopFsRemoteMode.mockReturnValue(true)
     const { saveGatewayFile } = mountDesktopStub(() => fileTarget('/srv/report.md'))

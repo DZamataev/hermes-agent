@@ -101,7 +101,7 @@ describe('MarkdownLink filesystem hrefs', () => {
   it('hands the raw relative target to the card with the session cwd', async () => {
     // The card's Open resolves the target itself against the session cwd, so
     // the old HOME/attachments fallback in the native normalizer still sees a
-    // relative path; Download resolves against the session on the backend.
+    // relative path; Download sends the path joined with the panel cwd.
     const normalizePreviewTarget = vi.fn().mockResolvedValue(null)
     vi.stubGlobal('hermesDesktop', { normalizePreviewTarget })
     $currentCwd.set('/repo/app')

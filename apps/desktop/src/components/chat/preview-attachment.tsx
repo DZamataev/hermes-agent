@@ -5,7 +5,7 @@ import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { Download, FolderOpen, MonitorPlay } from '@/lib/icons'
-import { normalizeOrLocalPreviewTarget, resolveAgainstCwd } from '@/lib/local-preview'
+import { normalizeOrLocalPreviewTarget, prefixCwd } from '@/lib/local-preview'
 import { downloadGatewayMediaFile } from '@/lib/media'
 import { previewName } from '@/lib/preview-targets'
 import { notifyError } from '@/store/notifications'
@@ -203,7 +203,7 @@ export function PreviewAttachment({ target }: { target: string }) {
       // through the window's backend connection (local gateway or remote)
       // and prompts for a save location. The backend resolves against its own
       // cwd, so send this session's path and let the id stay out of it.
-      const result = await downloadGatewayMediaFile(resolveAgainstCwd(target, cwd))
+      const result = await downloadGatewayMediaFile(prefixCwd(target, cwd))
 
       if (mountedRef.current && result.saved) {
         setDownloaded(true)
