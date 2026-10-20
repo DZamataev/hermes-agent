@@ -2,8 +2,10 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { PRIMARY_SESSION_VIEW, SessionViewProvider } from '@/app/chat/session-view'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import type * as PreviewStore from '@/store/preview'
+import { $currentCwd, $selectedStoredSessionId } from '@/store/session'
 
 // #101683 regression coverage: the delivered-file card must branch on the
 // target's LOCAL filesystem state — an existing directory opens natively with
@@ -49,14 +51,19 @@ function fileTarget(path: string, previewKind = 'text') {
 function mountDesktopStub(normalizePreviewTarget: (target: string, baseDir?: string) => unknown) {
   const openDir = vi.fn(async () => ({ ok: true }))
   const revealPath = vi.fn(async () => true)
+  const saveGatewayFile = vi.fn(async (_request: Record<string, unknown>) => ({
+    path: '/Users/me/Downloads/report.md',
+    saved: true
+  }))
 
   window.hermesDesktop = {
     normalizePreviewTarget: vi.fn(normalizePreviewTarget),
     openDir,
-    revealPath
+    revealPath,
+    saveGatewayFile
   } as never
 
-  return { openDir, revealPath }
+  return { openDir, revealPath, saveGatewayFile }
 }
 
 async function buttons() {
@@ -71,6 +78,8 @@ describe('PreviewAttachment local target classification (#101683)', () => {
 
   afterEach(() => {
     cleanup()
+    $currentCwd.set('')
+    $selectedStoredSessionId.set(null)
     window.hermesDesktop = previousDesktop
   })
 
@@ -137,6 +146,74 @@ describe('PreviewAttachment local target classification (#101683)', () => {
     // The remote path is not on this machine: no native folder action fires.
     expect(openDir).not.toHaveBeenCalled()
     expect(revealPath).not.toHaveBeenCalled()
+  })
+
+  it('downloads a relative target joined to the session cwd, without a session id', async () => {
+    isDesktopFsRemoteMode.mockReturnValue(true)
+    const { saveGatewayFile } = mountDesktopStub(() => fileTarget('/srv/report.md'))
+    // A stored id must not reach the request: the path alone selects the file.
+    $selectedStoredSessionId.set('stored-1')
+    $currentCwd.set('/panel/repo')
+
+    render(<PreviewAttachment target="docs/report.md" />)
+
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Download' }))
+    })
+
+    expect(saveGatewayFile).toHaveBeenCalledWith(expect.objectContaining({ path: '/panel/repo/docs/report.md' }))
+    expect(saveGatewayFile.mock.calls[0][0]).not.toHaveProperty('sessionId')
+  })
+
+  it('leaves `..` and a literal backslash for the backend to resolve on its own filesystem', async () => {
+    // A symlinked `link/..` and a POSIX name containing `\\` mean different files once collapsed.
+    isDesktopFsRemoteMode.mockReturnValue(true)
+    const { saveGatewayFile } = mountDesktopStub(() => fileTarget('/srv/report.md'))
+    $currentCwd.set('/panel/repo/')
+
+    render(<PreviewAttachment target={'link/../docs/a\\b.md'} />)
+
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Download' }))
+    })
+
+    expect(saveGatewayFile).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/panel/repo/link/../docs/a\\b.md' })
+    )
+  })
+
+  it('downloads an absolute target unchanged and without a session id', async () => {
+    isDesktopFsRemoteMode.mockReturnValue(true)
+    const { saveGatewayFile } = mountDesktopStub(() => fileTarget('/srv/report.md'))
+    $selectedStoredSessionId.set('stored-1')
+    $currentCwd.set('/panel/repo')
+
+    render(<PreviewAttachment target="/srv/shared/report.md" />)
+
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Download' }))
+    })
+
+    expect(saveGatewayFile).toHaveBeenCalledWith(expect.objectContaining({ path: '/srv/shared/report.md' }))
+    expect(saveGatewayFile.mock.calls[0][0]).not.toHaveProperty('sessionId')
+  })
+
+  it('joins a relative target to the cwd of its own session view', async () => {
+    isDesktopFsRemoteMode.mockReturnValue(true)
+    const { saveGatewayFile } = mountDesktopStub(() => fileTarget('/srv/report.md'))
+    $currentCwd.set('/primary/repo')
+
+    render(
+      <SessionViewProvider value={{ ...PRIMARY_SESSION_VIEW, $cwd: atom('/tile/repo'), kind: 'tile' }}>
+        <PreviewAttachment target="docs/report.md" />
+      </SessionViewProvider>
+    )
+
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Download' }))
+    })
+
+    expect(saveGatewayFile).toHaveBeenCalledWith(expect.objectContaining({ path: '/tile/repo/docs/report.md' }))
   })
 
   it('reports a missing path instead of opening a broken preview tab', async () => {

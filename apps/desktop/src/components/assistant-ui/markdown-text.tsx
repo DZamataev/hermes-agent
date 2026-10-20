@@ -7,11 +7,13 @@ import {
   type SyntaxHighlighterProps,
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
+import { useStore } from '@nanostores/react'
 import type { code as streamdownCode } from '@streamdown/code'
 import { type ComponentProps, isValidElement, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { defaultRehypePlugins, defaultRemarkPlugins } from 'streamdown'
 import type { Pluggable } from 'unified'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { FilePathCandidate } from '@/components/chat/file-path-candidate'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -24,6 +26,7 @@ import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
+import { resolveAgainstCwd } from '@/lib/local-preview'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
@@ -313,28 +316,30 @@ function flattenChildrenToText(node: unknown): string {
 }
 
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
-  const mediaPath = mediaPathFromMarkdownHref(href)
+  const cwd = useStore(useSessionView().$cwd)
+  const rawMediaPath = mediaPathFromMarkdownHref(href)
 
-  if (mediaPath) {
+  if (rawMediaPath) {
     // A delivered markdown document is renderable content, not an opaque
     // download: route it to the preview rail (which renders .md with a
     // rendered/source toggle) instead of the download-link fallback that
     // `mediaKind() === 'file'` would produce. (#84951)
-    if (isMarkdownDocumentPath(mediaPath)) {
-      return <PreviewAttachment target={mediaPath} />
-    }
-
     // Non-media files (PDFs, data files, anything outside MEDIA_BY_EXT):
     // MediaAttachment's kind==='file' branch is a degraded dead-end (bare
     // "Open <name>" anchor). Route through the preview pipeline instead —
     // the same file card + "Open preview" the bare-path markdown-link
     // branch below produces — so MEDIA: uniformly delivers the richest
     // rendering for every file type.
-    if (mediaKind(mediaPath) === 'file') {
-      return <PreviewAttachment target={mediaPath} />
+    if (isMarkdownDocumentPath(rawMediaPath) || mediaKind(rawMediaPath) === 'file') {
+      // The card resolves its own preview and download against the session
+      // cwd; the native normalizer's HOME/attachments fallback only fires
+      // while the target is still relative.
+      return <PreviewAttachment target={rawMediaPath} />
     }
 
-    return <MediaAttachment path={mediaPath} />
+    // Only the inline player takes an absolute path: the media stream has no
+    // cwd of its own to resolve one against.
+    return <MediaAttachment path={resolveAgainstCwd(rawMediaPath, cwd)} />
   }
 
   const previewTarget = previewTargetFromMarkdownHref(href)

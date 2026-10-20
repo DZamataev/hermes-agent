@@ -14,6 +14,7 @@ import {
   normalizeOrLocalPreviewTarget,
   openPreviewTargetInBrowser,
   remoteHtmlPreviewDocument,
+  resolveAgainstCwd,
   validatedRemoteHtmlDataUrl
 } from './local-preview'
 
@@ -227,5 +228,18 @@ describe('PDF previews', () => {
       previewKind: 'pdf'
     })
     expect(readDesktopFileDataUrl).not.toHaveBeenCalled()
+  })
+})
+
+describe('resolveAgainstCwd', () => {
+  it('joins only relative paths onto the cwd', () => {
+    expect(resolveAgainstCwd('../a.md', '/repo/x')).toBe('/repo/a.md')
+    expect(resolveAgainstCwd('.planning/p.html', '/repo')).toBe('/repo/.planning/p.html')
+
+    for (const target of ['/abs.md', '~/a.md', 'file:///a.md', 'C:\\a.md', 'https://x.io/a', '#frag']) {
+      expect(resolveAgainstCwd(target, '/repo')).toBe(target)
+    }
+
+    expect(resolveAgainstCwd('docs/a.md', '')).toBe('docs/a.md')
   })
 })

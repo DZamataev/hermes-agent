@@ -5,7 +5,7 @@ import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { Download, FolderOpen, MonitorPlay } from '@/lib/icons'
-import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { normalizeOrLocalPreviewTarget, prefixCwd } from '@/lib/local-preview'
 import { downloadGatewayMediaFile } from '@/lib/media'
 import { previewName } from '@/lib/preview-targets'
 import { notifyError } from '@/store/notifications'
@@ -200,9 +200,10 @@ export function PreviewAttachment({ target }: { target: string }) {
 
     try {
       // Works in both modes: the Electron main process fetches the bytes
-      // through the session's backend connection (local gateway or remote)
-      // and prompts for a save location.
-      const result = await downloadGatewayMediaFile(target)
+      // through the window's backend connection (local gateway or remote)
+      // and prompts for a save location. The backend resolves against its own
+      // cwd, so send this session's path and let the id stay out of it.
+      const result = await downloadGatewayMediaFile(prefixCwd(target, cwd))
 
       if (mountedRef.current && result.saved) {
         setDownloaded(true)

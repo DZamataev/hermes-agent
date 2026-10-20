@@ -221,8 +221,13 @@ const FENCE_TOGGLE_RE = /^[ \t]*(?:```|~~~)/
 // CommonMark angle-bracket destinations (`[notes](<~/My Notes/todo.md>`) are
 // matched separately so paths with spaces route to the preview pipeline too
 // (#102782) — `routeFileLinksToPreview` strips the surrounding `<>`.
+// Relative paths (`.planning/x.md`, `docs/a.md`, `../a.md`) route raw: the card
+// resolves Open itself (native normalizer with cwd and HOME fallback), while
+// Download and inline media get the path joined with the panel cwd. Left alone,
+// the hardener paints "[blocked]".
+// A dotted first segment (`example.com/x`) is a host, not a directory.
 const FILE_LINK_RE =
-  /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target>(?:<(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^>]*>)|(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^)\s]*)\)/gi
+  /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target>(?:<(?:file:\/\/|\/|~\/|[a-z]:[\\/]|\.{1,2}\/|\.?[\p{L}\p{N}\p{M}_ -]+\/)[^>]*>)|(?:file:\/\/|\/|~\/|[a-z]:[\\/]|\.{1,2}\/|\.?[\p{L}\p{N}\p{M}_-]+\/)[^)\s]*)\)/giu
 
 // A transcript directive on its own line: `::name{...}`. Attribute values are
 // prose the model wrote (a task brief, a question) and read as markdown to the
@@ -588,8 +593,10 @@ function rewriteProseSegment(segment: string, sourceListIds: Set<string>): strin
   return linkifySessionRefs(
     escapeLoneTildes(
       autoLinkRawUrls(
-        routeFileLinksToPreview(
-          escapeUnknownHtmlLikeTags(
+        // File routing first: an angle-bracket target with a space
+        // (`<My Docs/report.md>`) reads as an unknown tag to the escaper.
+        escapeUnknownHtmlLikeTags(
+          routeFileLinksToPreview(
             segment
               .replace(/`{3,}/g, '')
               .replace(CITATION_TRANSPORT_MARKER_RE, '')
