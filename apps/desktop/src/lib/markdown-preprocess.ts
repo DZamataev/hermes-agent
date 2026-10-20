@@ -221,10 +221,11 @@ const FENCE_TOGGLE_RE = /^[ \t]*(?:```|~~~)/
 // CommonMark angle-bracket destinations (`[notes](<~/My Notes/todo.md>`) are
 // matched separately so paths with spaces route to the preview pipeline too
 // (#102782) — `routeFileLinksToPreview` strips the surrounding `<>`.
-// Scheme-less relative paths (`.planning/x.md`, `../a.md`) resolve against the
+// Relative paths (`.planning/x.md`, `docs/a.md`, `../a.md`) resolve against the
 // session cwd in PreviewAttachment; left alone, the hardener paints "[blocked]".
+// A dotted first segment (`example.com/x`) is a host, not a directory.
 const FILE_LINK_RE =
-  /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target>(?:<(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^>]*>)|(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^)\s]*|(?![a-z][a-z0-9+.-]*:)(?=[^)\s]*[./])[\w.~-][^)\s]*)\)/gi
+  /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target>(?:<(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^>]*>)|(?:file:\/\/|\/|~\/|[a-z]:[\\/]|\.{1,2}\/|\.?[\w~-]+\/)[^)\s]*)\)/gi
 
 // A transcript directive on its own line: `::name{...}`. Attribute values are
 // prose the model wrote (a task brief, a question) and read as markdown to the

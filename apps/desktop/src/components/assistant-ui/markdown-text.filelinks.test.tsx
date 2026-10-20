@@ -79,11 +79,13 @@ describe('MarkdownLink filesystem hrefs', () => {
     expect(screen.queryByText(/blocked/)).toBeNull()
   })
 
-  it('leaves anchors, web and mail links out of the preview pipeline', () => {
+  it('leaves anchors, web, mail and bare host links out of the preview pipeline', () => {
     render(
       <MarkdownTextContent
         isRunning={false}
-        text={'[frag](#section-2) and [site](https://example.com) and [mail](mailto:a@b.c)'}
+        text={
+          '[frag](#section-2) and [site](https://example.com) and [mail](mailto:a@b.c) and [host](example.com) and [page](example.com/docs/a.md)'
+        }
       />
     )
 
