@@ -462,6 +462,42 @@ def test_start_hook_waits_for_a_pending_end_hook(monkeypatch):
     cli._close_conversation_hook(wait=True)
 
 
+def test_close_during_the_start_hook_still_ends_with_a_release(monkeypatch):
+    """A closer can fire while the start hook runs; its release must land last."""
+    order = []
+    hold_started = threading.Event()
+    closer_fired = threading.Event()
+
+    def run(cmd, **_kw):
+        order.append(f"{cmd}:begin")
+        if cmd == "music hold":
+            hold_started.set()
+            closer_fired.wait(5)  # the start hook is slow; a closer fires meanwhile
+        order.append(f"{cmd}:done")
+        return SimpleNamespace(returncode=0)
+
+    _with_hooks(monkeypatch, start="music hold", end="music release")
+    cli = _make_cli()
+    monkeypatch.setattr("hermes_cli.cli_voice_mixin.subprocess.run", run)
+
+    opener = threading.Thread(target=cli._open_conversation_hook, daemon=True)
+    opener.start()
+    assert hold_started.wait(5)
+    cli._close_conversation_hook(wait=True)  # the idle closer sees the flag mid-hold
+    closer_fired.set()
+    opener.join(5)
+
+    assert not opener.is_alive()
+    assert _wait(lambda: len(order) == 6), order
+    time.sleep(0.05)
+    assert order == [
+        "music hold:begin", "music release:begin", "music release:done",
+        "music hold:done",
+        "music release:begin", "music release:done"], order
+    assert cli._conv_hook_open is False
+    assert cli._conv_hook_closer_running is False  # nothing left holding the pause
+
+
 def test_manual_recording_opens_the_hook(monkeypatch):
     """Ctrl+B / ``/voice record``: the player goes quiet before the mic opens."""
     _with_hooks(monkeypatch, start="music hold", end="music release")

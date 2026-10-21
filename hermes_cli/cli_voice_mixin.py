@@ -719,6 +719,13 @@ class CLIVoiceMixin:
             with lock:
                 self._conv_hook_open = False
             return  # not configured: no flag, no closer thread
+        with lock:
+            # A closer fired while the start hook ran: its release already landed, and
+            # returning here would leave the music paused with nobody to resume it.
+            closed_while_starting = not self._conv_hook_open
+        if closed_while_starting:
+            self._fire_conversation_end()
+            return
         # Process exit has no other handle on this instance while the wake listener is off.
         import cli as _cli
         _cli._cli_conv_hook_owner = self
@@ -800,13 +807,16 @@ class CLIVoiceMixin:
             if not self._conv_hook_open:
                 return
             self._conv_hook_open = False
-        args = ("on_conversation_end", _CONVERSATION_END_TIMEOUT)
         if wait:
-            self._run_voice_hook(*args)
+            self._run_voice_hook("on_conversation_end", _CONVERSATION_END_TIMEOUT)
             return
+        self._fire_conversation_end()
+
+    def _fire_conversation_end(self) -> None:
+        """Run the end hook off-thread, keeping a handle the next start hook can join."""
         self._conv_hook_end_thread = threading.Thread(
             target=self._run_voice_hook,
-            args=args,
+            args=("on_conversation_end", _CONVERSATION_END_TIMEOUT),
             name="voice-conversation-end", daemon=True)
         self._conv_hook_end_thread.start()
 
