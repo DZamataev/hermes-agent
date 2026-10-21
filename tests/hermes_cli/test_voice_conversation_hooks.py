@@ -339,6 +339,30 @@ def test_cli_exit_releases_the_conversation_synchronously(monkeypatch):
     assert ran == []
 
 
+def test_typed_only_exit_releases_the_conversation(monkeypatch):
+    """A session that never armed the wake listener still releases the music on Ctrl-D."""
+    import cli as cli_module
+
+    from hermes_cli.cli_shutdown import _stop_cli_wake_word
+
+    _with_hooks(monkeypatch, start="music hold", end="music release")
+    ran = []
+    cli = _typed_cli(
+        monkeypatch,
+        lambda cmd, **_kw: ran.append((cmd, threading.current_thread().name)) or SimpleNamespace(returncode=0))
+    cli.chat = lambda *_a, **_kw: None
+    monkeypatch.setattr(cli_module, "_cli_wake_owner", None)
+    monkeypatch.setattr(cli_module, "_cli_conv_hook_owner", None)
+    monkeypatch.setattr("tools.wake_word.stop_listening", lambda *_a, **_kw: None)
+    try:
+        cli._tui_process_one_input("hi")
+        _stop_cli_wake_word()
+        assert ran == [("music hold", "MainThread"), ("music release", "MainThread")]
+        assert cli._conv_hook_open is False
+    finally:
+        monkeypatch.setattr(cli_module, "_cli_conv_hook_owner", None)
+
+
 # ── Typed turns and manual recordings are conversations too ────────────────
 #
 # Music must stay paused whenever the assistant listens or answers, not only inside a
@@ -393,6 +417,49 @@ def test_typed_turn_closes_once_after_the_turn_and_tts(monkeypatch):
     time.sleep(0.05)
     assert run.cmds == ["music hold", "music release"]
     assert cli._conv_hook_open is False
+
+
+def test_barge_capture_keeps_the_conversation_open(monkeypatch):
+    """Continuous mode: the user is dictating over the reply — don't give the music back."""
+    _with_hooks(monkeypatch, start="music hold", end="music release")
+    run = _Recorder()
+    cli = _typed_cli(monkeypatch, run)
+    cli.chat = lambda *_a, **_kw: None  # turn over, TTS done
+
+    cli._voice_barge_capture.set()
+    cli._tui_process_one_input("hello")
+    time.sleep(0.2)  # ~200 polls: idle, but the mic is still capturing the interruption
+    assert run.cmds == ["music hold"], "music came back over the user's own question"
+
+    cli._voice_barge_capture.clear()
+    assert _wait(lambda: len(run.cmds) == 2), run.cmds
+    assert run.cmds == ["music hold", "music release"]
+    assert cli._conv_hook_open is False
+
+
+def test_start_hook_waits_for_a_pending_end_hook(monkeypatch):
+    """A release still in flight must not land after the next hold: music mid-answer."""
+    order = []
+
+    def run(cmd, **_kw):
+        order.append(f"{cmd}:begin")
+        if cmd == "music release":
+            time.sleep(0.2)  # the player takes its time
+        order.append(f"{cmd}:done")
+        return SimpleNamespace(returncode=0)
+
+    _with_hooks(monkeypatch, start="music hold", end="music release")
+    cli = _typed_cli(monkeypatch, run)
+    cli.chat = lambda *_a, **_kw: None
+
+    cli._conv_hook_open = True
+    cli._close_conversation_hook()  # fire-and-forget, deliberately slow
+    cli._tui_process_one_input("hi")  # the next turn arrives while it runs
+
+    assert order == [
+        "music release:begin", "music release:done",
+        "music hold:begin", "music hold:done"], order
+    cli._close_conversation_hook(wait=True)
 
 
 def test_manual_recording_opens_the_hook(monkeypatch):

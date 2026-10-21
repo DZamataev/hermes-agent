@@ -46,6 +46,7 @@ def _make_cli(**overrides):
     cli._conv_hook_open = False
     cli._conv_hook_closer_running = False
     cli._conv_hook_lock = threading.Lock()
+    cli._conv_hook_end_thread = None
     for key, value in overrides.items():
         setattr(cli, key, value)
     return cli

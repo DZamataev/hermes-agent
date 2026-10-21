@@ -23,6 +23,9 @@ from typing import Optional
 # short; the end hook only has to be long enough for a player to resume.
 _CONVERSATION_START_TIMEOUT = 2.0
 _CONVERSATION_END_TIMEOUT = 10.0
+# Fallback for partially-built CLI instances (test stubs, `__new__` helpers): they carry no
+# per-instance hook lock, and a shared one only serialises them further.
+_CONV_HOOK_FALLBACK_LOCK = threading.Lock()
 
 
 def _config_section(name: str) -> dict:
@@ -700,11 +703,22 @@ class CLIVoiceMixin:
 
     def _open_conversation_hook(self) -> None:
         """``voice.on_conversation_start``, once per conversation (idempotent)."""
-        if getattr(self, "_conv_hook_open", False):
-            return
+        lock = getattr(self, "_conv_hook_lock", _CONV_HOOK_FALLBACK_LOCK)
+        with lock:
+            # Two openers race here (a wake thread and a turn from the queue): only one
+            # may run the start hook.
+            if getattr(self, "_conv_hook_open", False):
+                return
+            self._conv_hook_open = True
+        # A release still in flight must finish first: landing after this hold would
+        # resume the music in the middle of the answer, and nothing would pause it again.
+        pending = getattr(self, "_conv_hook_end_thread", None)
+        if pending is not None:
+            pending.join(_CONVERSATION_START_TIMEOUT)
         if not self._run_voice_hook("on_conversation_start", _CONVERSATION_START_TIMEOUT):
+            with lock:
+                self._conv_hook_open = False
             return  # not configured: no flag, no closer thread
-        self._conv_hook_open = True
         # Process exit has no other handle on this instance while the wake listener is off.
         import cli as _cli
         _cli._cli_conv_hook_owner = self
@@ -722,12 +736,14 @@ class CLIVoiceMixin:
     def _conversation_busy(self) -> bool:
         """The assistant is listening, answering or about to: the conversation is still open."""
         tts = getattr(self, "_voice_tts_done", None)
+        barge = getattr(self, "_voice_barge_capture", None)
         return bool(
             self._agent_running
             or self._voice_recording
             or getattr(self, "_voice_processing", False)
             or getattr(self, "_wake_follow_up_pending", False)
             or (tts is not None and not tts.is_set())  # reply still sounding
+            or (barge is not None and barge.is_set())  # user is dictating over the reply
             or not self._pending_input.empty())
 
     def _close_conversation_when_idle(self) -> None:
@@ -779,7 +795,7 @@ class CLIVoiceMixin:
         """
         if not getattr(self, "_conv_hook_open", False):
             return
-        with self._conv_hook_lock:
+        with getattr(self, "_conv_hook_lock", _CONV_HOOK_FALLBACK_LOCK):
             # Two closers race here (the idle thread and the watchdog): only one may fire.
             if not self._conv_hook_open:
                 return
@@ -788,10 +804,11 @@ class CLIVoiceMixin:
         if wait:
             self._run_voice_hook(*args)
             return
-        threading.Thread(
+        self._conv_hook_end_thread = threading.Thread(
             target=self._run_voice_hook,
             args=args,
-            name="voice-conversation-end", daemon=True).start()
+            name="voice-conversation-end", daemon=True)
+        self._conv_hook_end_thread.start()
 
     def _on_wake_word(self):
         """Fired after the detector hears the wake phrase."""

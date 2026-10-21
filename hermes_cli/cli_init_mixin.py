@@ -569,6 +569,7 @@ class CLIInitMixin:
         self._conv_hook_open = False  # on_conversation_start ran; end hook still owes a release
         self._conv_hook_closer_running = False  # the idle thread that closes it
         self._conv_hook_lock = threading.Lock()  # one closer wins; the other no-ops
+        self._conv_hook_end_thread = None  # a fire-and-forget end hook still running
 
         self._status_bar_visible = _status_bar_visible_from_display_config(CLI_CONFIG.get("display"))
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
