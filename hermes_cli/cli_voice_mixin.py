@@ -91,6 +91,10 @@ class CLIVoiceMixin:
                 return
             self._voice_recording = True
 
+        # Every recording is a conversation (Ctrl+B, continuous mode, follow-up, wake):
+        # the player must go quiet before the mic opens.
+        self._open_conversation_hook()
+
         voice_cfg = _config_section("voice")
 
         # Recorder creation can fail (no input device, PortAudio init). Reset the flag on
@@ -683,7 +687,7 @@ class CLIVoiceMixin:
         was_active = getattr(self, "_wake_word_active", False)
         self._wake_word_active = False
         self._wake_suspended = False
-        self._close_wake_conversation_hook()  # no watchdog left to close it
+        self._close_conversation_hook()  # no watchdog left to close it
         try:
             from tools.wake_word import stop_listening
             stop_listening(owner=self)
@@ -693,6 +697,61 @@ class CLIVoiceMixin:
             _cli._cli_wake_owner = None
         if announce:
             _cprint(f"{_DIM}{t('cli.voice.wake_stopped' if was_active else 'cli.voice.wake_not_running')}{_RST}")
+
+    def _open_conversation_hook(self) -> None:
+        """``voice.on_conversation_start``, once per conversation (idempotent)."""
+        if getattr(self, "_conv_hook_open", False):
+            return
+        if not self._run_voice_hook("on_conversation_start", _CONVERSATION_START_TIMEOUT):
+            return  # not configured: no flag, no closer thread
+        self._conv_hook_open = True
+        # Process exit has no other handle on this instance while the wake listener is off.
+        import cli as _cli
+        _cli._cli_conv_hook_owner = self
+        self._start_conversation_closer()
+
+    def _start_conversation_closer(self) -> None:
+        """One idle-closer thread per open conversation; it exits once the hook is closed."""
+        if getattr(self, "_conv_hook_closer_running", False):
+            return
+        self._conv_hook_closer_running = True
+        threading.Thread(
+            target=self._close_conversation_when_idle,
+            name="voice-conversation-idle", daemon=True).start()
+
+    def _conversation_busy(self) -> bool:
+        """The assistant is listening, answering or about to: the conversation is still open."""
+        tts = getattr(self, "_voice_tts_done", None)
+        return bool(
+            self._agent_running
+            or self._voice_recording
+            or getattr(self, "_voice_processing", False)
+            or getattr(self, "_wake_follow_up_pending", False)
+            or (tts is not None and not tts.is_set())  # reply still sounding
+            or not self._pending_input.empty())
+
+    def _close_conversation_when_idle(self) -> None:
+        """Close the hook after ~0.75 s of stable idle, wake listener or not.
+
+        Same three-poll rule as the wake watchdog: one poll is not enough, the gap
+        between VAD stop and the agent starting looks idle too.
+        """
+        idle = 0
+        try:
+            while getattr(self, "_conv_hook_open", False):
+                time.sleep(0.25)
+                if self._conversation_busy():
+                    idle = 0
+                    continue
+                idle += 1
+                if idle >= 3:
+                    idle = 0
+                    self._close_conversation_hook()
+        finally:
+            self._conv_hook_closer_running = False
+            # A turn submitted as this thread exits must not leave the hook open.
+            if getattr(self, "_conv_hook_open", False):
+                self._start_conversation_closer()
 
     def _run_voice_hook(self, key: str, timeout: float) -> bool:
         """Run ``voice.<key>`` as a shell command; False when it isn't configured.
@@ -712,15 +771,19 @@ class CLIVoiceMixin:
             logger.debug("voice.%s hook %r failed: %s", key, cmd, e)
         return True
 
-    def _close_wake_conversation_hook(self, wait: bool = False) -> None:
+    def _close_conversation_hook(self, wait: bool = False) -> None:
         """``voice.on_conversation_end``, once per conversation the start hook opened.
 
         ``wait=True`` runs it on the caller's thread: at process exit a daemon thread
         would be killed before ``music release`` reaches the player.
         """
-        if not getattr(self, "_wake_conv_hook_open", False):
+        if not getattr(self, "_conv_hook_open", False):
             return
-        self._wake_conv_hook_open = False
+        with self._conv_hook_lock:
+            # Two closers race here (the idle thread and the watchdog): only one may fire.
+            if not self._conv_hook_open:
+                return
+            self._conv_hook_open = False
         args = ("on_conversation_end", _CONVERSATION_END_TIMEOUT)
         if wait:
             self._run_voice_hook(*args)
@@ -782,8 +845,7 @@ class CLIVoiceMixin:
             self._voice_mode = True
         self._voice_continuous = False
         # Before the bell: whatever the hook pauses must already be silent when it rings.
-        self._wake_conv_hook_open = self._run_voice_hook(
-            "on_conversation_start", _CONVERSATION_START_TIMEOUT)
+        self._open_conversation_hook()
         self._wake_conversation = True  # a spoken reply may be answered without the phrase
         try:
             self._voice_start_recording()
@@ -806,15 +868,7 @@ class CLIVoiceMixin:
                     if not getattr(self, "_wake_suspended", False):
                         idle_polls = 0
                         continue
-                    tts = getattr(self, "_voice_tts_done", None)
-                    busy = (
-                        self._agent_running
-                        or self._voice_recording
-                        or getattr(self, "_voice_processing", False)
-                        or getattr(self, "_wake_follow_up_pending", False)
-                        or (tts is not None and not tts.is_set())  # reply still sounding
-                        or not self._pending_input.empty())
-                    if busy:
+                    if self._conversation_busy():
                         idle_polls = 0
                         continue
                     # Require a few consecutive idle polls (~0.75s) so we don't resume in
@@ -826,17 +880,17 @@ class CLIVoiceMixin:
                             from tools.wake_word import resume_listening
                             if resume_listening(owner=self):
                                 self._wake_suspended = False
-                                self._close_wake_conversation_hook()
+                                self._close_conversation_hook()
                             else:
                                 # Dead watchdog: the conversation can never close itself.
-                                self._close_wake_conversation_hook(wait=True)
+                                self._close_conversation_hook(wait=True)
                                 self._wake_word_active = False
                         except Exception as e:
                             logger.debug("wake word resume failed: %s", e)
             finally:
                 # Safety net for the exits above (and _should_exit): same reason as shutdown,
                 # a daemon thread would lose the hook to process exit.
-                self._close_wake_conversation_hook(wait=True)
+                self._close_conversation_hook(wait=True)
                 self._wake_watchdog_started = False
 
         threading.Thread(target=_loop, daemon=True, name="wake-watchdog").start()

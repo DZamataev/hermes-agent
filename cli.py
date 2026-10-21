@@ -413,6 +413,7 @@ _cleanup_done = False  # _run_cleanup runs exactly once
 _cleanup_in_progress = False
 _session_end_messages: list[str] = []  # plugin on_session_finalize text awaiting the exit summary
 _cli_wake_owner = None
+_cli_conv_hook_owner = None  # CLI instance with an open voice.on_conversation_* hook
 # One-shot finalization runs before process cleanup (plugins see the boundary while the
 # agent is attached); atexit cleanup must not finalize those sessions again.
 _single_query_finalize_attempted_session_ids: set[str | None] = set()

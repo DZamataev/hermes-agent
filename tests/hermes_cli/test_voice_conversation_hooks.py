@@ -1,9 +1,11 @@
-"""voice.on_conversation_start / voice.on_conversation_end — shell hooks around a
-wake-word conversation.
+"""voice.on_conversation_start / voice.on_conversation_end — shell hooks around
+every conversation the assistant has: a wake word, a recording (Ctrl+B, continuous
+mode) or a typed turn.
 
-The start hook runs before the recording bell so a player can be paused first; the
-end hook runs once, when the conversation closes (watchdog resume or listener stop).
-Both default to "" = upstream behaviour, no subprocess at all.
+The start hook runs before the recording bell or the agent turn so a player can be
+paused first; the end hook runs once, when the CLI is stably idle again (no turn,
+no recording, no queued input, no reply playing). Both default to "" = upstream
+behaviour, no thread and no subprocess.
 """
 
 import threading
@@ -18,6 +20,19 @@ from tests.hermes_cli.test_voice_wake_follow_up import _make_cli
 @pytest.fixture(autouse=True)
 def _quiet_io(monkeypatch):
     monkeypatch.setattr("cli._cprint", lambda *_a, **_kw: None)
+    # A conversation left open starts an idle thread that outlives the test; on its next
+    # tick it would run the end hook under the FOLLOWING test's monkeypatched config.
+    made = []
+    real_make = _make_cli
+
+    def tracked(**kwargs):
+        made.append(real_make(**kwargs))
+        return made[-1]
+
+    monkeypatch.setattr("tests.hermes_cli.test_voice_conversation_hooks._make_cli", tracked)
+    yield
+    for cli in made:
+        cli._conv_hook_open = False  # disarm, don't run a hook
 
 
 def _with_hooks(monkeypatch, start="", end=""):
@@ -111,7 +126,8 @@ def test_disabled_hooks_start_no_process(monkeypatch):
     cli._on_wake_word()
 
     assert events == ["record"]
-    assert cli._wake_conv_hook_open is False
+    assert cli._conv_hook_open is False
+    assert cli._conv_hook_closer_running is False  # no idle thread either
 
 
 def test_profile_hint_early_return_fires_no_hook(monkeypatch):
@@ -138,7 +154,7 @@ def test_hanging_start_hook_is_bounded(monkeypatch):
 
     assert time.monotonic() - started < 2.0, "the hook held the conversation up"
     assert events == ["record"]
-    assert cli._wake_conv_hook_open is True  # a half-run hold must still be released
+    assert cli._conv_hook_open is True  # a half-run hold must still be released
 
 
 def test_failing_start_hook_does_not_break_the_conversation(monkeypatch):
@@ -220,25 +236,25 @@ def test_end_hook_is_quiet_for_a_stop_phrase_conversation(monkeypatch):
         "tools.voice_mode.transcribe_recording",
         lambda *_a, **_kw: {"success": True, "transcript": "stop"})
     monkeypatch.setattr("tools.voice_mode_transcript.is_voice_stop_phrase", lambda _t: True)
-    cli._wake_conv_hook_open = True  # the start hook opened this conversation
+    cli._conv_hook_open = True  # the start hook opened this conversation
 
     cli._voice_stop_and_transcribe()
 
     assert cli._wake_conversation is False
     assert run.cmds == []  # still playing out the reply / follow-up window
-    assert cli._wake_conv_hook_open is True
+    assert cli._conv_hook_open is True
 
 
 def test_end_hook_never_blocks_the_caller(monkeypatch):
     _with_hooks(monkeypatch, start="music hold", end="sleep 5")
     cli, _events = _woken_cli(monkeypatch)
-    cli._wake_conv_hook_open = True
+    cli._conv_hook_open = True
 
     started = time.monotonic()
-    cli._close_wake_conversation_hook()
+    cli._close_conversation_hook()
 
     assert time.monotonic() - started < 0.5, "the end hook ran on the caller's thread"
-    assert cli._wake_conv_hook_open is False
+    assert cli._conv_hook_open is False
 
 
 # ── Every way a conversation can end releases it ──────────────────────────
@@ -313,10 +329,163 @@ def test_cli_exit_releases_the_conversation_synchronously(monkeypatch):
         _stop_cli_wake_word()
         # Both inline on the shutdown thread: the hold from the start, the release from exit.
         assert ran == [("music hold", "MainThread"), ("music release", "MainThread")]
-        assert cli._wake_conv_hook_open is False
+        assert cli._conv_hook_open is False
     finally:
         monkeypatch.setattr(cli_module, "_cli_wake_owner", None)
+        monkeypatch.setattr(cli_module, "_cli_conv_hook_owner", None)
 
     ran.clear()
     _stop_cli_wake_word()  # no conversation open → nothing to release
     assert ran == []
+
+
+# ── Typed turns and manual recordings are conversations too ────────────────
+#
+# Music must stay paused whenever the assistant listens or answers, not only inside a
+# wake-word session. The wake listener is OFF in these tests: nothing but the idle
+# closer can release the hook.
+
+
+def _typed_cli(monkeypatch, run):
+    """A CLI driveable through ``_tui_process_one_input`` without the TUI."""
+    cli = _make_cli()
+    monkeypatch.setattr("cli._detect_file_drop", lambda _text: None)
+    monkeypatch.setattr("hermes_cli.cli_voice_mixin.subprocess.run", run)
+    monkeypatch.setattr(
+        "hermes_cli.cli_voice_mixin.time",
+        SimpleNamespace(sleep=lambda _s: time.sleep(0.001)))
+    cli._tui_unwrap_input = lambda user_input: (user_input, False, False)
+    cli._typed_voice_stop = lambda user_input: False
+    cli._print_user_message_preview = lambda *_a, **_kw: None
+    cli._turn_summary_begin = lambda: None
+    cli._status_bar_suppressed_after_resize = False
+    cli._tui_after_turn = lambda: setattr(cli, "_agent_running", False)
+    return cli
+
+
+def test_typed_turn_opens_the_hook_before_the_agent_runs(monkeypatch):
+    _with_hooks(monkeypatch, start="music hold")
+    order = []
+    cli = _typed_cli(monkeypatch, lambda cmd, **_kw: order.append(f"hook:{cmd}"))
+    cli.chat = lambda *_a, **_kw: order.append("chat")
+
+    cli._tui_process_one_input("hello")
+
+    assert order == ["hook:music hold", "chat"]
+    cli._close_conversation_hook(wait=True)  # leave no closer thread for the next test
+
+
+def test_typed_turn_closes_once_after_the_turn_and_tts(monkeypatch):
+    _with_hooks(monkeypatch, start="music hold", end="music release")
+    run = _Recorder()
+    cli = _typed_cli(monkeypatch, run)
+    tts = cli._voice_tts_done
+    cli.chat = lambda *_a, **_kw: tts.clear()  # the reply starts sounding
+
+    cli._tui_process_one_input("hello")
+
+    assert run.cmds == ["music hold"]
+    time.sleep(0.2)  # ~200 idle-looking polls: the reply is still playing
+    assert run.cmds == ["music hold"], "released over the assistant's own voice"
+
+    tts.set()
+    assert _wait(lambda: len(run.cmds) == 2), run.cmds
+    time.sleep(0.05)
+    assert run.cmds == ["music hold", "music release"]
+    assert cli._conv_hook_open is False
+
+
+def test_manual_recording_opens_the_hook(monkeypatch):
+    """Ctrl+B / ``/voice record``: the player goes quiet before the mic opens."""
+    _with_hooks(monkeypatch, start="music hold", end="music release")
+    run = _Recorder()
+    cli = _typed_cli(monkeypatch, run)
+    started = []
+    cli._voice_beep = lambda **_kw: None
+    monkeypatch.setattr(
+        "tools.voice_mode.check_voice_requirements",
+        lambda: {"audio_available": True, "stt_available": True})
+    monkeypatch.setattr(
+        "tools.voice_mode.create_audio_recorder",
+        lambda: SimpleNamespace(
+            start=lambda **_kw: started.append("start"), supports_silence_autostop=True))
+
+    cli._voice_start_recording()
+
+    assert started == ["start"] and cli._voice_recording is True
+    assert run.cmds == ["music hold"]
+    time.sleep(0.05)  # still recording: the idle closer must not release
+    assert run.cmds == ["music hold"]
+
+    cli._voice_recording = False
+    assert _wait(lambda: len(run.cmds) == 2), run.cmds
+    assert run.cmds == ["music hold", "music release"]
+
+
+def test_follow_up_window_is_one_conversation(monkeypatch):
+    """One open and one close across the reply, the follow-up window and its turn."""
+    _with_hooks(monkeypatch, start="music hold", end="music release")
+    cli, _events = _woken_cli(monkeypatch, _wake_follow_up_seconds=4.0)
+    run = _Recorder()
+    monkeypatch.setattr("hermes_cli.cli_voice_mixin.subprocess.run", run)
+    monkeypatch.setattr(
+        "hermes_cli.cli_voice_mixin.time",
+        SimpleNamespace(sleep=lambda _s: time.sleep(0.001)))
+    cli._on_wake_word()  # the first utterance is being captured
+    tts = cli._voice_tts_done
+
+    def idle_but_held():
+        time.sleep(0.05)
+        assert run.cmds == ["music hold"], run.cmds
+
+    cli._voice_recording = True
+    idle_but_held()  # mic open
+    cli._voice_recording = False
+    tts.clear()
+    cli._wake_follow_up_pending = True  # reply playing, then the follow-up window
+    idle_but_held()
+    tts.set()
+    cli._wake_follow_up_pending = False
+    cli._voice_recording = True
+    idle_but_held()  # follow-up utterance captured
+    cli._voice_recording = False
+    cli._pending_input.put("more")  # transcript queued for process_loop
+    idle_but_held()
+    cli._pending_input.get(timeout=0)
+    cli._agent_running = True
+    idle_but_held()  # follow-up turn running
+    cli._agent_running = False
+    cli._wake_conversation = False
+
+    assert _wait(lambda: len(run.cmds) == 2), run.cmds
+    time.sleep(0.05)
+    assert run.cmds == ["music hold", "music release"], "more than one conversation"
+
+
+def test_busy_turns_do_not_reopen_the_hook(monkeypatch):
+    _with_hooks(monkeypatch, start="music hold", end="music release")
+    run = _Recorder()
+    cli = _typed_cli(monkeypatch, run)
+    tts = cli._voice_tts_done
+    cli.chat = lambda *_a, **_kw: tts.clear()
+
+    cli._tui_process_one_input("one")
+    cli._tui_process_one_input("two")
+    assert run.cmds == ["music hold"]
+
+    tts.set()
+    assert _wait(lambda: len(run.cmds) == 2), run.cmds
+    time.sleep(0.05)
+    assert run.cmds == ["music hold", "music release"]
+
+
+def test_defaults_open_nothing_for_a_typed_turn(monkeypatch):
+    _with_hooks(monkeypatch)
+    cli = _typed_cli(
+        monkeypatch, lambda *_a, **_kw: pytest.fail("subprocess started with both hooks empty"))
+    cli.chat = lambda *_a, **_kw: None
+
+    cli._tui_process_one_input("hello")
+
+    assert cli._conv_hook_open is False
+    assert cli._conv_hook_closer_running is False

@@ -134,6 +134,8 @@ class CLITuiRuntimeMixin:
             _cprint(f"  {_DIM}{_attached}{_RST}")
 
         self._agent_running = self._interactive_turn = True
+        # Typed or spoken, the turn is a conversation: the idle closer releases it after TTS.
+        self._open_conversation_hook()
         self._pet_turn_error = self._pet_reasoning = False
         self._turn_summary_begin()
         self._app.invalidate()

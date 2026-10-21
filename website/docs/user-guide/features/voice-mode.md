@@ -505,8 +505,10 @@ voice:
   silence_threshold: 200           # RMS level (0-32767) below which counts as silence
   silence_duration: 3.0            # Seconds of silence before auto-stop
   stop_phrases: ["stop"]           # Saying exactly one of these ends the voice chat; [] disables
-  on_conversation_start: ""        # Shell command when a wake-word conversation opens (e.g. "music hold")
-  on_conversation_end: ""          # Shell command when it closes; runs only if the start hook ran
+  on_conversation_start: ""        # Shell command when the assistant starts listening or answering
+                                   # (wake word, Ctrl+B, a typed turn), before the bell/agent turn
+  on_conversation_end: ""          # Shell command again once it is idle (no turn, no reply playing);
+                                   # runs only if the start hook ran
 
 # Speech-to-Text
 stt:
