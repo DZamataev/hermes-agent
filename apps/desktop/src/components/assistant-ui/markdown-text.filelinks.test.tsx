@@ -65,6 +65,28 @@ describe('MarkdownLink filesystem hrefs', () => {
     expect(screen.queryByText(/blocked/)).toBeNull()
   })
 
+  it('routes a file link whose label is inline code', async () => {
+    // Prose was split on inline code before link routing, so the backticked
+    // label cut the link in two and it rendered as "[blocked]".
+    render(
+      <MarkdownTextContent
+        isRunning={false}
+        text={'- Превью: [`tmp/a/proposed.md`](tmp/a/proposed.md)\n- Abs: [`/srv/b.md`](/srv/b.md)'}
+      />
+    )
+
+    await screen.findByText('proposed.md')
+    await screen.findByText('b.md')
+    expect(screen.getAllByRole('button', { name: 'Open preview' })).toHaveLength(2)
+    expect(screen.queryByText(/blocked/)).toBeNull()
+  })
+
+  it('leaves a link written inside inline code as literal code', () => {
+    const { container } = render(<MarkdownTextContent isRunning={false} text={'Write `[x](docs/x.md)` to link.'} />)
+
+    expect(container.querySelector('code')?.textContent).toBe('[x](docs/x.md)')
+  })
+
   it('routes percent-encoded file links through the same preview pipeline', async () => {
     // Markdown renderers emit the href percent-encoded; the renderer keeps
     // the encoded form in the card label, and the electron side retries the

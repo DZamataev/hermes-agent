@@ -523,9 +523,18 @@ function escapeUnknownHtmlLikeTags(text: string): string {
 // which resolve the path at VIEW time against the session's backend — local
 // reads the file directly, remote fetches it over the authenticated /api/fs
 // bridge — so the same transcript works from every machine that opens it.
+// Runs before the inline-code split: a backticked label (`[`a.md`](a.md)`)
+// would otherwise cut the link in two. A code span matched first stays literal.
+const CODE_OR_FILE_LINK_RE = new RegExp(`${INLINE_CODE_SPLIT_RE.source}|${FILE_LINK_RE.source}`, 'giu')
+
 function routeFileLinksToPreview(text: string): string {
-  return text.replace(FILE_LINK_RE, (match: string, ...args: unknown[]) => {
-    const groups = args.at(-1) as { label: string; target: string }
+  return text.replace(CODE_OR_FILE_LINK_RE, (match: string, ...args: unknown[]) => {
+    const groups = args.at(-1) as { label?: string; target?: string }
+
+    if (!groups.target) {
+      return match
+    }
+
     const target = groups.target.replace(/^<|>$/g, '')
 
     const href = mediaKind(target) === 'file' ? previewMarkdownHref(target) : mediaMarkdownHref(target)
@@ -593,22 +602,20 @@ function rewriteProseSegment(segment: string, sourceListIds: Set<string>): strin
   return linkifySessionRefs(
     escapeLoneTildes(
       autoLinkRawUrls(
-        // File routing first: an angle-bracket target with a space
-        // (`<My Docs/report.md>`) reads as an unknown tag to the escaper.
+        // File links were routed in normalizeVisibleProse: an angle-bracket
+        // target with a space (`<My Docs/report.md>`) reads as an unknown tag to the escaper.
         escapeUnknownHtmlLikeTags(
-          routeFileLinksToPreview(
-            segment
-              .replace(/`{3,}/g, '')
-              .replace(CITATION_TRANSPORT_MARKER_RE, '')
-              .replace(CITATION_MARKER_RE, marker => {
-                const ids = marker
-                  .slice(1, -1)
-                  .split(',')
-                  .map(id => id.trim())
+          segment
+            .replace(/`{3,}/g, '')
+            .replace(CITATION_TRANSPORT_MARKER_RE, '')
+            .replace(CITATION_MARKER_RE, marker => {
+              const ids = marker
+                .slice(1, -1)
+                .split(',')
+                .map(id => id.trim())
 
-                return ids.every(id => sourceListIds.has(id)) ? marker : ''
-              })
-          )
+              return ids.every(id => sourceListIds.has(id)) ? marker : ''
+            })
         )
       )
     )
@@ -645,7 +652,7 @@ export function shieldDirectiveLines(text: string): string {
  * dollar can't be mistaken for math.
  */
 function normalizeVisibleProse(text: string, sourceListIds: Set<string>): string {
-  return text
+  return routeFileLinksToPreview(text)
     .split(INLINE_CODE_SPLIT_RE)
     .map(part =>
       part.startsWith('`')
